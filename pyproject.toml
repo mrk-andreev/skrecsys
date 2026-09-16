@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.1.0"
+version = "0.2.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Mark Andreev", email = "mark.andreev@gmail.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 keywords = ["recommender-systems", "recsys", "machine-learning", "scikit-learn"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -17,13 +17,26 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
 dependencies = [
-    "pandas>=3.0.5",
+    "joblib>=1.6.0",
+    # 2.5 and scipy 1.18 are 3.12+; the floors stay at the newest 3.11-compatible
+    # release so that uv resolves the latest available for each interpreter.
+    "numpy>=2.4.6",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.17.1",
+    # typing.override is 3.12+; see skrecsys._typing.
+    'typing-extensions>=4.12; python_version < "3.12"',
 ]
+
+[project.optional-dependencies]
+pandas = ["pandas>=3.0.5"]
 
 [project.urls]
 Homepage = "https://github.com/mrk-andreev/skrecsys"
@@ -31,22 +44,38 @@ Repository = "https://github.com/mrk-andreev/skrecsys"
 Issues = "https://github.com/mrk-andreev/skrecsys/issues"
 
 [build-system]
-requires = ["uv_build>=0.12.13,<0.13.0"]
-build-backend = "uv_build"
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "skrecsys._core"
+python-source = "src"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "rust/**/*.rs" }]
 
 [dependency-groups]
 dev = [
+    "pandas>=3.0.5",
     "pandas-stubs>=3.0.5.260730",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.6",
+    # Stubs only feed `ty`, which runs on the newest interpreter; the newest
+    # scipy-stubs is 3.12+, so 3.11 dev envs fall back to an older release.
+    'scipy-stubs>=1.18.1.0; python_version >= "3.12"',
+    'scipy-stubs>=1.17.1.5; python_version < "3.12"',
     "ty>=0.0.78",
+    "typing-extensions>=4.12",
+]
+reference = [
+    "implicit>=0.7.3",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -84,21 +113,36 @@ select = [
     "RUF", # Ruff-specific rules
 ]
 
+ignore = [
+    "N803", # scikit-learn convention: X is an uppercase argument name
+    "N806", # scikit-learn convention: matrices such as X and R are uppercase variables
+]
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is idiomatic in pytest
+"tests/**" = ["S101", "PLR2004"]  # assert and literal expectations are idiomatic in pytest
+"src/skrecsys/utils/estimator_checks.py" = ["S101"]  # checks report failures via assert
 
 [tool.ruff.lint.pylint]
 max-args = 15
 
 [tool.ty.environment]
+# The newest supported interpreter, not the floor: targeting 3.11 makes the numpy and
+# scipy stubs resolve their own version branches into false positives. Runtime
+# compatibility with the floor is covered by the CI test matrix instead.
 python-version = "3.14"
 
 [tool.ty.src]
 include = ["src", "tests"]
+# Run only inside throwaway `uv run --isolated` environments, against packages and
+# repositories that are deliberately absent from our own.
+exclude = ["tests/benchmarks/_rectools_ease.py", "tests/benchmarks/_dacrema_rp3beta.py"]
 
 [tool.ty.rules]
 all = "error"
 
 [tool.pytest.ini_options]
-addopts = "--cov=skrecsys --cov-report=term-missing"
+addopts = "--cov=skrecsys --cov-report=term-missing -m 'not benchmark'"
 testpaths = ["tests"]
+markers = [
+    "benchmark: end-to-end quality benchmarks on real datasets; downloads data, run with `pytest -m benchmark`",
+]

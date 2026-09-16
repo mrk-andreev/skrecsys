@@ -1,0 +1,84 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: py${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync the environment
+        run: uv sync --locked --group dev
+      - name: Run the tests
+        run: uv run --no-sync pytest
+
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # ty and the stubs target the newest supported interpreter; see pyproject.toml.
+          python-version: "3.14"
+          enable-cache: true
+      - name: Sync the environment
+        run: uv sync --locked --group dev
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ty check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --check
+      - run: cargo test
+
+  # Guards the abi3 promise: one wheel built at the floor must import everywhere.
+  abi3:
+    name: abi3 wheel / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --out dist --interpreter python3.11
+      - name: Import the wheel on every supported interpreter
+        shell: bash
+        run: |
+          for python in 3.11 3.12 3.13 3.14; do
+            echo "::group::python $python"
+            uv run --isolated --no-project --python "$python" --with dist/*.whl \
+              -- python -c "import skrecsys, skrecsys._core; print(skrecsys.__version__)"
+            echo "::endgroup::"
+          done
