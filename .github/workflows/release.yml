@@ -4,24 +4,66 @@ on:
   push:
     tags: ["v*"]
 
+env:
+  # The abi3 floor: one wheel per platform covers every supported interpreter.
+  ABI3_PYTHON: "3.11"
+
 jobs:
-  build:
+  sdist:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Check tag matches project version
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
-      - run: uv build
-      - name: Smoke test wheel
-        run: uv run --isolated --no-project --with dist/*.whl -- python -c "import skrecsys; print(skrecsys.__version__)"
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-sdist
+          path: dist/
+
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: auto }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: auto }
+          - { os: macos-latest, target: aarch64 }
+          - { os: macos-13, target: x86_64 }
+          - { os: windows-latest, target: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.ABI3_PYTHON }}
+      - uses: astral-sh/setup-uv@v6
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter python${{ env.ABI3_PYTHON }}
+          manylinux: ${{ matrix.manylinux }}
+      - name: Smoke test the wheel on every supported interpreter
+        shell: bash
+        run: |
+          for python in 3.11 3.12 3.13 3.14; do
+            echo "::group::python $python"
+            uv run --isolated --no-project --python "$python" --with dist/*.whl \
+              -- python -c "import skrecsys, skrecsys._core; print(skrecsys.__version__)"
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.target }}
           path: dist/
 
   publish:
-    needs: build
+    needs: [sdist, wheels]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -32,7 +74,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
+          merge-multiple: true
           path: dist/
       - uses: astral-sh/setup-uv@v6
       - run: uv publish
