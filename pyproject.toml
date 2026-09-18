@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.2.0"
+version = "0.3.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -135,7 +135,12 @@ python-version = "3.14"
 include = ["src", "tests"]
 # Run only inside throwaway `uv run --isolated` environments, against packages and
 # repositories that are deliberately absent from our own.
-exclude = ["tests/benchmarks/_rectools_ease.py", "tests/benchmarks/_dacrema_rp3beta.py"]
+exclude = [
+    "tests/benchmarks/_rectools_ease.py",
+    "tests/benchmarks/_dacrema_rp3beta.py",
+    "tests/benchmarks/_dacrema_slim.py",
+    "tests/benchmarks/_cornac_bpr.py",
+]
 
 [tool.ty.rules]
 all = "error"

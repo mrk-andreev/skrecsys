@@ -8,14 +8,15 @@ publish = false
 [lib]
 name = "_core"
 path = "rust/src/lib.rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 faer = { version = "0.24", default-features = false, features = ["std", "rayon"] }
+multiversion = "0.9.0"
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["abi3-py311"] }
 rayon = "1.12"
 
 [profile.release]
-lto = true
+lto = "fat"
 codegen-units = 1

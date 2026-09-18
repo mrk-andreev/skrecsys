@@ -52,3 +52,9 @@ class MostPopularRecommender(BaseRecommender):
         self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
     ) -> NDArray[np.floating]:
         return np.tile(self.item_popularity_[item_indices], (len(user_indices), 1))
+
+    @override
+    def _score_pairs(
+        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
+    ) -> NDArray[np.floating]:
+        return self.item_popularity_[item_indices]

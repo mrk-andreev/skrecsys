@@ -4,14 +4,13 @@ import numbers
 
 import numpy as np
 import scipy.sparse as sp
-from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.recommendation._base import BaseRecommender
+from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr
 
 
-class BM25Recommender(BaseRecommender):
+class BM25Recommender(SimilarityRecommender):
     """Item-item nearest-neighbour recommender with BM25 weighting.
 
     Items are treated as documents and users as terms. Each interaction is weighted
@@ -99,9 +98,7 @@ class BM25Recommender(BaseRecommender):
         weights.sort_indices()
 
         indptr, indices, data = _core.item_knn_top_k(
-            weights.indptr.astype(np.int64),
-            weights.indices.astype(np.int64),
-            weights.data.astype(np.float64),
+            *kernel_csr(weights),
             n_items,
             int(self.n_neighbors),
             n_threads,
@@ -109,12 +106,6 @@ class BM25Recommender(BaseRecommender):
         self.similarity_ = sp.csr_array((data, indices, indptr), shape=(n_items, n_items))
 
     @override
-    def _score_users(
-        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
-    ) -> NDArray[np.floating]:
-        scores = sp.csr_array(self.interactions_[user_indices] @ self.similarity_)
-        return np.asarray(scores[:, item_indices].toarray(), dtype=np.float64)
-
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
         if not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1:

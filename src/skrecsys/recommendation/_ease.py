@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.recommendation._base import BaseRecommender
+from skrecsys.recommendation._base import BaseRecommender, kernel_csr, score_pairs_from_similarity
 
 
 class EASE(BaseRecommender):
@@ -76,9 +76,7 @@ class EASE(BaseRecommender):
     def _fit(self, interactions: sp.csr_array) -> None:
         n_threads = self._check_params()
         self.similarity_ = _core.ease_weights(
-            interactions.indptr.astype(np.int64),
-            interactions.indices.astype(np.int64),
-            interactions.data.astype(np.float64),
+            *kernel_csr(interactions),
             interactions.shape[1],
             float(self.l2_reg),
             n_threads,
@@ -90,6 +88,14 @@ class EASE(BaseRecommender):
     ) -> NDArray[np.floating]:
         scores = self.interactions_[user_indices] @ self.similarity_
         return np.asarray(scores, dtype=np.float64)[:, item_indices]
+
+    @override
+    def _score_pairs(
+        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
+    ) -> NDArray[np.floating]:
+        return score_pairs_from_similarity(
+            self.interactions_, self.similarity_, user_indices, item_indices, by_row=False
+        )
 
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""

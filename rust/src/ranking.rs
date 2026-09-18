@@ -11,14 +11,14 @@ use rayon::prelude::*;
 
 /// Rank of a candidate: higher score first, then lower column index.
 #[derive(Clone, Copy)]
-struct Candidate {
-    score: f64,
-    index: usize,
+pub struct Candidate {
+    pub score: f64,
+    pub index: usize,
 }
 
 impl Candidate {
     /// Ordering by rank, worst first, so a max-heap keeps the worst on top.
-    fn worst_first(&self, other: &Self) -> Ordering {
+    pub fn worst_first(&self, other: &Self) -> Ordering {
         other
             .score
             .partial_cmp(&self.score)
@@ -47,14 +47,32 @@ impl PartialEq for Candidate {
 
 impl Eq for Candidate {}
 
-/// Per row of `scores`, return the column indices of the `k` best eligible entries,
-/// best first. Ties go to the lower column index.
+/// Column indices excluded from each row, in CSR layout.
 ///
-/// `scores` and `eligible` are row-major with `n_cols` columns. Returns an error with
-/// the offending row when it has fewer than `k` eligible entries.
+/// A row's indices must be strictly increasing, which lets the selection walk them
+/// alongside the scores instead of testing a dense mask. `recommend` hands over the
+/// items a query has already interacted with, so this is `nnz` numbers rather than the
+/// `n_queries * n_items` booleans a mask would cost.
+pub struct Excluded<'a> {
+    pub indptr: &'a [usize],
+    pub indices: &'a [i64],
+}
+
+impl Excluded<'_> {
+    /// The excluded column indices of `row`, ascending.
+    pub fn row(&self, row: usize) -> &[i64] {
+        &self.indices[self.indptr[row]..self.indptr[row + 1]]
+    }
+}
+
+/// Per row of `scores`, return the column indices of the `k` best entries that are not
+/// excluded, best first. Ties go to the lower column index.
+///
+/// `scores` is row-major with `n_cols` columns. Returns an error with the offending row
+/// when it has fewer than `k` entries left.
 pub fn top_k_per_row(
     scores: &[f64],
-    eligible: &[bool],
+    excluded: &Excluded<'_>,
     n_cols: usize,
     k: usize,
 ) -> Result<Vec<usize>, TooFewEligible> {
@@ -65,16 +83,22 @@ pub fn top_k_per_row(
             Err(TooFewEligible { row: 0, found: 0 })
         };
     }
-    scores
-        .par_chunks(n_cols)
-        .zip(eligible.par_chunks(n_cols))
+    // This is the predict path, so the result is written straight into one flat buffer:
+    // a `Vec` per row plus a concatenating copy would allocate once per query.
+    let n_rows = scores.len() / n_cols;
+    let mut selected = vec![0usize; n_rows * k];
+    let outcome = selected
+        .par_chunks_mut(k)
+        .zip(scores.par_chunks(n_cols))
         .enumerate()
-        .map(|(row, (row_scores, row_eligible))| {
+        .try_for_each(|(row, (out, row_scores))| {
+            let skip = excluded.row(row);
+            let mut next_skipped = 0usize;
             let mut heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(k + 1);
-            for (index, (&score, &is_eligible)) in
-                row_scores.iter().zip(row_eligible.iter()).enumerate()
-            {
-                if !is_eligible {
+            for (index, &score) in row_scores.iter().enumerate() {
+                // The excluded indices ascend, so one cursor keeps up with the scan.
+                if next_skipped < skip.len() && skip[next_skipped] == index as i64 {
+                    next_skipped += 1;
                     continue;
                 }
                 let candidate = Candidate { score, index };
@@ -95,10 +119,12 @@ pub fn top_k_per_row(
             }
             let mut best = heap.into_vec();
             best.sort_unstable_by(|a, b| a.worst_first(b));
-            Ok(best.into_iter().map(|c| c.index).collect::<Vec<usize>>())
-        })
-        .collect::<Result<Vec<Vec<usize>>, TooFewEligible>>()
-        .map(|rows| rows.concat())
+            for (slot, candidate) in out.iter_mut().zip(&best) {
+                *slot = candidate.index;
+            }
+            Ok(())
+        });
+    outcome.map(|()| selected)
 }
 
 /// A row had fewer eligible entries than the requested `k`.
@@ -111,42 +137,78 @@ pub struct TooFewEligible {
 mod tests {
     use super::*;
 
-    fn select(scores: &[f64], eligible: &[bool], n_cols: usize, k: usize) -> Vec<usize> {
-        top_k_per_row(scores, eligible, n_cols, k).unwrap_or_else(|_| panic!("too few eligible"))
+    /// Build CSR exclusions from one list of excluded columns per row.
+    fn excluded(rows: &[Vec<usize>]) -> (Vec<usize>, Vec<i64>) {
+        let mut indptr = vec![0usize];
+        let mut indices: Vec<i64> = Vec::new();
+        for row in rows {
+            indices.extend(row.iter().map(|&c| c as i64));
+            indptr.push(indices.len());
+        }
+        (indptr, indices)
+    }
+
+    fn select_excluding(
+        scores: &[f64],
+        rows: &[Vec<usize>],
+        n_cols: usize,
+        k: usize,
+    ) -> Vec<usize> {
+        let (indptr, indices) = excluded(rows);
+        let excluded = Excluded {
+            indptr: &indptr,
+            indices: &indices,
+        };
+        top_k_per_row(scores, &excluded, n_cols, k).unwrap_or_else(|_| panic!("too few eligible"))
+    }
+
+    fn select(scores: &[f64], n_cols: usize, k: usize) -> Vec<usize> {
+        let rows = vec![Vec::new(); scores.len() / n_cols];
+        select_excluding(scores, &rows, n_cols, k)
     }
 
     #[test]
     fn ranks_by_score_then_by_index() {
         let scores = [0.5, 2.0, 2.0, -1.0];
-        let eligible = [true; 4];
-        assert_eq!(select(&scores, &eligible, 4, 4), vec![1, 2, 0, 3]);
-        assert_eq!(select(&scores, &eligible, 4, 2), vec![1, 2]);
+        assert_eq!(select(&scores, 4, 4), vec![1, 2, 0, 3]);
+        assert_eq!(select(&scores, 4, 2), vec![1, 2]);
     }
 
     #[test]
-    fn skips_ineligible_entries() {
+    fn skips_excluded_entries() {
         let scores = [3.0, 2.0, 1.0];
-        assert_eq!(select(&scores, &[false, true, true], 3, 2), vec![1, 2]);
+        assert_eq!(select_excluding(&scores, &[vec![0]], 3, 2), vec![1, 2]);
+        assert_eq!(select_excluding(&scores, &[vec![0, 1]], 3, 1), vec![2]);
+    }
+
+    #[test]
+    fn excludes_per_row() {
+        let scores = [1.0, 3.0, 2.0, 9.0, 0.0, 8.0];
+        let rows = vec![vec![1], vec![0, 2]];
+        assert_eq!(select_excluding(&scores, &rows, 3, 1), vec![2, 1]);
     }
 
     #[test]
     fn handles_several_rows() {
         let scores = [1.0, 3.0, 2.0, 9.0, 0.0, 8.0];
-        let eligible = [true; 6];
-        assert_eq!(select(&scores, &eligible, 3, 2), vec![1, 2, 0, 2]);
+        assert_eq!(select(&scores, 3, 2), vec![1, 2, 0, 2]);
     }
 
     #[test]
     fn reports_the_row_with_too_few_eligible() {
         let scores = [1.0, 2.0, 3.0, 4.0];
-        let eligible = [true, true, true, false];
-        let error = top_k_per_row(&scores, &eligible, 2, 2).expect_err("should fail");
+        let (indptr, indices) = excluded(&[vec![], vec![1]]);
+        let excluded = Excluded {
+            indptr: &indptr,
+            indices: &indices,
+        };
+        let error = top_k_per_row(&scores, &excluded, 2, 2).expect_err("should fail");
         assert_eq!((error.row, error.found), (1, 1));
     }
 
     #[test]
     fn matches_a_full_sort() {
-        let n_cols = 500;
+        let n_cols: usize = 500;
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
         let scores: Vec<f64> = (0..40 * n_cols)
             .map(|_| {
@@ -157,9 +219,14 @@ mod tests {
                 (state % 20) as f64
             })
             .collect();
-        let eligible: Vec<bool> = (0..scores.len()).map(|i| !i.is_multiple_of(7)).collect();
+        let rows: Vec<Vec<usize>> = (0..40)
+            .map(|_| (0..n_cols).filter(|&i| i.is_multiple_of(7)).collect())
+            .collect();
+        let eligible: Vec<bool> = (0..scores.len())
+            .map(|i| !(i % n_cols).is_multiple_of(7))
+            .collect();
         let k = 12;
-        let got = top_k_per_row(&scores, &eligible, n_cols, k).unwrap_or_else(|_| unreachable!());
+        let got = select_excluding(&scores, &rows, n_cols, k);
         for row in 0..40 {
             let mut all: Vec<Candidate> = (0..n_cols)
                 .filter(|&i| eligible[row * n_cols + i])

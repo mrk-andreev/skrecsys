@@ -18,8 +18,6 @@
 //! dominant cost of the model. The reference implementation (M. Ferrari Dacrema et al.,
 //! `GraphBased/RP3betaRecommender.py`) materializes blocks of 200 dense rows instead.
 
-use rayon::prelude::*;
-
 use crate::sparse::{Accumulator, Csc, Csr, CsrOwned};
 
 /// Top `k` entries of every row of the scaled walk matrix, diagonal excluded.
@@ -30,37 +28,27 @@ use crate::sparse::{Accumulator, Csc, Csr, CsrOwned};
 pub fn similarity(pui: &Csr, row_scale: &[f64], col_scale: &[f64], k: usize) -> CsrOwned {
     let n = pui.n_cols;
     let items = Csc::from_csr(pui);
-    let rows: Vec<Vec<(usize, f64)>> = (0..n)
-        .into_par_iter()
-        .map_init(
-            || Accumulator::new(n),
-            |acc, i| {
-                for (u, _) in items.column(i) {
-                    for p in pui.indptr[u]..pui.indptr[u + 1] {
-                        acc.add(pui.indices[p], pui.data[p]);
-                    }
+    CsrOwned::build(
+        n,
+        || Accumulator::new(n),
+        |acc, i, out| {
+            for (u, _) in items.column(i) {
+                for p in pui.indptr[u]..pui.indptr[u + 1] {
+                    acc.add(pui.col(p), pui.data[p]);
                 }
-                let mut candidates: Vec<(usize, f64)> = acc
-                    .touched()
+            }
+            let before = out.len();
+            out.extend(
+                acc.touched()
                     .iter()
                     .filter(|&&j| j != i)
                     .map(|&j| (j, acc.get(j) * row_scale[i] * col_scale[j]))
-                    .filter(|&(_, value)| value != 0.0)
-                    .collect();
-                acc.reset();
-
-                if candidates.len() > k {
-                    // Partition alone puts the `k` best first, in no particular order.
-                    candidates
-                        .select_nth_unstable_by(k, |a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                    candidates.truncate(k);
-                }
-                candidates.sort_unstable_by_key(|&(j, _)| j);
-                candidates
-            },
-        )
-        .collect();
-    CsrOwned::from_rows(rows)
+                    .filter(|&(_, value)| value != 0.0),
+            );
+            acc.reset();
+            crate::knn::keep_best(out, before, k);
+        },
+    )
 }
 
 #[cfg(test)]

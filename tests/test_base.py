@@ -1,11 +1,12 @@
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from sklearn.base import BaseEstimator
 from sklearn.exceptions import NotFittedError
 from sklearn.linear_model import LinearRegression
 
 import skrecsys
-from skrecsys import RecommenderMixin, is_recommender
+from skrecsys import RecommenderMixin, _core, is_recommender
 from skrecsys._typing import override
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
 
@@ -20,7 +21,7 @@ class _ConstantRecommender(RecommenderMixin, BaseEstimator):
     @override
     def _score_queries(self, X, item_indices, *, exclude_seen):
         shape = (len(X), len(item_indices))
-        return np.zeros(shape), np.ones(shape, dtype=bool)
+        return np.zeros(shape), sp.csr_array(shape, dtype=bool)
 
 
 def test_version():
@@ -81,7 +82,7 @@ class _ScoredRecommender(RecommenderMixin, BaseEstimator):
 
     @override
     def _score_queries(self, X, item_indices, *, exclude_seen):
-        return self.scores[:, item_indices], self.eligible[:, item_indices]
+        return self.scores[:, item_indices], sp.csr_array(~self.eligible[:, item_indices])
 
 
 @pytest.mark.parametrize("n_recommendations", [1, 3, 10])
@@ -116,3 +117,37 @@ def test_too_few_eligible_items_names_the_query():
     rec = _ScoredRecommender(scores, eligible).fit()
     with pytest.raises(ValueError, match="query 1 has only 1 eligible"):
         rec.recommend(["q0", "q1"], n_recommendations=2)
+
+
+def _order(scores, indptr, indices, k):
+    return _core.top_k_per_row(
+        np.ascontiguousarray(scores, dtype=np.float64),
+        np.asarray(indptr, dtype=np.int64),
+        np.asarray(indices, dtype=np.int64),
+        k,
+    )
+
+
+def test_kernel_rejects_exclusions_that_do_not_match_the_scores():
+    scores = np.zeros((2, 3))
+    with pytest.raises(ValueError, match="one entry per row"):
+        _order(scores, [0, 0], [], 1)
+    with pytest.raises(ValueError, match="out of range"):
+        _order(scores, [0, 1, 1], [3], 1)
+
+
+def test_kernel_rejects_unsorted_exclusions():
+    # The selection walks the exclusions alongside the scores, so a row that does not
+    # ascend would silently keep an excluded item instead of dropping it.
+    with pytest.raises(ValueError, match="ascend"):
+        _order(np.zeros((1, 3)), [0, 2], [2, 0], 1)
+
+
+def test_too_few_eligible_names_the_query_across_blocks(monkeypatch):
+    """The reported query is the caller's, not the one inside the block."""
+    eligible = np.ones((4, 3), dtype=bool)
+    eligible[3] = [True, False, False]
+    rec = _ScoredRecommender(np.zeros((4, 3)), eligible).fit()
+    monkeypatch.setattr(type(rec), "_rank_chunk_size", lambda self, n_candidates: 2)
+    with pytest.raises(ValueError, match="query 3 has only 1 eligible"):
+        rec.recommend(["q0", "q1", "q2", "q3"], n_recommendations=2)

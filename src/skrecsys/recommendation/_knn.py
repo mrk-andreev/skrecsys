@@ -4,13 +4,13 @@ import numbers
 
 import numpy as np
 import scipy.sparse as sp
-from numpy.typing import NDArray
 
+from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.recommendation._base import BaseRecommender, keep_top_k_per_row
+from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr
 
 
-class ItemKNNRecommender(BaseRecommender):
+class ItemKNNRecommender(SimilarityRecommender):
     """Item-based neighborhood recommender with cosine similarity.
 
     The score of item ``j`` for user ``u`` is ``sum_i r_ui * s(j, i)`` over the
@@ -24,6 +24,9 @@ class ItemKNNRecommender(BaseRecommender):
     shrink : float, default=0.0
         Shrinkage added to the cosine denominator, damping similarities supported by
         few co-occurrences.
+
+    n_jobs : int or None, default=None
+        Threads used by the native kernel. ``None`` and ``-1`` use every core.
 
     Attributes
     ----------
@@ -45,33 +48,51 @@ class ItemKNNRecommender(BaseRecommender):
     [['b']]
     """
 
-    def __init__(self, n_neighbors: int | None = 50, shrink: float = 0.0) -> None:
+    _neighbors_by_row = True
+
+    def __init__(
+        self,
+        n_neighbors: int | None = 50,
+        shrink: float = 0.0,
+        n_jobs: int | None = None,
+    ) -> None:
         self.n_neighbors = n_neighbors
         self.shrink = shrink
+        self.n_jobs = n_jobs
 
     @override
     def _fit(self, interactions: sp.csr_array) -> None:
+        n_threads = self._check_params()
+        n_items = interactions.shape[1]
+        norms = np.sqrt(
+            np.asarray(interactions.multiply(interactions).sum(axis=0), dtype=np.float64).ravel()
+        )
+        # The kernel prunes as it accumulates, so `None` asks it for every column rather
+        # than for a second pass over a fully materialized similarity matrix.
+        k = n_items if self.n_neighbors is None else int(self.n_neighbors)
+        indptr, indices, data = _core.item_cosine_top_k(
+            *kernel_csr(interactions),
+            n_items,
+            norms,
+            float(self.shrink),
+            k,
+            n_threads,
+        )
+        self.similarity_ = sp.csr_array(
+            (data, indices, indptr), shape=(n_items, n_items), dtype=np.float64
+        )
+
+    @override
+    def _check_params(self) -> int:
+        """Validate parameters and return the thread count for the kernel (0 = all)."""
         if self.n_neighbors is not None and (
             not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1
         ):
             raise ValueError(f"n_neighbors must be None or >= 1, got {self.n_neighbors!r}.")
-        if self.shrink < 0:
+        if not isinstance(self.shrink, numbers.Real) or self.shrink < 0:
             raise ValueError(f"shrink must be >= 0, got {self.shrink!r}.")
-
-        R = interactions.tocsc()
-        norms = np.sqrt(np.asarray(R.multiply(R).sum(axis=0), dtype=np.float64).ravel())
-        cooc = (R.T @ R).tocoo()
-        off_diagonal = (cooc.row != cooc.col) & (cooc.data != 0)
-        rows, cols = cooc.row[off_diagonal], cooc.col[off_diagonal]
-        data = cooc.data[off_diagonal] / (norms[rows] * norms[cols] + self.shrink)
-        similarity = sp.csr_array((data, (rows, cols)), shape=cooc.shape)
-        similarity.sort_indices()
-        self.similarity_ = keep_top_k_per_row(similarity, self.n_neighbors)
-
-    @override
-    def _score_users(
-        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
-    ) -> NDArray[np.floating]:
-        ratings = self.interactions_[user_indices]
-        scores = ratings @ self.similarity_[item_indices].T
-        return np.asarray(scores.toarray(), dtype=np.float64)
+        if self.n_jobs is None or self.n_jobs == -1:
+            return 0
+        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
+            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
+        return int(self.n_jobs)
