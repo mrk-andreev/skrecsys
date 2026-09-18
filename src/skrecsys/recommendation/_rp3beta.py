@@ -9,10 +9,15 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.recommendation._base import BaseRecommender, keep_top_k_per_row
+from skrecsys.recommendation._base import (
+    SimilarityRecommender,
+    keep_top_k_per_row,
+    kernel_data,
+    kernel_indices,
+)
 
 
-class RP3Beta(BaseRecommender):
+class RP3Beta(SimilarityRecommender):
     """Item-item recommender from a popularity-damped random walk on the user-item graph.
 
     A three-step walk ``item -> user -> item`` gives the transition probabilities
@@ -117,9 +122,9 @@ class RP3Beta(BaseRecommender):
         col_scale[seen] = popularity[seen] ** -self.beta
 
         indptr, indices, data = _core.rp3beta_similarity(
-            observed.indptr.astype(np.int64),
-            observed.indices.astype(np.int64),
-            pui.astype(np.float64),
+            kernel_indices(observed.indptr),
+            kernel_indices(observed.indices),
+            kernel_data(pui),
             n_items,
             row_scale,
             col_scale,
@@ -139,16 +144,10 @@ class RP3Beta(BaseRecommender):
             similarity.data *= np.repeat(_reciprocal(row_sums), np.diff(similarity.indptr))
 
         # The reference prunes a second time after normalizing, now column-wise.
-        pruned = keep_top_k_per_row(sp.csr_array(similarity.T), int(self.n_neighbors))
+        pruned = keep_top_k_per_row(sp.csr_array(similarity.T), int(self.n_neighbors), n_threads)
         self.similarity_ = sp.csr_array(pruned.T)
 
     @override
-    def _score_users(
-        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
-    ) -> NDArray[np.floating]:
-        scores = sp.csr_array(self.interactions_[user_indices] @ self.similarity_)
-        return np.asarray(scores[:, item_indices].toarray(), dtype=np.float64)
-
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
         if not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1:

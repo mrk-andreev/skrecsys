@@ -1,12 +1,36 @@
 //! Borrowed sparse matrices shared by the kernels.
 
+use rayon::prelude::*;
+
 /// Borrowed compressed sparse row matrix of shape `(n_rows, n_cols)`.
+///
+/// The column indices stay in the `i64` layout numpy hands over: they are the largest
+/// array in play, and copying them into `usize` cost a pass over `nnz` on every call.
+/// They are validated against `n_cols` once at the boundary, so [`Csr::col`] is a plain
+/// widening cast.
 pub struct Csr<'a> {
     pub n_rows: usize,
     pub n_cols: usize,
     pub indptr: &'a [usize],
-    pub indices: &'a [usize],
+    pub indices: &'a [i64],
     pub data: &'a [f64],
+}
+
+impl Csr<'_> {
+    /// The column of the `p`-th stored value.
+    #[inline]
+    pub fn col(&self, p: usize) -> usize {
+        self.indices[p] as usize
+    }
+
+    /// The `(column, value)` pairs stored in row `i`.
+    pub fn row(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let range = self.indptr[i]..self.indptr[i + 1];
+        self.indices[range.clone()]
+            .iter()
+            .map(|&j| j as usize)
+            .zip(self.data[range].iter().copied())
+    }
 }
 
 /// Column-oriented copy of a [`Csr`] matrix (libFM's `data_t`, implicit's `users.T`), rows ascending.
@@ -20,7 +44,7 @@ impl Csc {
     pub fn from_csr(x: &Csr) -> Self {
         let mut indptr = vec![0; x.n_cols + 1];
         for &j in x.indices {
-            indptr[j + 1] += 1;
+            indptr[j as usize + 1] += 1;
         }
         for j in 0..x.n_cols {
             indptr[j + 1] += indptr[j];
@@ -30,7 +54,7 @@ impl Csc {
         let mut data = vec![0.0; x.indices.len()];
         for c in 0..x.n_rows {
             for k in x.indptr[c]..x.indptr[c + 1] {
-                let j = x.indices[k];
+                let j = x.col(k);
                 rows[next[j]] = c;
                 data[next[j]] = x.data[k];
                 next[j] += 1;
@@ -48,6 +72,9 @@ impl Csc {
     }
 }
 
+/// One block of rows built by [`CsrOwned::build`]: their lengths and their entries.
+type Fragment = (Vec<usize>, Vec<(usize, f64)>);
+
 /// Owned compressed sparse row matrix produced by a kernel.
 pub struct CsrOwned {
     pub indptr: Vec<usize>,
@@ -56,18 +83,51 @@ pub struct CsrOwned {
 }
 
 impl CsrOwned {
-    /// Stack per-row `(column, value)` pairs, which must already ascend by column.
-    pub fn from_rows(rows: Vec<Vec<(usize, f64)>>) -> Self {
-        let mut indptr = Vec::with_capacity(rows.len() + 1);
+    /// Build the rows in parallel, each worker appending to buffers of its own.
+    ///
+    /// `fill` appends row `i`'s `(column, value)` pairs, which must ascend by column,
+    /// to the buffer it is handed; that buffer is reused across the rows of a block, so
+    /// a row costs no allocation of its own. Collecting a `Vec` per row instead means one
+    /// allocation per row and a second pass to concatenate, which is what the similarity
+    /// kernels used to pay for every item in the catalog.
+    pub fn build<S, I, F>(n_rows: usize, init: I, fill: F) -> Self
+    where
+        S: Send,
+        I: Fn() -> S + Sync + Send,
+        F: Fn(&mut S, usize, &mut Vec<(usize, f64)>) + Sync + Send,
+    {
+        // Enough blocks to keep every worker fed, few enough that the buffers are few.
+        let block = n_rows.div_ceil(rayon::current_num_threads() * 4).max(1);
+        let fragments: Vec<Fragment> = (0..n_rows.div_ceil(block))
+            .into_par_iter()
+            .map_init(init, |state, b| {
+                let stop = ((b + 1) * block).min(n_rows);
+                let mut lengths = Vec::with_capacity(stop - b * block);
+                let mut entries: Vec<(usize, f64)> = Vec::new();
+                for row in b * block..stop {
+                    let before = entries.len();
+                    fill(state, row, &mut entries);
+                    lengths.push(entries.len() - before);
+                }
+                (lengths, entries)
+            })
+            .collect();
+
+        let nnz = fragments.iter().map(|(_, e)| e.len()).sum();
+        let mut indptr = Vec::with_capacity(n_rows + 1);
+        let mut indices = Vec::with_capacity(nnz);
+        let mut data = Vec::with_capacity(nnz);
         indptr.push(0);
-        let mut indices = Vec::new();
-        let mut data = Vec::new();
-        for row in rows {
-            for (j, value) in row {
-                indices.push(j);
-                data.push(value);
+        for (lengths, entries) in &fragments {
+            let mut at = 0;
+            for &length in lengths {
+                for &(j, value) in &entries[at..at + length] {
+                    indices.push(j);
+                    data.push(value);
+                }
+                at += length;
+                indptr.push(indices.len());
             }
-            indptr.push(indices.len());
         }
         Self {
             indptr,
@@ -108,6 +168,11 @@ impl Accumulator {
         &self.touched
     }
 
+    /// Whether `index` was touched since the last [`Accumulator::reset`].
+    pub fn is_touched(&self, index: usize) -> bool {
+        self.seen[index]
+    }
+
     pub fn get(&self, index: usize) -> f64 {
         self.sums[index]
     }
@@ -131,7 +196,7 @@ pub mod testing {
         n_rows: usize,
         n_cols: usize,
         indptr: Vec<usize>,
-        indices: Vec<usize>,
+        indices: Vec<i64>,
         data: Vec<f64>,
     }
 
@@ -143,7 +208,7 @@ pub mod testing {
             for row in dense {
                 for (j, &v) in row.iter().enumerate() {
                     if v != 0.0 {
-                        indices.push(j);
+                        indices.push(j as i64);
                         data.push(v);
                     }
                 }

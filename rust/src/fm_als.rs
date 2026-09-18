@@ -9,7 +9,17 @@
 //! per factor, the inner products `q[c] = sum_j v[f][j] * x[c][j]` are cached and
 //! updated incrementally, so one update costs O(nnz of its column).
 
+use rayon::prelude::*;
+
 use crate::sparse::{Csc, Csr};
+
+/// Rows per rayon task in the two parallel passes.
+///
+/// `q` is refreshed once per factor per sweep, so on a small problem the cost of
+/// splitting the work outruns the work itself: MovieLens 100K has 943 rows, where an
+/// unbounded split made the fit slower than the serial version. A minimum task size
+/// leaves such a problem as a single task and still splits a large one across the pool.
+const ROWS_PER_TASK: usize = 2048;
 
 /// Model parameters and regularization for [`fit`].
 ///
@@ -31,10 +41,21 @@ pub fn fit(x: &Csr, y: &[f64], model: &mut Model, n_iter: usize) -> Vec<f64> {
     let n_factors = model.v.len().checked_div(n_features).unwrap_or(0);
     let csc = Csc::from_csr(x);
 
+    // Rows are independent, so the opening residual pass runs on the rayon pool. Each
+    // entry is summed exactly as the serial version summed it.
+    let model_ro = &*model;
     let mut e: Vec<f64> = (0..x.n_rows)
-        .map(|c| predict_row(x, model, n_factors, c) - y[c])
+        .into_par_iter()
+        .with_min_len(ROWS_PER_TASK)
+        .map(|c| predict_row(x, model_ro, n_factors, c) - y[c])
         .collect();
     let mut q = vec![0.0; x.n_rows];
+    // Scratch for the gradient weights of one column, reused across every update.
+    let widest_column = (0..n_features)
+        .map(|j| csc.indptr[j + 1] - csc.indptr[j])
+        .max()
+        .unwrap_or(0);
+    let mut h_buf = vec![0.0; widest_column];
     let mut history = Vec::with_capacity(n_iter);
 
     for _ in 0..n_iter {
@@ -44,13 +65,29 @@ pub fn fit(x: &Csr, y: &[f64], model: &mut Model, n_iter: usize) -> Vec<f64> {
         }
         for f in 0..n_factors {
             let v_f = &mut model.v[f * n_features..(f + 1) * n_features];
-            for (c, q_c) in q.iter_mut().enumerate() {
-                *q_c = (x.indptr[c]..x.indptr[c + 1])
-                    .map(|k| v_f[x.indices[k]] * x.data[k])
-                    .sum();
+            // Refreshing `q` reads `v_f` and writes one independent entry per row, so it
+            // parallelizes; the per-row sum keeps its order, so the values are unchanged.
+            {
+                let v_f = &*v_f;
+                q.par_iter_mut()
+                    .with_min_len(ROWS_PER_TASK)
+                    .enumerate()
+                    .for_each(|(c, q_c)| {
+                        *q_c = (x.indptr[c]..x.indptr[c + 1])
+                            .map(|k| v_f[x.col(k)] * x.data[k])
+                            .sum();
+                    });
             }
             for j in 0..n_features {
-                update_v(&csc, &mut e, &mut q, v_f, j, model.reg_v[model.group[j]]);
+                update_v(
+                    &csc,
+                    &mut e,
+                    &mut q,
+                    v_f,
+                    j,
+                    model.reg_v[model.group[j]],
+                    &mut h_buf,
+                );
             }
         }
         history.push(rmse(&e));
@@ -63,14 +100,14 @@ fn predict_row(x: &Csr, model: &Model, n_factors: usize, c: usize) -> f64 {
     let row = x.indptr[c]..x.indptr[c + 1];
     let mut pred = model.w0;
     for k in row.clone() {
-        pred += model.w[x.indices[k]] * x.data[k];
+        pred += model.w[x.col(k)] * x.data[k];
     }
     for f in 0..n_factors {
         let v_f = &model.v[f * n_features..(f + 1) * n_features];
         let mut sum = 0.0;
         let mut sum_sqr = 0.0;
         for k in row.clone() {
-            let d = v_f[x.indices[k]] * x.data[k];
+            let d = v_f[x.col(k)] * x.data[k];
             sum += d;
             sum_sqr += d * d;
         }
@@ -115,12 +152,25 @@ fn update_w(csc: &Csc, e: &mut [f64], model: &mut Model, j: usize) {
     model.w[j] = new;
 }
 
-fn update_v(csc: &Csc, e: &mut [f64], q: &mut [f64], v_f: &mut [f64], j: usize, reg: f64) {
+/// `h` is the gradient weight of row `c` for feature `j`; both passes below need it, so
+/// it is computed once into `h_buf`. The second pass advances `q[c]`, but only after
+/// reading it, and a CSC column lists each row once, so the cached values are the ones
+/// the recomputing version produced.
+fn update_v(
+    csc: &Csc,
+    e: &mut [f64],
+    q: &mut [f64],
+    v_f: &mut [f64],
+    j: usize,
+    reg: f64,
+    h_buf: &mut [f64],
+) {
     let old = v_f[j];
     let mut mean = 0.0;
     let mut sigma_sqr = 0.0;
-    for (c, x) in csc.column(j) {
+    for (slot, (c, x)) in h_buf.iter_mut().zip(csc.column(j)) {
         let h = x * q[c] - x * x * old;
+        *slot = h;
         mean += h * e[c];
         sigma_sqr += h * h;
     }
@@ -133,8 +183,7 @@ fn update_v(csc: &Csc, e: &mut [f64], q: &mut [f64], v_f: &mut [f64], j: usize, 
         -mean / denominator
     };
     let delta = new - old;
-    for (c, x) in csc.column(j) {
-        let h = x * q[c] - x * x * old;
+    for (&h, (c, x)) in h_buf.iter().zip(csc.column(j)) {
         e[c] += h * delta;
         q[c] += x * delta;
     }
@@ -152,7 +201,7 @@ fn rmse(e: &[f64]) -> f64 {
 mod tests {
     use super::*;
 
-    type Design = (Vec<usize>, Vec<usize>, Vec<f64>, Vec<f64>, Vec<usize>);
+    type Design = (Vec<usize>, Vec<i64>, Vec<f64>, Vec<f64>, Vec<usize>);
 
     /// One-hot user-item design: users are features `0..3`, items `3..6`.
     fn one_hot() -> Design {
@@ -165,9 +214,9 @@ mod tests {
             (2, 2, 2.0),
         ];
         let mut indptr = vec![0];
-        let mut indices = Vec::new();
+        let mut indices: Vec<i64> = Vec::new();
         for &(u, i, _) in &pairs {
-            indices.extend([u, 3 + i]);
+            indices.extend([u as i64, 3 + i as i64]);
             indptr.push(indices.len());
         }
         let data = vec![1.0; indices.len()];
@@ -212,7 +261,7 @@ mod tests {
             .map(|c| {
                 w0 + indices[indptr[c]..indptr[c + 1]]
                     .iter()
-                    .map(|&j| w[j])
+                    .map(|&j| w[j as usize])
                     .sum::<f64>()
                     - y[c]
             })
@@ -220,7 +269,7 @@ mod tests {
         assert!((resid.iter().sum::<f64>() + reg * w0).abs() < 1e-9);
         for (j, &w_j) in w.iter().enumerate() {
             let grad: f64 = (0..y.len())
-                .filter(|&c| indices[indptr[c]..indptr[c + 1]].contains(&j))
+                .filter(|&c| indices[indptr[c]..indptr[c + 1]].contains(&(j as i64)))
                 .map(|c| resid[c])
                 .sum::<f64>()
                 + reg * w_j;

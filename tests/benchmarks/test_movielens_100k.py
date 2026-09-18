@@ -19,10 +19,12 @@ from skrecsys.metrics import (
 from skrecsys.recommendation import (
     EASE,
     AlternatingLeastSquares,
+    BayesianPersonalizedRanking,
     BM25Recommender,
     ItemKNNRecommender,
     MostPopularRecommender,
     RP3Beta,
+    SLIMElasticNet,
 )
 
 pytestmark = pytest.mark.benchmark
@@ -57,6 +59,14 @@ BENCHMARKS = {
     "RP3Beta": (
         RP3Beta(),
         {"ndcg": 0.262, "precision": 0.228, "hit_rate": 0.875, "map": 0.134, "mrr": 0.561},
+    ),
+    "BayesianPersonalizedRanking": (
+        BayesianPersonalizedRanking(random_state=0),
+        {"ndcg": 0.266, "precision": 0.234, "hit_rate": 0.876, "map": 0.138, "mrr": 0.549},
+    ),
+    "SLIMElasticNet": (
+        SLIMElasticNet(),
+        {"ndcg": 0.287, "precision": 0.243, "hit_rate": 0.876, "map": 0.154, "mrr": 0.609},
     ),
     # A rating predictor, not a top-N ranker: its ranking scores sit below popularity.
     "AlternatingLeastSquares": (

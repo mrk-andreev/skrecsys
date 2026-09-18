@@ -9,7 +9,7 @@ from sklearn.utils import check_random_state
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.recommendation._base import BaseRecommender
+from skrecsys.recommendation._base import BaseRecommender, kernel_indices
 
 
 class AlternatingLeastSquares(BaseRecommender):
@@ -108,7 +108,7 @@ class AlternatingLeastSquares(BaseRecommender):
         n_features = n_users + n_items
         coo = interactions.tocoo()
         n_cases = coo.nnz
-        indices = np.column_stack([coo.row, n_users + coo.col]).ravel().astype(np.int64)
+        indices = kernel_indices(np.column_stack([coo.row, n_users + coo.col]).ravel())
         indptr = np.arange(0, 2 * n_cases + 1, 2, dtype=np.int64)
         y = np.asarray(coo.data, dtype=np.float64)
         group = np.repeat(np.array([0, 1], dtype=np.int64), [n_users, n_items])
@@ -147,6 +147,20 @@ class AlternatingLeastSquares(BaseRecommender):
             + self.user_bias_[user_indices, None]
             + self.item_bias_[None, item_indices]
             + self.user_factors_[user_indices] @ self.item_factors_[item_indices].T
+        )
+
+    @override
+    def _score_pairs(
+        self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
+    ) -> NDArray[np.floating]:
+        factors = np.einsum(
+            "ij,ij->i", self.user_factors_[user_indices], self.item_factors_[item_indices]
+        )
+        return (
+            self.global_bias_
+            + self.user_bias_[user_indices]
+            + self.item_bias_[item_indices]
+            + factors
         )
 
     def _check_params(self) -> None:

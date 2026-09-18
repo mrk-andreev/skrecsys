@@ -8,29 +8,76 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use rayon::prelude::*;
-
 use crate::sparse::{Accumulator, Csc, Csr, CsrOwned};
 
 /// Return the top `k` entries of every row of `w^T w`, where `w` has users as rows
 /// and items as columns. Rows are computed in parallel on the current rayon pool.
 pub fn all_pairs_top_k(w: &Csr, k: usize) -> CsrOwned {
     let items = Csc::from_csr(w);
-    let rows: Vec<Vec<(usize, f64)>> = (0..w.n_cols)
-        .into_par_iter()
-        .map_init(
-            || Accumulator::new(w.n_cols),
-            |acc, i| {
-                for (u, w1) in items.column(i) {
-                    for p in w.indptr[u]..w.indptr[u + 1] {
-                        acc.add(w.indices[p], w.data[p] * w1);
-                    }
+    CsrOwned::build(
+        w.n_cols,
+        || (Accumulator::new(w.n_cols), BinaryHeap::with_capacity(k + 1)),
+        |(acc, heap), i, out| {
+            for (u, w1) in items.column(i) {
+                for p in w.indptr[u]..w.indptr[u + 1] {
+                    acc.add(w.col(p), w.data[p] * w1);
                 }
-                drain_top_k(acc, k)
-            },
-        )
-        .collect();
-    CsrOwned::from_rows(rows)
+            }
+            drain_top_k(acc, heap, k, out);
+        },
+    )
+}
+
+/// Top `k` cosine neighbours of every item, the diagonal excluded.
+///
+/// `w` has users as rows and items as columns and `norms[j]` is the Euclidean norm of
+/// its column `j`, so entry `(i, j)` is `<w_i, w_j> / (norms[i] * norms[j] + shrink)`.
+///
+/// The shrinkage denominator does not factor into a per-row and a per-column scale, so
+/// unlike [`crate::rp3beta::similarity`] this cannot be expressed as a scaled walk and
+/// applies the divisor per pair. Pairs whose co-occurrence is exactly zero are dropped
+/// before the division, which is also what keeps an item nobody interacted with -- whose
+/// norm is zero -- from dividing by zero when `shrink` is zero.
+///
+/// Ties are broken by ascending item index, and rows are computed in parallel on the
+/// current rayon pool.
+pub fn cosine_top_k(w: &Csr, norms: &[f64], shrink: f64, k: usize) -> CsrOwned {
+    let n = w.n_cols;
+    let items = Csc::from_csr(w);
+    CsrOwned::build(
+        n,
+        || Accumulator::new(n),
+        |acc, i, out| {
+            for (u, w1) in items.column(i) {
+                for p in w.indptr[u]..w.indptr[u + 1] {
+                    acc.add(w.col(p), w.data[p] * w1);
+                }
+            }
+            // The candidates are gathered straight into the output buffer and cut down
+            // in place, so a row of them never gets an allocation of its own.
+            let before = out.len();
+            out.extend(
+                acc.touched()
+                    .iter()
+                    .filter(|&&j| j != i && acc.get(j) != 0.0)
+                    .map(|&j| (j, acc.get(j) / (norms[i] * norms[j] + shrink))),
+            );
+            acc.reset();
+            keep_best(out, before, k);
+        },
+    )
+}
+
+/// Cut `out[from..]` down to its `k` best entries, sorted by column.
+///
+/// Ties go to the lower column index, and partitioning alone leaves the `k` best first
+/// in no particular order, so the kept entries are sorted afterwards.
+pub(crate) fn keep_best(out: &mut Vec<(usize, f64)>, from: usize, k: usize) {
+    if out.len() - from > k {
+        out[from..].select_nth_unstable_by(k, |a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        out.truncate(from + k);
+    }
+    out[from..].sort_unstable_by_key(|&(j, _)| j);
 }
 
 /// Select the top `k` accumulated entries, sorted by index, and reset the accumulator.
@@ -39,8 +86,13 @@ pub fn all_pairs_top_k(w: &Csr, k: usize) -> CsrOwned {
 /// candidates arrive in reverse first-touch order. A candidate enters when fewer than
 /// `k` are kept or its score beats the smallest kept score; the evicted entry is the
 /// smallest `(score, index)` pair.
-fn drain_top_k(acc: &mut Accumulator, k: usize) -> Vec<(usize, f64)> {
-    let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::with_capacity(k + 1);
+fn drain_top_k(
+    acc: &mut Accumulator,
+    heap: &mut BinaryHeap<Reverse<Entry>>,
+    k: usize,
+    out: &mut Vec<(usize, f64)>,
+) {
+    heap.clear();
     for &index in acc.touched().iter().rev() {
         let score = acc.get(index);
         let admit = match heap.peek() {
@@ -57,12 +109,9 @@ fn drain_top_k(acc: &mut Accumulator, k: usize) -> Vec<(usize, f64)> {
     }
     acc.reset();
 
-    let mut kept: Vec<(usize, f64)> = heap
-        .into_iter()
-        .map(|Reverse(e)| (e.index, e.score))
-        .collect();
-    kept.sort_unstable_by_key(|&(index, _)| index);
-    kept
+    let before = out.len();
+    out.extend(heap.drain().map(|Reverse(e)| (e.index, e.score)));
+    out[before..].sort_unstable_by_key(|&(index, _)| index);
 }
 
 /// `std::pair<double, int>` ordering: by score, then by index.
@@ -132,6 +181,95 @@ mod tests {
         assert_eq!(row(&result, 0), vec![(2, 1.0)]);
         let result = all_pairs_top_k(&w.csr(), 2);
         assert_eq!(row(&result, 0), vec![(1, 1.0), (2, 1.0)]);
+    }
+
+    /// The dense cosine matrix the Python implementation built before this kernel: the
+    /// co-occurrence divided by the shrunk product of the column norms, diagonal dropped.
+    fn dense_cosine(dense: &[Vec<f64>], shrink: f64) -> Vec<Vec<f64>> {
+        let n = dense[0].len();
+        let norms: Vec<f64> = (0..n)
+            .map(|j| dense.iter().map(|r| r[j] * r[j]).sum::<f64>().sqrt())
+            .collect();
+        (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| {
+                        let cooc: f64 = dense.iter().map(|r| r[i] * r[j]).sum();
+                        if i == j || cooc == 0.0 {
+                            0.0
+                        } else {
+                            cooc / (norms[i] * norms[j] + shrink)
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn norms_of(dense: &[Vec<f64>]) -> Vec<f64> {
+        (0..dense[0].len())
+            .map(|j| dense.iter().map(|r| r[j] * r[j]).sum::<f64>().sqrt())
+            .collect()
+    }
+
+    #[test]
+    fn cosine_matches_the_dense_definition() {
+        let dense = pseudo_random_dense(40, 10);
+        let norms = norms_of(&dense);
+        for shrink in [0.0, 5.0] {
+            let want = dense_cosine(&dense, shrink);
+            let got = cosine_top_k(&Owned::from_dense(&dense).csr(), &norms, shrink, 10);
+            for (i, want_row) in want.iter().enumerate() {
+                for (j, value) in row(&got, i) {
+                    assert!(i != j, "the diagonal must be dropped");
+                    assert!(
+                        (value - want_row[j]).abs() < 1e-9,
+                        "({i}, {j}) shrink={shrink}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cosine_breaks_ties_by_ascending_index() {
+        // Items 1 and 2 are indistinguishable from item 0's point of view, so the lower
+        // index wins, which is what a stable argsort on descending score used to give.
+        let w = Owned::from_dense(&[vec![1.0, 1.0, 1.0]]);
+        let norms = vec![1.0, 1.0, 1.0];
+        let got = cosine_top_k(&w.csr(), &norms, 0.0, 1);
+        assert_eq!(row(&got, 0), vec![(1, 1.0)]);
+    }
+
+    #[test]
+    fn cosine_leaves_an_unseen_item_empty() {
+        // Item 2 has no interactions, so its norm is zero; it must not divide by zero.
+        let dense = vec![vec![1.0, 1.0, 0.0], vec![1.0, 0.0, 0.0]];
+        let norms = norms_of(&dense);
+        assert_eq!(norms[2], 0.0);
+        let got = cosine_top_k(&Owned::from_dense(&dense).csr(), &norms, 0.0, 5);
+        assert_eq!(row(&got, 2), vec![]);
+        for (_, value) in row(&got, 0) {
+            assert!(value.is_finite());
+        }
+    }
+
+    #[test]
+    fn cosine_thread_count_does_not_change_the_result() {
+        let dense = pseudo_random_dense(200, 80);
+        let w = Owned::from_dense(&dense);
+        let norms = norms_of(&dense);
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool")
+                .install(|| cosine_top_k(&w.csr(), &norms, 1.5, 7))
+        };
+        let (a, b) = (run(1), run(4));
+        assert_eq!(a.indptr, b.indptr);
+        assert_eq!(a.indices, b.indices);
+        assert_eq!(a.data, b.data);
     }
 
     #[test]

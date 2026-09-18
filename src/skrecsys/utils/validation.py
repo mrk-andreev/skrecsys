@@ -6,9 +6,12 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import check_array, check_consistent_length
 
-__all__ = ["check_ids", "check_interactions", "encode_ids"]
+from skrecsys import _core
+
+__all__ = ["check_ids", "check_interactions", "encode_ids", "factorize"]
 
 _N_COLUMNS = 2
+_INT64_BYTES = 8
 
 
 def check_interactions(
@@ -57,6 +60,43 @@ def check_ids(ids: ArrayLike, *, name: str = "X") -> NDArray[Any]:
     if arr.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional array of identifiers.")
     return arr
+
+
+def factorize(values: NDArray[Any]) -> tuple[NDArray[Any], NDArray[np.intp]]:
+    """Sorted distinct identifiers, and the position of each value among them.
+
+    What ``np.unique(values, return_inverse=True)`` returns, but that argsorts every
+    interaction. Identifiers repeat heavily, so the distinct ones are found first and
+    only those are sorted: a native pass for integers, a dictionary for the Python
+    objects that ``np.unique`` would have to sort with ``<`` one pair at a time.
+    """
+    kind = values.dtype.kind
+    if kind == "i" or (kind == "u" and values.dtype.itemsize < _INT64_BYTES):
+        uniques, codes = _core.factorize(np.ascontiguousarray(values, dtype=np.int64))
+        return uniques.astype(values.dtype, copy=False), codes.astype(np.intp, copy=False)
+    if kind == "O":
+        try:
+            return _factorize_objects(values)
+        except TypeError:
+            # Unhashable or mutually incomparable identifiers; numpy raises its own way.
+            pass
+    return np.unique(values, return_inverse=True)
+
+
+def _factorize_objects(values: NDArray[Any]) -> tuple[NDArray[Any], NDArray[np.intp]]:
+    """Factorize an object array by hashing, then sort only the distinct values."""
+    seen: dict[Any, int] = {}
+    for value in values:
+        if value not in seen:
+            seen[value] = len(seen)
+    order = sorted(seen)
+    rank = np.empty(len(order), dtype=np.intp)
+    for position, value in enumerate(order):
+        rank[seen[value]] = position
+    codes = np.fromiter((seen[value] for value in values), dtype=np.intp, count=len(values))
+    uniques = np.empty(len(order), dtype=object)
+    uniques[:] = order
+    return uniques, rank[codes]
 
 
 def encode_ids(ids: NDArray[Any], fitted_ids: NDArray[Any], *, name: str) -> NDArray[np.intp]:

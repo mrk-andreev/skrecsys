@@ -34,7 +34,7 @@ pub fn gram(w: &Csr) -> Vec<f64> {
     g.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
         for (u, w1) in items.column(i) {
             for p in w.indptr[u]..w.indptr[u + 1] {
-                row[w.indices[p]] += w.data[p] * w1;
+                row[w.col(p)] += w.data[p] * w1;
             }
         }
     });

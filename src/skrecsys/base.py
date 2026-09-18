@@ -3,6 +3,7 @@
 from typing import Any
 
 import numpy as np
+import scipy.sparse as sp
 from numpy.typing import ArrayLike, NDArray
 from sklearn.utils import get_tags
 from sklearn.utils.validation import check_is_fitted
@@ -36,14 +37,16 @@ class RecommenderMixin:
 
     def _score_queries(
         self, X: ArrayLike, item_indices: NDArray[np.intp], *, exclude_seen: bool
-    ) -> tuple[NDArray[np.floating], NDArray[np.bool_]]:
+    ) -> tuple[NDArray[np.floating], sp.csr_array]:
         """Score ``item_indices`` for each query.
 
         Returns
         -------
         scores : ndarray of shape (n_queries, len(item_indices))
-        eligible : ndarray of bool of shape (n_queries, len(item_indices))
-            False for items that must not be recommended to the query.
+        excluded : scipy.sparse.csr_array of shape (n_queries, len(item_indices))
+            Stored positions must not be recommended to the query. Sparse rather than a
+            dense mask because the exclusions are the queries' own interactions, which
+            are a vanishing fraction of the catalog.
         """
         raise NotImplementedError
 
@@ -104,18 +107,76 @@ class RecommenderMixin:
             candidate_ids = check_ids(candidates, name="candidates")
             item_indices = np.unique(encode_ids(candidate_ids, item_ids, name="item"))
 
-        scores, eligible = self._score_queries(X, item_indices, exclude_seen=exclude_seen)
+        # Queries are ranked in blocks: whatever a block scores is reduced to k columns
+        # before the next one starts, so peak memory follows the block, not the query.
+        queries = check_ids(X)
+        size = self._rank_chunk_size(len(item_indices))
+        items = np.empty((len(queries), n_recommendations), dtype=item_ids.dtype)
+        top_scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
+        for start in range(0, len(queries), size):
+            stop = min(start + size, len(queries))
+            order, scores = self._rank_queries(
+                queries[start:stop],
+                item_indices,
+                n_recommendations,
+                exclude_seen=exclude_seen,
+                first_query=start,
+            )
+            items[start:stop] = item_ids[item_indices[order]]
+            top_scores[start:stop] = scores
+        return items, top_scores
+
+    def _rank_chunk_size(self, n_candidates: int) -> int:
+        """Queries ranked per block, holding the dense score matrix near 64 MB."""
+        return max(1, min(8_000_000 // max(n_candidates, 1), 8192))
+
+    def _rank_queries(
+        self,
+        queries: NDArray[Any],
+        item_indices: NDArray[np.intp],
+        k: int,
+        *,
+        exclude_seen: bool,
+        first_query: int,
+    ) -> tuple[NDArray[np.int64], NDArray[np.floating]]:
+        """Return the ``k`` best candidate positions of each query, and their scores.
+
+        ``first_query`` is the position of ``queries[0]`` among all the queries, so that
+        an error names the query the caller asked about. Estimators that can rank without
+        a dense score matrix override this.
+        """
+        scores, excluded = self._score_queries(queries, item_indices, exclude_seen=exclude_seen)
+        excluded.sort_indices()
+        check_enough_eligible(excluded, len(item_indices), k, first_query)
 
         # Selecting k of n beats sorting all n. The kernel ranks by descending score and
         # breaks ties by column index, which is fitted item order because item_indices is
-        # sorted; it raises if a query has fewer than n_recommendations eligible items.
+        # sorted.
         order = _core.top_k_per_row(
             np.ascontiguousarray(scores, dtype=np.float64),
-            np.ascontiguousarray(eligible),
-            n_recommendations,
+            np.ascontiguousarray(excluded.indptr, dtype=np.int64),
+            np.ascontiguousarray(excluded.indices, dtype=np.int64),
+            k,
         )
-        top_scores = np.take_along_axis(scores, order, axis=1)
-        return item_ids[item_indices[order]], top_scores
+        return order, np.take_along_axis(scores, order, axis=1)
+
+
+def check_enough_eligible(
+    excluded: sp.csr_array, n_candidates: int, k: int, first_query: int
+) -> None:
+    """Raise if a query has fewer than ``k`` candidates left once its exclusions go.
+
+    The kernels check this too, but only they know the row within the block; the count
+    is exact here because the exclusions are candidate positions, each stored once.
+    """
+    available = n_candidates - np.diff(excluded.indptr)
+    short = np.flatnonzero(available < k)
+    if short.size:
+        row = int(short[0])
+        raise ValueError(
+            f"Cannot recommend {k} items: query {row + first_query} has only "
+            f"{available[row]} eligible items."
+        )
 
 
 def is_recommender(estimator: object) -> bool:
