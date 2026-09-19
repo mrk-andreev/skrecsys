@@ -22,13 +22,21 @@ __all__ = [
 ]
 
 
+#: ``y_pred`` is laid out as (n_queries, n_ranked).
+_RANKED_NDIM = 2
+
+
+def _check_two_dimensional(y_pred: NDArray[Any]) -> None:
+    if y_pred.ndim != _RANKED_NDIM:
+        raise ValueError(f"y_pred must be two-dimensional, got shape {y_pred.shape}.")
+
+
 def _check_ranking(
     y_true: Sequence[Collection[Any]], y_pred: ArrayLike, k: int | None
 ) -> tuple[NDArray[np.bool_], NDArray[np.intp], int]:
     """Return the (n_queries, k) hit matrix, relevant counts and effective k."""
     ranked = np.asarray(y_pred)
-    if ranked.ndim != 2:  # noqa: PLR2004
-        raise ValueError(f"y_pred must be two-dimensional, got shape {ranked.shape}.")
+    _check_two_dimensional(ranked)
     if len(y_true) != ranked.shape[0]:
         raise ValueError(
             f"y_true and y_pred have inconsistent numbers of queries: "

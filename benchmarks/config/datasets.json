@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "datasets": {
+    "movielens-100k": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "caption": "MovieLens 100K, official `{subset}` split"
+    },
+    "amazon-books": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "caption": "Amazon Books (`amzn-books-l50`), `{subset}` split",
+      "max_eval_users": 10000
+    },
+    "movielens-1m": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {"max_sequence_length": 200},
+      "caption": "MovieLens 1M (`ml-1m-l{max_sequence_length}`), `{subset}` split"
+    }
+  }
+}

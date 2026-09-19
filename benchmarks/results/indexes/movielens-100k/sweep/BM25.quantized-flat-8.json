@@ -1,0 +1,230 @@
+{
+  "key": "62fd69a12df79c23",
+  "unit": "indexes/movielens-100k/BM25/quantized-flat-8/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:56:50+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BM25Recommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "BM25",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2661",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "BM25",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "7 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "1,426,582"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "recall@10": "0.9984",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "-0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "-0.0006"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "fit": "7 ms",
+          "build": "0 ms",
+          "build %fit": "1.3%",
+          "index MB": "0.0",
+          "vectors MB": "0.6",
+          "rank median": "19 ms",
+          "rank q95": "19 ms",
+          "speedup": "0.04x",
+          "users/s": "50,091"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "fit": "7 ms",
+          "build": "0 ms",
+          "build %fit": "1.3%",
+          "index MB": "0.0",
+          "vectors MB": "0.6",
+          "rank median": "20 ms",
+          "rank q95": "21 ms",
+          "speedup": "0.03x",
+          "users/s": "46,140"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "fit": "7 ms",
+          "build": "0 ms",
+          "build %fit": "1.3%",
+          "index MB": "0.0",
+          "vectors MB": "0.6",
+          "rank median": "23 ms",
+          "rank q95": "24 ms",
+          "speedup": "0.03x",
+          "users/s": "40,681"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "fit": "7 ms",
+          "build": "0 ms",
+          "build %fit": "1.3%",
+          "index MB": "0.0",
+          "vectors MB": "0.6",
+          "rank median": "28 ms",
+          "rank q95": "28 ms",
+          "speedup": "0.02x",
+          "users/s": "34,210"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "fit": "7 ms",
+          "build": "0 ms",
+          "build %fit": "1.3%",
+          "index MB": "0.0",
+          "vectors MB": "0.6",
+          "rank median": "33 ms",
+          "rank q95": "33 ms",
+          "speedup": "0.02x",
+          "users/s": "28,663"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "models_from": "leaderboard",
+  "settings": {
+    "k": 10,
+    "repeat": 5,
+    "rank_repeat": 1000,
+    "budget": 20.0,
+    "warmup": {"fit": 1, "rank": 10},
+    "latency_batch": [1, 10, 100, 1000],
+    "latency_repeat": 5,
+    "catalog_scale": [0.05, 0.1, 0.25, 0.5, 1.0]
+  },
+  "datasets": {
+    "movielens-100k": {},
+    "amazon-books": {
+      "settings": {
+        "rank_repeat": 50,
+        "budget": 60.0,
+        "warmup": {"fit": 1, "rank": 2},
+        "catalog_scale": []
+      },
+      "dials": {"hnsw": [32, 64, 128]},
+      "skip": {
+        "EASE": "a dense 674k x 674k item matrix does not fit in memory",
+        "SLIM": "one elastic net per item over a 674k-item catalog does not finish",
+        "SimpleX": "one training epoch of 7.4M interactions runs over an hour on CPU",
+        "XSimGCL": "one training epoch of 7.4M interactions runs over an hour on CPU"
+      }
+    }
+  },
+  "models": ["SLIM", "EASE", "RP3Beta", "BPR", "BM25", "ItemKNN", "ALS", "SimpleX", "XSimGCL"],
+  "indexes": [
+    {
+      "name": "hnsw",
+      "label": "hnsw(m=16,efc=200)",
+      "short": "hnsw",
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {"m": 16, "ef_construction": 200, "min_index_size": 1},
+      "dial": {"param": "ef_search", "label": "ef", "values": [16, 32, 64, 128, 256]},
+      "version": "v1",
+      "comment": "Qdrant-style navigable small-world graph; min_index_size lowered to measure the graph, not the fallback"
+    },
+    {
+      "name": "quantized-flat-8",
+      "label": "quantized-flat(bits=8)",
+      "short": "q8",
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {"bits": 8, "min_index_size": 1},
+      "dial": {"param": "oversample", "label": "ov", "values": [1, 2, 4, 8, 16]},
+      "version": "v2",
+      "comment": "v2: query-tiled scan kernel (v1 scanned one query at a time)"
+    },
+    {
+      "name": "quantized-flat-4",
+      "label": "quantized-flat(bits=4)",
+      "short": "q4",
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {"bits": 4, "min_index_size": 1},
+      "dial": {"param": "oversample", "label": "ov", "values": [1, 2, 4, 8, 16]},
+      "version": "v2",
+      "comment": "v2: query-tiled scan kernel (v1 scanned one query at a time)"
+    }
+  ]
+}

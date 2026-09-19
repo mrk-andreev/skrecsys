@@ -1,0 +1,119 @@
+{#-
+  How the README says what the benchmarks found: one macro per kind of block.
+
+  Python measures and stores facts -- rows, settings, the host, what was skipped -- and
+  these macros are the only place those facts become sentences. Each macro takes the
+  block dict that `suite.blocks()` builds and returns Markdown with no trailing newline,
+  so the template around it decides the spacing.
+
+  Every paragraph of output is one line, as the README has always had them; that is why
+  some lines here are long.
+-#}
+
+{% macro thousands(value) %}{{ "{:,}".format(value) }}{% endmacro %}
+
+{#- A sentence fragment, empty unless the dataset scores a sample of its users. -#}
+{% macro sampled(b) %}{% if b.dataset.max_eval_users is not none %} Scored on a fixed random sample of {{ thousands(b.dataset.max_eval_users) }} held-out users.{% endif %}{% endmacro %}
+
+{#- A sentence fragment, empty unless the dataset leaves models out. -#}
+{% macro left_out(b) %}{% if b.skip %} Not run: {% for name, reason in b.skip.items() %}{{ name }} ({{ reason }}){{ "; " if not loop.last else "" }}{% endfor %}.{% endif %}{% endmacro %}
+
+{% macro facts(h) %}{{ h.cpu }} ({% if h.cores %}{{ h.cores }} usable cores{% else %}unknown core count{% endif %}), {{ h.platform }}, {{ h.python }}, numpy {{ h.numpy }}, skrecsys {{ h.skrecsys }}, `_core` built in {{ h.build }} mode{% endmacro %}
+
+{% macro device(h) %}{% if h.get("device") %} The sequential models ran with `device="auto"`, which resolved to {{ h.device.device }} on this host (torch {{ h.device.torch }}); every other model is CPU only.{% endif %}{% endmacro %}
+
+{#-
+  Where the rows were timed. One run names one host, as the README always has; rows
+  re-measured separately can come from different machines, and then the block says
+  which ran where, since a timing only compares against one taken on the same host.
+-#}
+{% macro hosts(b) -%}
+{%- if b.hosts | length == 1 -%}
+Measured on {{ facts(b.hosts[0].facts) }}. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.{{ device(b.hosts[0].facts) }}
+{%- else -%}
+Measured on more than one host, so compare timings only between rows that share one. {% for group in b.hosts %}{{ group.models | join(", ") }}: {{ facts(group.facts) }}.{{ device(group.facts) }} {% endfor %}The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+{%- endif -%}
+{%- endmacro %}
+
+{% macro timing(s) %}Wall clock per call. Each operation is sampled until it has spent {{ "{:.0f}".format(s.budget) }}s or reached its cap ({{ s.repeat }} fits, {{ s.rank_repeat }} `recommend` calls), after untimed warm-up calls ({{ s.warmup.fit }} fit, {{ s.warmup.rank }} rank) so that no sample pays for a cold start; the `samples` columns say how many each row actually got, which is why a slow model shows fewer. The batch columns say what a single call processed: one fit covers the whole training split, and one `recommend` call ranks the entire catalog for every held-out user at once, so these are throughput numbers rather than single-request latency. Fit reports the spread a handful of samples can resolve; ranking is sampled often enough for nearest-rank quantiles, each of which is a call that really happened. Compare `min` across machines and watch `max` for the variance a run saw.{% endmacro %}
+
+{#- A paragraph each for what has no result and what has an outdated one; empty when neither. -#}
+{% macro rows_notes(b) %}{% if b.missing %}
+
+Not yet measured: {{ b.missing | join(", ") }}.{% endif %}{% if b.stale %}
+
+Measured under an earlier version of its config entry, and due a re-run: {{ b.stale | join(", ") }}.{% endif %}{% endmacro %}
+
+{% macro index_list(groups, total) %}{% for group in groups %}{{ group.index }} for {% if group.models | length == total %}every model{% else %}{{ group.models | join(", ") }}{% endif %}{{ "; " if not loop.last else "" }}{% endfor %}{% endmacro %}
+
+{% macro index_notes(b) %}{% if b.missing %}
+
+Not yet measured: {{ index_list(b.missing, b.total_models) }}.{% endif %}{% if b.stale %}
+
+Measured under an earlier version of the index, and due a re-run: {{ index_list(b.stale, b.total_models) }}.{% endif %}{% endmacro %}
+
+{#- ---------------------------------------------------------------- blocks -#}
+
+{#-
+  A block with no results yet -- a dataset just added to a config -- is its caption and
+  the note that says nothing has been measured, and no empty tables.
+-#}
+{% macro leaderboard(b) -%}
+{{ b.dataset.title() }}, k={{ b.settings.k }}, default hyper-parameters.{{ sampled(b) }}{{ left_out(b) }} Regenerate with `{{ b.command }}`.{{ rows_notes(b) }}
+{%- if b.quality %}
+
+{{ b.quality | table }}
+
+{{ hosts(b) }}
+
+{{ timing(b.settings) }}
+
+{{ b.timing | table }}
+{%- endif %}
+{%- endmacro %}
+
+{% macro sequential(b) -%}
+{{ b.dataset.title() }}, default hyper-parameters. Each user's last interaction is held out and ranked against the whole catalog, with the items they already saw removed.{{ left_out(b) }} Regenerate with `{{ b.command }}`.{{ rows_notes(b) }}
+{%- if b.quality %}
+
+{{ b.quality | table }}
+
+{{ hosts(b) }}
+
+{{ timing(b.settings) }}
+
+{{ b.timing | table }}
+{%- endif %}
+{%- endmacro %}
+
+{% macro index_caption(b) %}{% set k = b.settings.k %}The `exact` row of each model is the baseline every delta in its block is measured against. `recall@{{ k }}` is agreement with that exact model, not with the truth, which is why `dNDCG@{{ k }}` is beside it: recall counts items the index missed, and `dNDCG@{{ k }}` says whether missing them cost anything. The `dial` column names the query-time width each row was measured at: `ef` is HNSW's candidate list and `ov` is the quantized scan's shortlist, in multiples of `k`. Those two are not comparable to each other -- they are each index's own recall-for-latency knob, and only the columns either side of them are. The quantized rows' scores are always exact, because the shortlist is rescored with the original vectors before anything is returned: their `score gap@1` moves only when the shortlist missed the true best item, never because a number was dequantized. A `speedup` below `1.00x` means the index costs more than it saves. This is expected for neighbourhood models, whose exact path is an inverted-index scan that only touches items a user's history reaches.{% if b.n_items is not none and b.n_items < b.min_index_size %} This catalog holds {{ thousands(b.n_items) }} items, which is below the default `min_index_size` of {{ thousands(b.min_index_size) }}, so a model configured with `index="hnsw"` would have taken the exact path here and the rows below would not exist. The benchmark lowers that floor to measure the index itself; a `speedup` under `1.00x` on a catalog this small is the reason the default floor exists.{% endif %}{% endmacro %}
+
+{% macro indexes(b) -%}
+{{ b.dataset.title() }}, `k={{ b.settings.k }}`, default hyper-parameters.{{ sampled(b) }}{{ left_out(b) }} Regenerate with `{{ b.command }}`.{{ index_notes(b) }}
+{%- if b.quality %}
+
+**What the index costs in answers**
+
+{{ b.quality | table }}
+
+**What it costs to build, hold and search**
+
+{{ b.cost | table }}
+{%- if b.latency %}
+
+**What one request costs**
+
+{{ b.latency | table }}
+{%- endif %}
+{%- if b.scaling %}
+
+**How ranking time answers to the size of the catalog**
+
+{{ b.scaling | table }}
+{%- endif %}
+
+{{ hosts(b) }}
+
+{{ index_caption(b) }}
+{%- endif %}
+{%- endmacro %}

@@ -1,0 +1,72 @@
+{
+  "key": "f31a1378b48062dd",
+  "unit": "leaderboard/amazon-books/MostPopular",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:23:59+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 50,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "MostPopularRecommender",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "MostPopular",
+      "NDCG@10": "0.0037",
+      "P@10": "0.0008",
+      "R@10": "0.0079",
+      "hit rate": "0.0079",
+      "MAP": "0.0025",
+      "MRR": "0.0025",
+      "cat cov": "0.0000",
+      "user cov": "1.0000",
+      "mean pop": "4092.8595",
+      "novelty": "10.99"
+    },
+    "timing": {
+      "Model": "MostPopular",
+      "fit batch (interactions)": "7374280",
+      "fit samples": "5",
+      "fit min": "132 ms",
+      "fit median": "133 ms",
+      "fit max": "137 ms",
+      "rank batch (users x items)": "10000 x 660940",
+      "rank samples": "50",
+      "rank mean": "595 ms",
+      "rank median": "595 ms",
+      "rank q95": "610 ms",
+      "rank q99": "627 ms"
+    }
+  }
+}

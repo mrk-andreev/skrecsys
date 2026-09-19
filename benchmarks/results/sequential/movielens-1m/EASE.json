@@ -1,0 +1,79 @@
+{
+  "key": "018601644f01e668",
+  "unit": "sequential/movielens-1m/EASE",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T11:28:08+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release",
+    "device": {
+      "device": "MPS",
+      "torch": "2.14.0"
+    }
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "sequential",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "cutoffs": [
+        10,
+        50,
+        200
+      ],
+      "repeat": 1,
+      "rank_repeat": 5,
+      "budget": 30.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 1
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "EASE",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "EASE",
+      "HR@10": "0.0892",
+      "NDCG@10": "0.0437",
+      "HR@50": "0.2520",
+      "NDCG@50": "0.0788",
+      "HR@200": "0.4917",
+      "NDCG@200": "0.1150",
+      "cat cov@10": "0.3738"
+    },
+    "timing": {
+      "Model": "EASE",
+      "fit batch (interactions)": "656566",
+      "fit samples": "1",
+      "fit min": "239 ms",
+      "fit median": "239 ms",
+      "fit max": "239 ms",
+      "rank batch (users x items)": "6040 x 3646",
+      "rank samples": "5",
+      "rank mean": "83 ms",
+      "rank median": "83 ms",
+      "rank q95": "84 ms",
+      "rank q99": "84 ms"
+    }
+  }
+}

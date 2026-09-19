@@ -9,9 +9,21 @@ from sklearn.utils import get_tags
 from sklearn.utils.validation import check_is_fitted
 
 from skrecsys import _core
-from skrecsys.utils.validation import check_ids, encode_ids
+from skrecsys.utils.validation import (
+    check_ids,
+    check_interactions,
+    encode_ids,
+    factorize,
+    lookup_ids,
+)
 
-__all__ = ["RecommenderMixin", "is_recommender"]
+__all__ = [
+    "RecommenderMixin",
+    "excluded_among",
+    "is_recommender",
+    "seen_among",
+    "supports_partial_fit",
+]
 
 
 class RecommenderMixin:
@@ -57,6 +69,7 @@ class RecommenderMixin:
         n_recommendations: int = 10,
         candidates: ArrayLike | None = None,
         exclude_seen: bool = True,
+        exclude_interactions: ArrayLike | None = None,
     ) -> tuple[NDArray[Any], NDArray[np.floating]]:
         """Return recommended item identifiers and their scores.
 
@@ -75,6 +88,15 @@ class RecommenderMixin:
 
         exclude_seen : bool, default=True
             Whether to remove items observed for the query during ``fit``.
+
+        exclude_interactions : array-like of shape (n_interactions, 2), default=None
+            Further user-item pairs that must not be recommended, laid out like the
+            ``X`` of ``fit``: ``[:, 0]`` names a query, ``[:, 1]`` an item. Each pair
+            removes its item from every query in ``X`` equal to its user, on top of
+            ``exclude_seen`` and independently of it. Pairs whose user is not among the
+            queries, or whose item the model does not know, are ignored, so the events a
+            user produced since the model was fitted can be passed as they are -- the
+            same rows a later ``partial_fit`` would take.
 
         Returns
         -------
@@ -110,7 +132,12 @@ class RecommenderMixin:
         # Queries are ranked in blocks: whatever a block scores is reduced to k columns
         # before the next one starts, so peak memory follows the block, not the query.
         queries = check_ids(X)
-        size = self._rank_chunk_size(len(item_indices))
+        excluded = (
+            None
+            if exclude_interactions is None
+            else excluded_among(queries, exclude_interactions, item_ids, item_indices)
+        )
+        size = self._rank_chunk_size(len(item_indices), n_recommendations)
         items = np.empty((len(queries), n_recommendations), dtype=item_ids.dtype)
         top_scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
         for start in range(0, len(queries), size):
@@ -120,14 +147,21 @@ class RecommenderMixin:
                 item_indices,
                 n_recommendations,
                 exclude_seen=exclude_seen,
+                excluded=None if excluded is None else excluded[start:stop],
                 first_query=start,
             )
             items[start:stop] = item_ids[item_indices[order]]
             top_scores[start:stop] = scores
         return items, top_scores
 
-    def _rank_chunk_size(self, n_candidates: int) -> int:
-        """Queries ranked per block, holding the dense score matrix near 64 MB."""
+    def _rank_chunk_size(self, n_candidates: int, k: int) -> int:
+        """Queries ranked per block, holding the dense score matrix near 64 MB.
+
+        ``k`` is unused here and is passed because an estimator that ranks without a
+        dense matrix sizes its blocks by what it *does* build, which can depend on how
+        many items each query asks for.
+        """
+        del k
         return max(1, min(8_000_000 // max(n_candidates, 1), 8192))
 
     def _rank_queries(
@@ -137,16 +171,43 @@ class RecommenderMixin:
         k: int,
         *,
         exclude_seen: bool,
+        excluded: sp.csr_array | None = None,
         first_query: int,
     ) -> tuple[NDArray[np.int64], NDArray[np.floating]]:
         """Return the ``k`` best candidate positions of each query, and their scores.
 
-        ``first_query`` is the position of ``queries[0]`` among all the queries, so that
-        an error names the query the caller asked about. Estimators that can rank without
-        a dense score matrix override this.
+        The one place ``recommend`` reaches for a ranking, and therefore the place an
+        approximate index gets to intervene: :class:`skrecsys.indexing.VectorIndexMixin`
+        overrides this and falls back to ``_rank_queries_exact``.
         """
-        scores, excluded = self._score_queries(queries, item_indices, exclude_seen=exclude_seen)
-        excluded.sort_indices()
+        return self._rank_queries_exact(
+            queries,
+            item_indices,
+            k,
+            exclude_seen=exclude_seen,
+            excluded=excluded,
+            first_query=first_query,
+        )
+
+    def _rank_queries_exact(
+        self,
+        queries: NDArray[Any],
+        item_indices: NDArray[np.intp],
+        k: int,
+        *,
+        exclude_seen: bool,
+        excluded: sp.csr_array | None = None,
+        first_query: int,
+    ) -> tuple[NDArray[np.int64], NDArray[np.floating]]:
+        """Rank by scoring every candidate, exactly.
+
+        ``excluded`` holds, per query, further candidate positions to skip beyond what
+        ``exclude_seen`` removes. ``first_query`` is the position of ``queries[0]`` among
+        all the queries, so that an error names the query the caller asked about.
+        Estimators that can rank without a dense score matrix override this.
+        """
+        scores, seen = self._score_queries(queries, item_indices, exclude_seen=exclude_seen)
+        excluded = union_of_exclusions(seen, excluded)
         check_enough_eligible(excluded, len(item_indices), k, first_query)
 
         # Selecting k of n beats sorting all n. The kernel ranks by descending score and
@@ -182,3 +243,78 @@ def check_enough_eligible(
 def is_recommender(estimator: object) -> bool:
     """Return True if the given estimator is a recommender."""
     return get_tags(estimator).estimator_type == "recommender"
+
+
+def supports_partial_fit(estimator: object) -> bool:
+    """Return True if the estimator can be fitted one batch at a time.
+
+    Probing for the method is how scikit-learn itself decides -- ``learning_curve`` and
+    the common checks do exactly this -- because there is no tag for incremental
+    learning and no ``PartialFitMixin`` to check against. It is also why
+    :class:`skrecsys.recommendation.IncrementalRecommenderMixin` is mixed into the
+    estimators that have an incremental update rather than being folded into
+    :class:`~skrecsys.recommendation.BaseRecommender`: the probe has to stay truthful.
+    """
+    return hasattr(estimator, "partial_fit")
+
+
+def seen_among(
+    interactions: sp.csr_array,
+    user_indices: NDArray[np.intp],
+    item_indices: NDArray[np.intp],
+) -> sp.csr_array:
+    """Stored interactions of the given users, in candidate coordinates.
+
+    ``item_indices`` must be sorted, which is what ``recommend`` passes, so the column
+    remapping preserves the ascending order of the CSR indices. Only the interactions
+    themselves are touched: nothing here is proportional to the catalog size except a
+    single lookup table, and only when the candidates are a subset.
+    """
+    rows = sp.csr_array(interactions[user_indices])
+    shape = (len(user_indices), len(item_indices))
+    if len(item_indices) == interactions.shape[1]:
+        # Every fitted item is a candidate, so the item index is its own position.
+        indptr, columns = rows.indptr, rows.indices
+    else:
+        position = np.full(interactions.shape[1], -1, dtype=np.int64)
+        position[item_indices] = np.arange(len(item_indices))
+        columns = position[rows.indices]
+        keep = columns >= 0
+        owners = np.repeat(np.arange(shape[0]), np.diff(rows.indptr))[keep]
+        columns = columns[keep]
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(owners, minlength=shape[0]))])
+    return sp.csr_array((np.ones(len(columns), dtype=bool), columns, indptr), shape=shape)
+
+
+def union_of_exclusions(first: sp.csr_array, second: sp.csr_array | None) -> sp.csr_array:
+    """Both per-query exclusion masks as one, sorted, each position stored once."""
+    if second is not None and second.nnz:
+        first = sp.csr_array(first.astype(bool) + second.astype(bool))
+    first.sort_indices()
+    return first
+
+
+def excluded_among(
+    queries: NDArray[Any],
+    exclude_interactions: ArrayLike,
+    item_ids: NDArray[Any],
+    item_indices: NDArray[np.intp],
+) -> sp.csr_array:
+    """The pairs of ``exclude_interactions`` that apply, in candidate coordinates.
+
+    Row ``q`` holds the candidate positions that some pair ``(queries[q], item)`` names.
+    Pairs are matched against the queries themselves rather than against every fitted
+    user, so the matrix built here has a row per *distinct query*, however many users
+    the model has; a pair for another user or an unknown item is dropped, not an error.
+    """
+    users, items, _ = check_interactions(exclude_interactions)
+    distinct, query_rows = factorize(queries)
+    user_pos, user_known = lookup_ids(users, distinct, name="user")
+    item_pos, item_known = lookup_ids(items, item_ids, name="item")
+    keep = user_known & item_known
+    pairs = sp.csr_array(
+        (np.ones(int(keep.sum()), dtype=bool), (user_pos[keep], item_pos[keep])),
+        shape=(len(distinct), len(item_ids)),
+    )
+    pairs.sum_duplicates()
+    return seen_among(pairs, query_rows, item_indices)

@@ -1,0 +1,72 @@
+{
+  "key": "dbfbc465eb03b979",
+  "unit": "leaderboard/amazon-books/ItemKNN",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:23:26+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 50,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "ItemKNN",
+      "NDCG@10": "0.0364",
+      "P@10": "0.0060",
+      "R@10": "0.0603",
+      "hit rate": "0.0603",
+      "MAP": "0.0291",
+      "MRR": "0.0291",
+      "cat cov": "0.1158",
+      "user cov": "1.0000",
+      "mean pop": "63.6760",
+      "novelty": "20.12"
+    },
+    "timing": {
+      "Model": "ItemKNN",
+      "fit batch (interactions)": "7374280",
+      "fit samples": "5",
+      "fit min": "573 ms",
+      "fit median": "598 ms",
+      "fit max": "605 ms",
+      "rank batch (users x items)": "10000 x 660940",
+      "rank samples": "50",
+      "rank mean": "45 ms",
+      "rank median": "46 ms",
+      "rank q95": "51 ms",
+      "rank q99": "53 ms"
+    }
+  }
+}

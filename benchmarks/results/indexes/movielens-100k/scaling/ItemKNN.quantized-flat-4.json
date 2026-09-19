@@ -1,0 +1,110 @@
+{
+  "key": "b507c78cd711449c",
+  "unit": "indexes/movielens-100k/ItemKNN/quantized-flat-4/scaling",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:04:41+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "catalog_scale": [
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 4,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "scaling"
+  },
+  "payload": {
+    "points": [
+      {
+        "items": "84",
+        "users": "936",
+        "exact rank": "0 ms",
+        "setting": "ov=4",
+        "rank": "0 ms",
+        "speedup": "1.00x"
+      },
+      {
+        "items": "168",
+        "users": "942",
+        "exact rank": "0 ms",
+        "setting": "ov=4",
+        "rank": "8 ms",
+        "speedup": "0.05x"
+      },
+      {
+        "items": "420",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "16 ms",
+        "speedup": "0.04x"
+      },
+      {
+        "items": "840",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "28 ms",
+        "speedup": "0.03x"
+      },
+      {
+        "items": "1,680",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "50 ms",
+        "speedup": "0.02x"
+      }
+    ]
+  }
+}

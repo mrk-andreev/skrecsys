@@ -7,6 +7,7 @@ here. It is never installed into our own environment.
 Usage: ``python _dacrema_slim.py <repo> <input.npz> <output.npz> <alpha> <l1_ratio> <topk>``
 """
 
+import importlib
 import sys
 import time
 
@@ -20,17 +21,15 @@ if not hasattr(np, "int"):
 
 def main(repo: str, input_path: str, output_path: str, alpha: float, l1_ratio: float, top_k: int):
     sys.path.insert(0, repo)
-    # Importable only once the clone is on the path, so not at the top of the file.
-    from SLIM_ElasticNet.SLIMElasticNetRecommender import (  # noqa: PLC0415
-        SLIMElasticNetRecommender,
-    )
+    # The clone's location is an argument, so it is imported once that is known.
+    recommender = importlib.import_module("SLIM_ElasticNet.SLIMElasticNetRecommender")
 
     loaded = np.load(input_path)
     interactions = sp.csr_matrix(
         (loaded["data"], loaded["indices"], loaded["indptr"]), shape=tuple(loaded["shape"])
     )
 
-    model = SLIMElasticNetRecommender(interactions, verbose=False)
+    model = recommender.SLIMElasticNetRecommender(interactions, verbose=False)
     start = time.perf_counter()
     model.fit(l1_ratio=l1_ratio, alpha=alpha, positive_only=True, topK=top_k)
     seconds = time.perf_counter() - start

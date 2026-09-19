@@ -1,0 +1,231 @@
+{
+  "key": "31809c76464abdfc",
+  "unit": "indexes/movielens-100k/ItemKNN/hnsw/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:02:19+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          16,
+          32,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "ItemKNN",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2550",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "ItemKNN",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "6 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "881,137"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "recall@10": "0.9909",
+          "NDCG@10": "0.2542",
+          "dNDCG@10": "-0.0008",
+          "top-1 churn": "0.0074",
+          "score gap@1": "+0.0019",
+          "dcat cov": "+0.0048"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "fit": "6 ms",
+          "build": "231 ms",
+          "build %fit": "4108.9%",
+          "index MB": "0.2",
+          "vectors MB": "1.4",
+          "rank median": "2 ms",
+          "rank q95": "3 ms",
+          "speedup": "0.56x",
+          "users/s": "494,618"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9990",
+          "NDCG@10": "0.2548",
+          "dNDCG@10": "-0.0002",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "-0.0006"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "6 ms",
+          "build": "231 ms",
+          "build %fit": "4108.9%",
+          "index MB": "0.2",
+          "vectors MB": "1.4",
+          "rank median": "2 ms",
+          "rank q95": "4 ms",
+          "speedup": "0.43x",
+          "users/s": "377,675"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9998",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "6 ms",
+          "build": "231 ms",
+          "build %fit": "4108.9%",
+          "index MB": "0.2",
+          "vectors MB": "1.4",
+          "rank median": "3 ms",
+          "rank q95": "4 ms",
+          "speedup": "0.31x",
+          "users/s": "272,906"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "6 ms",
+          "build": "231 ms",
+          "build %fit": "4108.9%",
+          "index MB": "0.2",
+          "vectors MB": "1.4",
+          "rank median": "5 ms",
+          "rank q95": "8 ms",
+          "speedup": "0.21x",
+          "users/s": "183,243"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "fit": "6 ms",
+          "build": "231 ms",
+          "build %fit": "4108.9%",
+          "index MB": "0.2",
+          "vectors MB": "1.4",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "1.00x",
+          "users/s": "881,532"
+        }
+      }
+    ]
+  }
+}

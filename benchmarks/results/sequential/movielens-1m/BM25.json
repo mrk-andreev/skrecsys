@@ -1,0 +1,79 @@
+{
+  "key": "be0531b544739c4a",
+  "unit": "sequential/movielens-1m/BM25",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T11:28:21+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release",
+    "device": {
+      "device": "MPS",
+      "torch": "2.14.0"
+    }
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "sequential",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "cutoffs": [
+        10,
+        50,
+        200
+      ],
+      "repeat": 1,
+      "rank_repeat": 5,
+      "budget": 30.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 1
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BM25Recommender",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "BM25",
+      "HR@10": "0.0642",
+      "NDCG@10": "0.0334",
+      "HR@50": "0.2096",
+      "NDCG@50": "0.0644",
+      "HR@200": "0.4526",
+      "NDCG@200": "0.1007",
+      "cat cov@10": "0.1338"
+    },
+    "timing": {
+      "Model": "BM25",
+      "fit batch (interactions)": "656566",
+      "fit samples": "1",
+      "fit min": "40 ms",
+      "fit median": "40 ms",
+      "fit max": "40 ms",
+      "rank batch (users x items)": "6040 x 3646",
+      "rank samples": "5",
+      "rank mean": "16 ms",
+      "rank median": "16 ms",
+      "rank q95": "17 ms",
+      "rank q99": "17 ms"
+    }
+  }
+}

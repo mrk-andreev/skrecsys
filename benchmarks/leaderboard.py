@@ -1,29 +1,25 @@
-#!/usr/bin/env python
-"""Fit every recommender on MovieLens 100K and print a leaderboard.
-
-    uv run python benchmarks/leaderboard.py
-    uv run python benchmarks/leaderboard.py --k 20 --format markdown
-    uv run python benchmarks/leaderboard.py --write-readme
+"""Fit a recommender on a benchmark dataset, and score and time what it recommends.
 
 Each model is fitted on the training half of an official split and evaluated on the
 held-out half with every metric in :mod:`skrecsys.metrics`, so the table mixes ranking
 quality with the beyond-accuracy metrics that explain it: a model can win on NDCG while
 recommending nothing but the head of the catalog.
+
+This module measures and formats rows; which models run on which dataset, and under
+what settings, is ``benchmarks/config/leaderboard.json``, and ``benchmarks/run.py`` is
+what runs them. The timing machinery here is shared by the sequential and index reports.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import platform
-import re
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,7 +27,6 @@ from sklearn.base import clone
 
 import skrecsys
 from skrecsys import _core
-from skrecsys.datasets import fetch_movielens_100k
 from skrecsys.metrics import (
     average_precision_at_k,
     catalog_coverage_at_k,
@@ -45,33 +40,6 @@ from skrecsys.metrics import (
     reciprocal_rank_at_k,
     user_coverage_at_k,
 )
-from skrecsys.recommendation import (
-    EASE,
-    AlternatingLeastSquares,
-    BayesianPersonalizedRanking,
-    BM25Recommender,
-    ItemKNNRecommender,
-    MostPopularRecommender,
-    RP3Beta,
-    SLIMElasticNet,
-)
-
-README_MARKER = "<!-- leaderboard -->"
-README_END_MARKER = "<!-- /leaderboard -->"
-
-
-def default_models() -> dict[str, Any]:
-    """The estimators the leaderboard compares, in no particular order."""
-    return {
-        "SLIM": SLIMElasticNet(),
-        "EASE": EASE(),
-        "RP3Beta": RP3Beta(),
-        "BPR": BayesianPersonalizedRanking(random_state=0),
-        "BM25": BM25Recommender(),
-        "ItemKNN": ItemKNNRecommender(),
-        "MostPopular": MostPopularRecommender(),
-        "ALS": AlternatingLeastSquares(random_state=0),
-    }
 
 
 @dataclass(frozen=True)
@@ -79,7 +47,7 @@ class Column:
     """One leaderboard column: how to compute a value and how to print it."""
 
     header: str
-    metric: Callable[..., Any] | None = None
+    metric: Callable[..., Any]
     fmt: str = "{:.4f}"
     kwargs_from: str = "none"
 
@@ -162,11 +130,14 @@ def batch_header(operation: str) -> str:
 
 def timing_columns() -> list[str]:
     """Header of the timing table, fit first."""
-    headers = ["Model"]
+    headers: list[str] = ["Model"]
     for prefix in BATCH_UNITS:
         headers += [batch_header(prefix), f"{prefix} samples"]
         headers += [f"{prefix} {name}" for name, _ in STATISTICS[prefix]]
     return headers
+
+
+_T = TypeVar("_T")
 
 
 def sample(call: Callable[[], Any], cap: int, budget: float) -> list[float]:
@@ -177,16 +148,26 @@ def sample(call: Callable[[], Any], cap: int, budget: float) -> list[float]:
     mean either waiting on the slowest or starving the rest, and the slowest models are
     also the ones whose timing a few samples already pin down.
     """
+    seconds, _ = timed(call, cap, budget)
+    return seconds
+
+
+def timed(call: Callable[[], _T], cap: int, budget: float) -> tuple[list[float], _T]:
+    """:func:`sample`, also returning what the last call returned.
+
+    ``call`` always runs at least once, so a result is always there to return.
+    """
+    if cap < 1:
+        raise ValueError(f"cap must be at least 1, got {cap}.")
     seconds: list[float] = []
     floor = min(MIN_SAMPLES, cap)
     deadline = time.perf_counter() + budget
-    while len(seconds) < cap:
+    while True:
         start = time.perf_counter()
-        call()
+        result = call()
         seconds.append(time.perf_counter() - start)
-        if len(seconds) >= floor and time.perf_counter() >= deadline:
-            break
-    return seconds
+        if len(seconds) >= cap or (len(seconds) >= floor and time.perf_counter() >= deadline):
+            return seconds, result
 
 
 @dataclass(frozen=True)
@@ -226,45 +207,46 @@ def evaluate(
     repeat: int,
     rank_repeat: int,
     budget: float = float("inf"),
+    max_eval_users: int | None = None,
+    warmup: Mapping[str, int] = WARMUP,
 ) -> Evaluation:
     """Fit ``estimator`` on the training split and recommend for held-out users.
 
     ``repeat`` and ``rank_repeat`` cap the samples of each operation and ``budget``
     caps the seconds they may spend, so a cheap operation is described by many samples
-    and an expensive one stops early. Each operation is run :data:`WARMUP` times first
+    and an expensive one stops early. Each operation is run ``warmup`` times first
     without being timed, so no sample carries the cold start of the one before it.
+
+    ``max_eval_users`` scores a fixed random sample of the held-out users instead of
+    all of them. Every quality metric averages over users, so the sample estimates the
+    same quantity; the timing columns then describe that batch and not the full one.
     """
     train, test = dataset.train_indices, dataset.test_indices
     X_train, y_train = dataset.data[train], dataset.target[train]
     X_test, y_test = dataset.data[test], dataset.target[test]
 
-    fitted = None
-    for _ in range(WARMUP["fit"]):
-        fitted = clone(estimator).fit(X_train, y_train)
+    def fit_once() -> Any:
+        return clone(estimator).fit(X_train, y_train)
 
-    def fit_once() -> None:
-        nonlocal fitted
-        candidate = clone(estimator)
-        candidate.fit(X_train, y_train)
-        fitted = candidate
+    for _ in range(warmup["fit"]):
+        fit_once()
+    fit_seconds, model = timed(fit_once, repeat, budget)
 
-    fit_seconds = sample(fit_once, repeat, budget)
-    assert fitted is not None  # noqa: S101 - repeat >= 1 is enforced by the parser
+    query_users, y_true = _held_out_by_user(X_test, y_test, model.user_ids_)
+    query_users, y_true = _sample_users(query_users, y_true, max_eval_users)
 
-    query_users, y_true = _held_out_by_user(X_test, y_test, fitted.user_ids_)
     # Ranking the whole catalog for every held-out user at once, the way a batch job
     # would; per-request latency of a single user is a different measurement.
-    for _ in range(WARMUP["rank"]):
-        y_pred, _ = fitted.recommend(query_users, n_recommendations=k, exclude_seen=True)
+    def rank_once() -> NDArray[Any]:
+        items, _ = model.recommend(query_users, n_recommendations=k, exclude_seen=True)
+        return items
 
-    def rank_once() -> None:
-        nonlocal y_pred
-        y_pred, _ = fitted.recommend(query_users, n_recommendations=k, exclude_seen=True)
-
-    rank_seconds = sample(rank_once, rank_repeat, budget)
+    for _ in range(warmup["rank"]):
+        rank_once()
+    rank_seconds, y_pred = timed(rank_once, rank_repeat, budget)
 
     popularity = item_popularity(X_train, y_train)
-    catalog = np.asarray(fitted.item_ids_)
+    catalog = np.asarray(model.item_ids_)
     # Novelty normalizes over its own support, so cold items must be in the mapping.
     popularity = {item: popularity.get(item, 0.0) for item in catalog.tolist()}
     return Evaluation(
@@ -273,8 +255,19 @@ def evaluate(
         catalog,
         popularity,
         Timing(np.asarray(fit_seconds), f"{len(X_train)}", "fit"),
-        Timing(np.asarray(rank_seconds), f"{len(query_users)} x {fitted.n_items_}", "rank"),
+        Timing(np.asarray(rank_seconds), f"{len(query_users)} x {model.n_items_}", "rank"),
     )
+
+
+def _sample_users(
+    query_users: NDArray[Any], y_true: list[set[Any]], max_eval_users: int | None
+) -> tuple[NDArray[Any], list[set[Any]]]:
+    """Keep a fixed random sample of the held-out users, in their original order."""
+    if max_eval_users is None or len(query_users) <= max_eval_users:
+        return query_users, y_true
+    rng = np.random.default_rng(0)
+    keep = np.sort(rng.choice(len(query_users), size=max_eval_users, replace=False))
+    return query_users[keep], [y_true[index] for index in keep]
 
 
 def score(evaluation: Evaluation, k: int) -> dict[str, str]:
@@ -286,7 +279,6 @@ def score(evaluation: Evaluation, k: int) -> dict[str, str]:
     }
     row = {}
     for column in columns(k):
-        assert column.metric is not None  # noqa: S101 - every column has one
         value = column.metric(
             evaluation.y_true, evaluation.y_pred, k=k, **extra[column.kwargs_from]
         )
@@ -296,7 +288,7 @@ def score(evaluation: Evaluation, k: int) -> dict[str, str]:
 
 def timings(evaluation: Evaluation) -> dict[str, str]:
     """Format the timing columns of one row."""
-    row = {}
+    row: dict[str, str] = {}
     for prefix, timing in (("fit", evaluation.fit), ("rank", evaluation.rank)):
         row[batch_header(prefix)] = timing.batch
         row[f"{prefix} samples"] = str(len(timing.seconds))
@@ -317,22 +309,28 @@ def build_rows(
     repeat: int,
     rank_repeat: int,
     budget: float = float("inf"),
-    *,
-    verbose: bool = True,
+    max_eval_users: int | None = None,
+    warmup: Mapping[str, int] = WARMUP,
+    score_row: Callable[[Evaluation, int], dict[str, str]] | None = None,
+    sort_by: str | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Evaluate every model; return the quality rows and the timing rows.
 
-    Both are ordered by descending NDCG, so the two tables line up row for row.
+    Both are ordered by descending ``sort_by`` (NDCG at the cutoff by default), so the
+    two tables line up row for row. ``score_row`` is what turns one evaluation into the
+    columns of a row, which is where the sequential benchmark reports its own.
     """
-    quality, measured = [], {}
+    score_row = score_row or score
+    quality: list[dict[str, str]] = []
+    measured: dict[str, Evaluation] = {}
     for name, estimator in models.items():
-        if verbose:
-            print(f"fitting {name} ...", file=sys.stderr)  # noqa: T201
-        evaluation = evaluate(estimator, dataset, k, repeat, rank_repeat, budget)
-        quality.append({"Model": name} | score(evaluation, k))
+        evaluation = evaluate(
+            estimator, dataset, k, repeat, rank_repeat, budget, max_eval_users, warmup
+        )
+        quality.append({"Model": name} | score_row(evaluation, k))
         measured[name] = evaluation
-    ndcg = f"NDCG@{k}"
-    quality.sort(key=lambda row: float(row[ndcg]), reverse=True)
+    ranked_on = sort_by or f"NDCG@{k}"
+    quality.sort(key=lambda row: float(row[ranked_on]), reverse=True)
     timed = [{"Model": row["Model"]} | timings(measured[row["Model"]]) for row in quality]
     return quality, timed
 
@@ -390,23 +388,38 @@ RENDERERS = {"box": render_box, "markdown": render_markdown, "csv": render_csv}
 
 def cpu_model() -> str:
     """The CPU's marketing name, or the coarse platform name when it is not exposed."""
-    probes = {
-        "Darwin": ["sysctl", "-n", "machdep.cpu.brand_string"],
-        "Linux": [
-            "sh",
-            "-c",
-            "sed -n 's/^model name[ \t]*: //p; s/^Model[ \t]*: //p' /proc/cpuinfo | head -1",
-        ],
-    }
-    probe = probes.get(platform.system())
-    if probe is not None:
+    system = platform.system()
+    if system == "Darwin":
         try:
-            out = subprocess.run(probe, capture_output=True, text=True, timeout=5, check=False)  # noqa: S603
+            out = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
         except (OSError, subprocess.SubprocessError):
             out = None
         if out is not None and out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
+    elif system == "Linux":
+        name = _cpuinfo_model(Path("/proc/cpuinfo"))
+        if name:
+            return name
     return platform.processor() or platform.machine() or "unknown CPU"
+
+
+def _cpuinfo_model(path: Path) -> str | None:
+    """The first ``model name`` (x86) or ``Model`` (ARM) field of ``/proc/cpuinfo``."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        key, sep, value = line.partition(":")
+        if sep and key.strip() in {"model name", "Model"} and value.strip():
+            return value.strip()
+    return None
 
 
 def usable_cpus() -> int | None:
@@ -417,129 +430,18 @@ def usable_cpus() -> int | None:
     return os.cpu_count()
 
 
-def host_caption() -> str:
-    """The machine and build the timings below came from.
+def host_facts() -> dict[str, Any]:
+    """The machine and build a timing was taken on, as facts rather than a sentence.
 
-    Quality metrics are deterministic, but every timing column is specific to this host
-    and this build, so a published table is only comparable against one that names both.
+    Quality metrics are deterministic, but every timing is specific to its host and its
+    build, so a stored result carries these and the report says where each row ran.
     """
-    cores = usable_cpus()
-    cores_text = f"{cores} usable cores" if cores else "unknown core count"
-    return (
-        f"Measured on {cpu_model()} ({cores_text}), {platform.platform()}, "
-        f"{platform.python_implementation()} {platform.python_version()}, "
-        f"numpy {np.__version__}, skrecsys {skrecsys.__version__}, `_core` built in "
-        f"{_core.__build_profile__} mode. The quality table above is deterministic and "
-        f"portable; the timings below are not comparable across machines or builds."
-    )
-
-
-def timing_caption(repeat: int, rank_repeat: int, budget: float) -> str:
-    """The sentence that says what the timing table measured."""
-    return (
-        f"Wall clock per call. Each operation is sampled until it has spent {budget:.0f}s or "
-        f"reached its cap ({repeat} fits, {rank_repeat} `recommend` calls), after untimed warm-up "
-        f"calls ({WARMUP['fit']} fit, {WARMUP['rank']} rank) so that no sample pays for a cold "
-        f"start; the `samples` columns say how many each row actually got, which is why a slow "
-        f"model shows fewer. The batch columns say what a single call processed: one fit covers "
-        f"the whole training split, and one `recommend` call ranks the entire catalog for every "
-        f"held-out user at once, so these are throughput numbers rather than single-request "
-        f"latency. Fit reports the spread a handful of samples can resolve; ranking is sampled "
-        f"often enough for nearest-rank quantiles, each of which is a call that really happened. "
-        f"Compare `min` across machines and watch `max` for the variance a run saw."
-    )
-
-
-def write_readme(readme: Path, body: str) -> None:
-    """Replace everything between the leaderboard markers in ``readme``."""
-    text = readme.read_text()
-    block = f"{README_MARKER}\n{body}\n{README_END_MARKER}"
-    pattern = re.compile(re.escape(README_MARKER) + ".*?" + re.escape(README_END_MARKER), re.DOTALL)
-    if not pattern.search(text):
-        raise ValueError(
-            f"{readme} has no leaderboard block; add a {README_MARKER} / "
-            f"{README_END_MARKER} pair where the table belongs."
-        )
-    readme.write_text(pattern.sub(lambda _: block, text, count=1))
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--k", type=int, default=10, help="top-k cutoff (default: 10)")
-    parser.add_argument(
-        "--subset", default="ua", help="MovieLens 100K split to evaluate (default: ua)"
-    )
-    parser.add_argument(
-        "--repeat",
-        type=int,
-        default=1000,
-        help="most timed fits per model; the time budget usually stops it first (default: 1000)",
-    )
-    parser.add_argument(
-        "--budget",
-        type=float,
-        default=20.0,
-        help="seconds to spend timing each operation of each model (default: 20)",
-    )
-    parser.add_argument(
-        "--rank-repeat",
-        type=int,
-        default=1000,
-        help="timed recommend calls per model; the upper quantiles need many (default: 1000)",
-    )
-    parser.add_argument("--format", choices=sorted(RENDERERS), default="box")
-    parser.add_argument(
-        "--models", nargs="+", metavar="NAME", help="subset of models to run (default: all)"
-    )
-    parser.add_argument(
-        "--write-readme",
-        nargs="?",
-        const="README.md",
-        metavar="PATH",
-        help="also write a Markdown table into the leaderboard block of README.md",
-    )
-    args = parser.parse_args(argv)
-    if args.k < 1:
-        parser.error("--k must be >= 1")
-    if args.repeat < 1:
-        parser.error("--repeat must be >= 1")
-    if args.rank_repeat < 1:
-        parser.error("--rank-repeat must be >= 1")
-    if args.budget <= 0:
-        parser.error("--budget must be > 0")
-
-    models = default_models()
-    if args.models:
-        unknown = sorted(set(args.models) - set(models))
-        if unknown:
-            parser.error(f"unknown models: {unknown}; choose from {sorted(models)}")
-        models = {name: models[name] for name in args.models}
-
-    dataset = fetch_movielens_100k(subset=args.subset)
-    quality, timed = build_rows(models, dataset, args.k, args.repeat, args.rank_repeat, args.budget)
-    render = RENDERERS[args.format]
-    print(render(quality))  # noqa: T201
-    print()  # noqa: T201
-    print(host_caption())  # noqa: T201
-    print()  # noqa: T201
-    print(render(timed))  # noqa: T201
-
-    if args.write_readme:
-        caption = (
-            f"MovieLens 100K, official `{args.subset}` split, k={args.k}, default "
-            f"hyper-parameters. Regenerate with "
-            f"`python benchmarks/leaderboard.py --write-readme`."
-        )
-        write_readme(
-            Path(args.write_readme),
-            f"{caption}\n\n{render_markdown(quality)}\n\n"
-            f"{host_caption()}\n\n"
-            f"{timing_caption(args.repeat, args.rank_repeat, args.budget)}\n\n"
-            f"{render_markdown(timed)}",
-        )
-        print(f"wrote the leaderboard into {args.write_readme}", file=sys.stderr)  # noqa: T201
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return {
+        "cpu": cpu_model(),
+        "cores": usable_cpus(),
+        "platform": platform.platform(),
+        "python": f"{platform.python_implementation()} {platform.python_version()}",
+        "numpy": np.__version__,
+        "skrecsys": skrecsys.__version__,
+        "build": _core.__build_profile__,
+    }

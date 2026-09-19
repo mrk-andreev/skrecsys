@@ -11,7 +11,8 @@ from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.base import RecommenderMixin, check_enough_eligible
+from skrecsys.base import RecommenderMixin, seen_among
+from skrecsys.indexing import VectorIndexMixin
 from skrecsys.utils.validation import (
     check_ids,
     check_interactions,
@@ -20,7 +21,7 @@ from skrecsys.utils.validation import (
 )
 
 
-class BaseRecommender(RecommenderMixin, BaseEstimator):
+class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
     """Base class for recommenders fitted from user-item interactions.
 
     Subclasses implement ``_fit(interactions)`` and
@@ -74,6 +75,7 @@ class BaseRecommender(RecommenderMixin, BaseEstimator):
             (data, indices, indptr), shape=(self.n_users_, self.n_items_)
         )
         self._fit(self.interactions_)
+        self._fit_index()
         return self
 
     def predict(self, X: ArrayLike) -> NDArray[np.floating]:
@@ -104,7 +106,7 @@ class BaseRecommender(RecommenderMixin, BaseEstimator):
         shape = (len(user_idx), len(item_indices))
         if not exclude_seen:
             return scores, sp.csr_array(shape, dtype=bool)
-        return scores, _seen_among(self.interactions_, user_idx, item_indices)
+        return scores, seen_among(self.interactions_, user_idx, item_indices)
 
     def _build_threads(self) -> int:
         """Threads for the kernels that run before the estimator sees its matrix.
@@ -116,6 +118,45 @@ class BaseRecommender(RecommenderMixin, BaseEstimator):
         if isinstance(n_jobs, numbers.Integral) and not isinstance(n_jobs, bool) and n_jobs >= 1:
             return int(n_jobs)
         return 0
+
+    def _rank_by_factors(
+        self,
+        queries: NDArray[Any],
+        item_indices: NDArray[np.intp],
+        k: int,
+        *,
+        exclude_seen: bool,
+        excluded: sp.csr_array | None = None,
+        first_query: int,
+        user_factors: NDArray[np.floating],
+        item_factors: NDArray[np.floating],
+        item_bias: NDArray[np.floating] | None = None,
+        user_offset: NDArray[np.floating] | None = None,
+    ) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+        """Rank a model scoring ``item_bias[j] + <p_u, q_j> + user_offset[u]``.
+
+        The exact path of the latent-factor models, and of most-popular as the model
+        with no factors. The kernel scores a tile of queries against each item vector
+        and keeps only the ``k`` best per query, so neither the dense score matrix nor
+        the bias-broadcast temporaries around it are built; the fitted arrays go over
+        whole, with the rows being asked for.
+        """
+        user_idx = encode_ids(check_ids(queries), self.user_ids_, name="user")
+        seen = self.interactions_ if exclude_seen else None
+        return _core.recommend_from_factors(
+            kernel_matrix(user_factors),
+            kernel_matrix(item_factors),
+            None if item_bias is None else kernel_data(item_bias),
+            None if user_offset is None else kernel_data(user_offset),
+            kernel_indices(user_idx),
+            None if seen is None else kernel_indices(seen.indptr),
+            None if seen is None else kernel_indices(seen.indices),
+            kernel_candidates(item_indices, self.n_items_),
+            k,
+            self._build_threads(),
+            first_query,
+            **kernel_excluded(excluded),
+        )
 
     def _fit(self, interactions: sp.csr_array) -> None:
         raise NotImplementedError
@@ -200,41 +241,36 @@ class SimilarityRecommender(BaseRecommender):
         )
 
     @override
-    def _rank_chunk_size(self, n_candidates: int) -> int:
+    def _rank_chunk_size(self, n_candidates: int, k: int) -> int:
         # The kernel keeps one accumulator per thread, so a block only holds its results.
+        del n_candidates, k
         return 65_536
 
     @override
-    def _rank_queries(
+    def _rank_queries_exact(
         self,
         queries: NDArray[Any],
         item_indices: NDArray[np.intp],
         k: int,
         *,
         exclude_seen: bool,
+        excluded: sp.csr_array | None = None,
         first_query: int,
     ) -> tuple[NDArray[np.int64], NDArray[np.floating]]:
         user_idx = encode_ids(check_ids(queries), self.user_ids_, name="user")
-        shape = (len(user_idx), len(item_indices))
-        excluded = (
-            _seen_among(self.interactions_, user_idx, item_indices)
-            if exclude_seen
-            else sp.csr_array(shape, dtype=bool)
-        )
-        excluded.sort_indices()
-        check_enough_eligible(excluded, len(item_indices), k, first_query)
-
-        users = sp.csr_array(self.interactions_[user_idx])
-        weights = self._weights_of_items()
+        # The whole interaction matrix goes over with the rows being asked for: the
+        # kernel reads each query's row -- to score it, and for its exclusions -- in
+        # place, where slicing a copy per call cost more than the scoring.
         return _core.recommend_from_similarity(
-            *kernel_csr(users),
-            *kernel_csr(weights),
-            self.n_items_,
-            kernel_indices(item_indices),
-            kernel_indices(excluded.indptr),
-            kernel_indices(excluded.indices),
+            *kernel_csr(self.interactions_),
+            kernel_indices(user_idx),
+            *kernel_csr(self._weights_of_items()),
+            kernel_candidates(item_indices, self.n_items_),
+            exclude_seen,
             k,
             self._check_params(),
+            first_query,
+            **kernel_excluded(excluded),
         )
 
 
@@ -265,34 +301,6 @@ def score_pairs_from_similarity(
     return np.bincount(owners, weights=rows.data * weights, minlength=len(item_indices))
 
 
-def _seen_among(
-    interactions: sp.csr_array,
-    user_indices: NDArray[np.intp],
-    item_indices: NDArray[np.intp],
-) -> sp.csr_array:
-    """Stored interactions of the given users, in candidate coordinates.
-
-    ``item_indices`` must be sorted, which is what ``recommend`` passes, so the column
-    remapping preserves the ascending order of the CSR indices. Only the interactions
-    themselves are touched: nothing here is proportional to the catalog size except a
-    single lookup table, and only when the candidates are a subset.
-    """
-    rows = sp.csr_array(interactions[user_indices])
-    shape = (len(user_indices), len(item_indices))
-    if len(item_indices) == interactions.shape[1]:
-        # Every fitted item is a candidate, so the item index is its own position.
-        indptr, columns = rows.indptr, rows.indices
-    else:
-        position = np.full(interactions.shape[1], -1, dtype=np.int64)
-        position[item_indices] = np.arange(len(item_indices))
-        columns = position[rows.indices]
-        keep = columns >= 0
-        owners = np.repeat(np.arange(shape[0]), np.diff(rows.indptr))[keep]
-        columns = columns[keep]
-        indptr = np.concatenate([[0], np.cumsum(np.bincount(owners, minlength=shape[0]))])
-    return sp.csr_array((np.ones(len(columns), dtype=bool), columns, indptr), shape=shape)
-
-
 def kernel_indices(values: Any) -> NDArray[np.int64]:
     """An index array in the layout the kernels borrow, copied only when it must be.
 
@@ -307,6 +315,36 @@ def kernel_indices(values: Any) -> NDArray[np.int64]:
 def kernel_data(values: Any) -> NDArray[np.float64]:
     """A value array in the layout the kernels borrow, copied only when it must be."""
     return np.ascontiguousarray(values, dtype=np.float64)
+
+
+def kernel_matrix(values: Any) -> NDArray[np.float64]:
+    """A dense matrix in the C-contiguous `float64` layout the kernels borrow."""
+    return np.ascontiguousarray(values, dtype=np.float64)
+
+
+def kernel_candidates(item_indices: NDArray[np.intp], n_items: int) -> NDArray[np.int64] | None:
+    """The candidate item indices for a recommend kernel, or ``None`` for every item.
+
+    ``recommend`` passes the candidates sorted and distinct, so as many as there are
+    fitted items is all of them; the kernel then skips the catalog-sized position map a
+    subset needs.
+    """
+    return None if len(item_indices) == n_items else kernel_indices(item_indices)
+
+
+def kernel_excluded(excluded: sp.csr_array | None) -> dict[str, NDArray[np.int64]]:
+    """The keyword arguments handing a recommend kernel per-query exclusions, if any.
+
+    ``excluded`` holds candidate positions, one row per query of the block; the kernel
+    skips them on top of the seen items it reads from the interaction matrix itself.
+    """
+    if excluded is None or not excluded.nnz:
+        return {}
+    excluded.sort_indices()
+    return {
+        "excluded_indptr": kernel_indices(excluded.indptr),
+        "excluded_indices": kernel_indices(excluded.indices),
+    }
 
 
 def kernel_csr(matrix: sp.csr_array) -> tuple[Any, Any, Any]:

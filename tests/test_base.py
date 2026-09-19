@@ -148,6 +148,6 @@ def test_too_few_eligible_names_the_query_across_blocks(monkeypatch):
     eligible = np.ones((4, 3), dtype=bool)
     eligible[3] = [True, False, False]
     rec = _ScoredRecommender(np.zeros((4, 3)), eligible).fit()
-    monkeypatch.setattr(type(rec), "_rank_chunk_size", lambda self, n_candidates: 2)
+    monkeypatch.setattr(type(rec), "_rank_chunk_size", lambda self, n_candidates, k: 2)
     with pytest.raises(ValueError, match="query 3 has only 1 eligible"):
         rec.recommend(["q0", "q1", "q2", "q3"], n_recommendations=2)

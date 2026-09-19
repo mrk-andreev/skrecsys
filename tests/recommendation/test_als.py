@@ -81,24 +81,26 @@ def _update_v(v_f, j, column, e, q, reg):
 
 def test_matches_libfm_reference():
     X, y = _ratings()
-    params = {
-        "n_factors": 3,
-        "n_iter": 7,
-        "init_stdev": 0.3,
-        "reg_global": 0.5,
-        "reg_bias": 0.2,
-        "reg_factors": 0.4,
-    }
-    est = AlternatingLeastSquares(**params, random_state=42).fit(X, y)
+    n_factors, n_iter, init_stdev = 3, 7, 0.3
+    reg_global, reg_bias, reg_factors = 0.5, 0.2, 0.4
+    est = AlternatingLeastSquares(
+        n_factors=n_factors,
+        n_iter=n_iter,
+        init_stdev=init_stdev,
+        reg_global=reg_global,
+        reg_bias=reg_bias,
+        reg_factors=reg_factors,
+        random_state=42,
+    ).fit(X, y)
     w0, w, v, history = _libfm_als_reference(
         X,
         y,
-        params["n_factors"],
-        params["n_iter"],
-        params["init_stdev"],
-        params["reg_global"],
-        params["reg_bias"],
-        params["reg_factors"],
+        n_factors,
+        n_iter,
+        init_stdev,
+        reg_global,
+        reg_bias,
+        reg_factors,
         seed=42,
     )
     n_users = est.n_users_
@@ -177,3 +179,38 @@ def test_invalid_params(params):
     X, y = _ratings()
     with pytest.raises(ValueError, match=next(iter(params))):
         AlternatingLeastSquares(**params).fit(X, y)
+
+
+def test_partial_fit_resumes_rather_than_restarting():
+    """A warm-started sweep must start where the last one stopped, not from a draw.
+
+    The cheapest way to tell the two apart: a second call with no sweeps at all leaves
+    the parameters exactly as they were, which a fit that redrew them could not do.
+    """
+    X, y = _ratings()
+    est = AlternatingLeastSquares(n_factors=3, n_iter=8, random_state=0).fit(X, y)
+    before = est.user_factors_.copy(), est.item_factors_.copy(), est.global_bias_
+    est.set_params(n_iter_partial=0).partial_fit(X[:5], y[:5])
+    np.testing.assert_array_equal(est.user_factors_, before[0])
+    np.testing.assert_array_equal(est.item_factors_, before[1])
+    assert est.global_bias_ == before[2]
+
+    est.set_params(n_iter_partial=4).partial_fit(X[:5], y[:5])
+    assert len(est.loss_curve_) == 8 + 0 + 4, "the loss curve is not the whole history."
+    assert not np.array_equal(est.user_factors_, before[0])
+
+
+def test_partial_fit_draws_factors_for_the_identifiers_it_adds():
+    """A new user starts from the initialization, not from the zeros `_remap` left.
+
+    Zero is a fixed point of the ALS factor update -- a row of zeros contributes
+    nothing to any other parameter and is itself left at zero -- so a new user whose
+    factors were not drawn would stay invisible to the model forever.
+    """
+    X, y = _ratings()
+    est = AlternatingLeastSquares(n_factors=3, n_iter=5, random_state=0).fit(X, y)
+    newcomer = int(X[:, 0].max()) + 7
+    est.partial_fit(np.array([[newcomer, X[0, 1]], [newcomer, X[1, 1]]]), [4.0, 2.0])
+    added = np.searchsorted(est.user_ids_, newcomer)
+    assert np.any(est.user_factors_[added] != 0.0)
+    assert est.target_range_[0] <= 2.0 and est.target_range_[1] >= 4.0

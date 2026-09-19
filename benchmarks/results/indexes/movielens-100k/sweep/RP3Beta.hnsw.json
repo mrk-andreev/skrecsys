@@ -1,0 +1,231 @@
+{
+  "key": "b9d92e1236eae9f1",
+  "unit": "indexes/movielens-100k/RP3Beta/hnsw/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:45:23+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "RP3Beta",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          16,
+          32,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "RP3Beta",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2762",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "RP3Beta",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "8 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "1,006,762"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "recall@10": "0.9199",
+          "NDCG@10": "0.2640",
+          "dNDCG@10": "-0.0122",
+          "top-1 churn": "0.0710",
+          "score gap@1": "+0.0186",
+          "dcat cov": "+0.0012"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "fit": "8 ms",
+          "build": "252 ms",
+          "build %fit": "3193.7%",
+          "index MB": "0.2",
+          "vectors MB": "1.9",
+          "rank median": "3 ms",
+          "rank q95": "4 ms",
+          "speedup": "0.36x",
+          "users/s": "365,516"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9512",
+          "NDCG@10": "0.2698",
+          "dNDCG@10": "-0.0064",
+          "top-1 churn": "0.0445",
+          "score gap@1": "+0.0097",
+          "dcat cov": "+0.0006"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "8 ms",
+          "build": "252 ms",
+          "build %fit": "3193.7%",
+          "index MB": "0.2",
+          "vectors MB": "1.9",
+          "rank median": "3 ms",
+          "rank q95": "5 ms",
+          "speedup": "0.28x",
+          "users/s": "281,561"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9745",
+          "NDCG@10": "0.2735",
+          "dNDCG@10": "-0.0027",
+          "top-1 churn": "0.0244",
+          "score gap@1": "+0.0052",
+          "dcat cov": "-0.0024"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "8 ms",
+          "build": "252 ms",
+          "build %fit": "3193.7%",
+          "index MB": "0.2",
+          "vectors MB": "1.9",
+          "rank median": "5 ms",
+          "rank q95": "7 ms",
+          "speedup": "0.21x",
+          "users/s": "207,764"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "0.9914",
+          "NDCG@10": "0.2753",
+          "dNDCG@10": "-0.0009",
+          "top-1 churn": "0.0053",
+          "score gap@1": "+0.0006",
+          "dcat cov": "-0.0065"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "8 ms",
+          "build": "252 ms",
+          "build %fit": "3193.7%",
+          "index MB": "0.2",
+          "vectors MB": "1.9",
+          "rank median": "7 ms",
+          "rank q95": "8 ms",
+          "speedup": "0.14x",
+          "users/s": "144,594"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2762",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "fit": "8 ms",
+          "build": "252 ms",
+          "build %fit": "3193.7%",
+          "index MB": "0.2",
+          "vectors MB": "1.9",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "0.99x",
+          "users/s": "992,589"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "key": "b4fa658d4c0f3895",
+  "unit": "indexes/movielens-100k/BPR/hnsw/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:51:17+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          64
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "22 us",
+        "exact per user": "22 us",
+        "setting": "ef=64",
+        "rank": "105 us",
+        "speedup": "0.21x"
+      },
+      {
+        "users/request": "10",
+        "exact": "91 us",
+        "exact per user": "9 us",
+        "setting": "ef=64",
+        "rank": "263 us",
+        "speedup": "0.35x"
+      },
+      {
+        "users/request": "100",
+        "exact": "276 us",
+        "exact per user": "3 us",
+        "setting": "ef=64",
+        "rank": "483 us",
+        "speedup": "0.57x"
+      }
+    ]
+  }
+}

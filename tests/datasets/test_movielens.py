@@ -1,5 +1,5 @@
-import builtins
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -119,14 +119,8 @@ def test_as_frame(fake_download, data_home):
 
 
 def test_as_frame_without_pandas(fake_download, data_home, monkeypatch):
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "pandas":
-            raise ImportError(name)
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    # A ``None`` entry makes any import of the name raise ImportError.
+    monkeypatch.setitem(sys.modules, "pandas", None)
     with pytest.raises(ImportError, match=r"skrecsys\[pandas\]"):
         fetch_movielens_100k(data_home=data_home, as_frame=True)
 

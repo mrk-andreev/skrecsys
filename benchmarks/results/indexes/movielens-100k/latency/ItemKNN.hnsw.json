@@ -1,0 +1,93 @@
+{
+  "key": "277175d114362159",
+  "unit": "indexes/movielens-100k/ItemKNN/hnsw/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:02:19+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          64
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "24 us",
+        "exact per user": "24 us",
+        "setting": "ef=64",
+        "rank": "148 us",
+        "speedup": "0.16x"
+      },
+      {
+        "users/request": "10",
+        "exact": "125 us",
+        "exact per user": "12 us",
+        "setting": "ef=64",
+        "rank": "270 us",
+        "speedup": "0.46x"
+      },
+      {
+        "users/request": "100",
+        "exact": "205 us",
+        "exact per user": "2 us",
+        "setting": "ef=64",
+        "rank": "600 us",
+        "speedup": "0.34x"
+      }
+    ]
+  }
+}

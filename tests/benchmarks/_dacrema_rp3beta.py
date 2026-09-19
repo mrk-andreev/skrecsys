@@ -7,6 +7,7 @@ here. It is never installed into our own environment.
 Usage: ``python _dacrema_rp3beta.py <repo> <input.npz> <output.npz> <alpha> <beta> <topk>``
 """
 
+import importlib
 import sys
 import time
 
@@ -20,15 +21,15 @@ if not hasattr(np, "int"):
 
 def main(repo: str, input_path: str, output_path: str, alpha: float, beta: float, top_k: int):
     sys.path.insert(0, repo)
-    # Importable only once the clone is on the path, so not at the top of the file.
-    from GraphBased.RP3betaRecommender import RP3betaRecommender  # noqa: PLC0415
+    # The clone's location is an argument, so it is imported once that is known.
+    recommender = importlib.import_module("GraphBased.RP3betaRecommender")
 
     loaded = np.load(input_path)
     interactions = sp.csr_matrix(
         (loaded["data"], loaded["indices"], loaded["indptr"]), shape=tuple(loaded["shape"])
     )
 
-    model = RP3betaRecommender(interactions, verbose=False)
+    model = recommender.RP3betaRecommender(interactions, verbose=False)
     start = time.perf_counter()
     model.fit(alpha=alpha, beta=beta, topK=top_k, normalize_similarity=True)
     seconds = time.perf_counter() - start

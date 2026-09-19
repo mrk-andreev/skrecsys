@@ -1,0 +1,230 @@
+{
+  "key": "f5de86b9ed4d0388",
+  "unit": "indexes/amazon-books/RP3Beta/quantized-flat-8/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T03:36:43+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 50,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "RP3Beta",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 660940,
+    "exact": {
+      "quality": {
+        "Model": "RP3Beta",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.0247",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "RP3Beta",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "1.56 s",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "32 ms",
+        "rank q95": "36 ms",
+        "speedup": "1.00x",
+        "users/s": "314,382"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "recall@10": "0.9505",
+          "NDCG@10": "0.0249",
+          "dNDCG@10": "+0.0002",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0001"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "fit": "1.56 s",
+          "build": "50 ms",
+          "build %fit": "3.2%",
+          "index MB": "35.2",
+          "vectors MB": "569.2",
+          "rank median": "251.84 s",
+          "rank q95": "252.32 s",
+          "speedup": "0.00x",
+          "users/s": "40"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "recall@10": "0.9998",
+          "NDCG@10": "0.0247",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "-0.0000"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "fit": "1.56 s",
+          "build": "50 ms",
+          "build %fit": "3.2%",
+          "index MB": "35.2",
+          "vectors MB": "569.2",
+          "rank median": "251.85 s",
+          "rank q95": "252.02 s",
+          "speedup": "0.00x",
+          "users/s": "40"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.0247",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "fit": "1.56 s",
+          "build": "50 ms",
+          "build %fit": "3.2%",
+          "index MB": "35.2",
+          "vectors MB": "569.2",
+          "rank median": "251.94 s",
+          "rank q95": "252.55 s",
+          "speedup": "0.00x",
+          "users/s": "40"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.0247",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "fit": "1.56 s",
+          "build": "50 ms",
+          "build %fit": "3.2%",
+          "index MB": "35.2",
+          "vectors MB": "569.2",
+          "rank median": "252.07 s",
+          "rank q95": "252.46 s",
+          "speedup": "0.00x",
+          "users/s": "40"
+        }
+      },
+      {
+        "quality": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.0247",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "RP3Beta",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "fit": "1.56 s",
+          "build": "50 ms",
+          "build %fit": "3.2%",
+          "index MB": "35.2",
+          "vectors MB": "569.2",
+          "rank median": "252.95 s",
+          "rank q95": "253.09 s",
+          "speedup": "0.00x",
+          "users/s": "40"
+        }
+      }
+    ]
+  }
+}

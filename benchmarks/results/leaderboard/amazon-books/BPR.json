@@ -1,0 +1,74 @@
+{
+  "key": "fd7c8b49e907b154",
+  "unit": "leaderboard/amazon-books/BPR",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:23:12+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 50,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "BPR",
+      "NDCG@10": "0.0075",
+      "P@10": "0.0015",
+      "R@10": "0.0151",
+      "hit rate": "0.0151",
+      "MAP": "0.0052",
+      "MRR": "0.0052",
+      "cat cov": "0.0160",
+      "user cov": "1.0000",
+      "mean pop": "753.6300",
+      "novelty": "14.20"
+    },
+    "timing": {
+      "Model": "BPR",
+      "fit batch (interactions)": "7374280",
+      "fit samples": "3",
+      "fit min": "312.95 s",
+      "fit median": "313.07 s",
+      "fit max": "313.21 s",
+      "rank batch (users x items)": "10000 x 660940",
+      "rank samples": "16",
+      "rank mean": "3.81 s",
+      "rank median": "3.88 s",
+      "rank q95": "3.94 s",
+      "rank q99": "3.94 s"
+    }
+  }
+}

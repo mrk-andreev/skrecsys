@@ -1,0 +1,72 @@
+{
+  "key": "8c815ac1d3b2a711",
+  "unit": "leaderboard/movielens-100k/SLIM",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T21:59:22+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 1000,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "SLIMElasticNet",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "SLIM",
+      "NDCG@10": "0.3024",
+      "P@10": "0.2558",
+      "R@10": "0.2558",
+      "hit rate": "0.9226",
+      "MAP": "0.1621",
+      "MRR": "0.6418",
+      "cat cov": "0.2226",
+      "user cov": "1.0000",
+      "mean pop": "247.5139",
+      "novelty": "8.65"
+    },
+    "timing": {
+      "Model": "SLIM",
+      "fit batch (interactions)": "90570",
+      "fit samples": "111",
+      "fit min": "164 ms",
+      "fit median": "179 ms",
+      "fit max": "231 ms",
+      "rank batch (users x items)": "943 x 1680",
+      "rank samples": "1000",
+      "rank mean": "1 ms",
+      "rank median": "1 ms",
+      "rank q95": "1 ms",
+      "rank q99": "1 ms"
+    }
+  }
+}

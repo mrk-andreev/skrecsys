@@ -1,0 +1,236 @@
+{
+  "key": "ea974499c9c08f81",
+  "unit": "indexes/movielens-100k/XSimGCL/quantized-flat-4/sweep",
+  "provenance": {
+    "source": "imported",
+    "from": "README.md in the working tree on top of fc23fd1",
+    "at": "2026-09-22T20:52:15+00:00",
+    "note": "Measured by the pre-config harness and parsed back out of its table. The settings in `inputs` are the config's at import time; the run's own were not recorded separately. Measured with the per-query scan kernel, before the query-tiled one of v2."
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.nn",
+      "cls": "XSimGCL",
+      "params": {
+        "learning_rate": 0.01,
+        "contrastive_weight": 0.01,
+        "random_state": 0
+      },
+      "version": "v1"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 4,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "XSimGCL",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2930",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "XSimGCL",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "149.26 s",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "982,100"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=1",
+          "recall@10": "0.9226",
+          "NDCG@10": "0.2924",
+          "dNDCG@10": "-0.0006",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0048"
+        },
+        "cost": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=1",
+          "fit": "149.26 s",
+          "build": "1 ms",
+          "build %fit": "0.0%",
+          "index MB": "0.1",
+          "vectors MB": "0.9",
+          "rank median": "24 ms",
+          "rank q95": "24 ms",
+          "speedup": "0.04x",
+          "users/s": "40,066"
+        }
+      },
+      {
+        "quality": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=2",
+          "recall@10": "0.9994",
+          "NDCG@10": "0.2930",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=2",
+          "fit": "149.26 s",
+          "build": "1 ms",
+          "build %fit": "0.0%",
+          "index MB": "0.1",
+          "vectors MB": "0.9",
+          "rank median": "25 ms",
+          "rank q95": "25 ms",
+          "speedup": "0.04x",
+          "users/s": "37,465"
+        }
+      },
+      {
+        "quality": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=4",
+          "recall@10": "0.9999",
+          "NDCG@10": "0.2930",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=4",
+          "fit": "149.26 s",
+          "build": "1 ms",
+          "build %fit": "0.0%",
+          "index MB": "0.1",
+          "vectors MB": "0.9",
+          "rank median": "28 ms",
+          "rank q95": "28 ms",
+          "speedup": "0.03x",
+          "users/s": "33,522"
+        }
+      },
+      {
+        "quality": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=8",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2930",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=8",
+          "fit": "149.26 s",
+          "build": "1 ms",
+          "build %fit": "0.0%",
+          "index MB": "0.1",
+          "vectors MB": "0.9",
+          "rank median": "33 ms",
+          "rank q95": "33 ms",
+          "speedup": "0.03x",
+          "users/s": "28,802"
+        }
+      },
+      {
+        "quality": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=16",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2930",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "XSimGCL",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=16",
+          "fit": "149.26 s",
+          "build": "1 ms",
+          "build %fit": "0.0%",
+          "index MB": "0.1",
+          "vectors MB": "0.9",
+          "rank median": "41 ms",
+          "rank q95": "41 ms",
+          "speedup": "0.02x",
+          "users/s": "23,179"
+        }
+      }
+    ]
+  }
+}

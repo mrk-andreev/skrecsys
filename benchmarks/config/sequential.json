@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "models_from": "leaderboard",
+  "settings": {
+    "cutoffs": [10, 50, 200],
+    "repeat": 1,
+    "rank_repeat": 5,
+    "budget": 30.0,
+    "warmup": {"fit": 0, "rank": 1}
+  },
+  "datasets": {
+    "movielens-1m": {
+      "skip": {
+        "SimpleX": "one fit of 1M interactions runs for hours on CPU",
+        "XSimGCL": "one fit of 1M interactions runs for hours on CPU"
+      }
+    }
+  },
+  "models": [
+    {
+      "name": "HSTU",
+      "package": "skrecsys.nn",
+      "cls": "HSTU",
+      "params": {"max_sequence_length": 200, "random_state": 0, "device": "auto"},
+      "version": "v1",
+      "comment": "Hierarchical sequential transduction; reads the 200 most recent interactions"
+    },
+    {
+      "name": "Mamba4Rec",
+      "package": "skrecsys.nn",
+      "cls": "Mamba4Rec",
+      "params": {"max_sequence_length": 200, "random_state": 0, "device": "auto"},
+      "version": "v1",
+      "comment": "Selective state-space sequence model"
+    },
+    "*"
+  ]
+}

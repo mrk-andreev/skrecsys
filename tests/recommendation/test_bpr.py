@@ -218,3 +218,30 @@ def test_invalid_use_bias_raises(use_bias):
 def test_invalid_n_jobs_raises(n_jobs):
     with pytest.raises(ValueError, match="n_jobs"):
         BayesianPersonalizedRanking(n_jobs=n_jobs).fit(*_counts())
+
+
+def test_partial_fit_draws_only_from_the_batch():
+    """An epoch of `partial_fit` costs the batch, which is the whole point of it.
+
+    A user the batch does not mention keeps the factors the last fit left, so the
+    cheapest observable consequence is that only the batch's users move at all.
+    """
+    X, _ = _counts()
+    est = BayesianPersonalizedRanking(n_factors=4, max_iter=15, random_state=0).fit(X)
+    before = est.user_factors_.copy()
+    batch = X[X[:, 0] == X[0, 0]]
+    est.set_params(max_iter_partial=5).partial_fit(batch)
+    assert len(est.auc_curve_) == 15 + 5, "the AUC curve is not the whole history."
+    moved = np.flatnonzero(np.any(est.user_factors_ != before, axis=1))
+    touched = np.searchsorted(est.user_ids_, np.unique(batch[:, 0]))
+    np.testing.assert_array_equal(moved, touched)
+
+
+def test_partial_fit_draws_factors_for_the_identifiers_it_adds():
+    """Zero factors are a fixed point of the BPR update, so new rows must be drawn."""
+    X, _ = _counts()
+    est = BayesianPersonalizedRanking(n_factors=4, max_iter=5, random_state=0).fit(X)
+    newcomer = int(X[:, 0].max()) + 7
+    est.partial_fit(np.array([[newcomer, X[0, 1]]]))
+    added = np.searchsorted(est.user_ids_, newcomer)
+    assert np.any(est.user_factors_[added] != 0.0)

@@ -1,0 +1,82 @@
+{
+  "key": "f86c031075ee207a",
+  "unit": "sequential/movielens-1m/HSTU",
+  "provenance": {
+    "source": "imported",
+    "from": "README.md in the working tree on top of fc23fd1",
+    "at": "2026-09-22T20:52:15+00:00",
+    "note": "Measured by the pre-config harness and parsed back out of its table. The settings in `inputs` are the config's at import time; the run's own were not recorded separately."
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release",
+    "device": null
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "sequential",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "cutoffs": [
+        10,
+        50,
+        200
+      ],
+      "repeat": 1,
+      "rank_repeat": 5,
+      "budget": 30.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 1
+      }
+    },
+    "model": {
+      "package": "skrecsys.nn",
+      "cls": "HSTU",
+      "params": {
+        "max_sequence_length": 200,
+        "random_state": 0,
+        "device": "auto"
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "HSTU",
+      "HR@10": "0.2871",
+      "NDCG@10": "0.1665",
+      "HR@50": "0.5432",
+      "NDCG@50": "0.2229",
+      "HR@200": "0.7425",
+      "NDCG@200": "0.2533",
+      "cat cov@10": "0.6221"
+    },
+    "timing": {
+      "Model": "HSTU",
+      "fit batch (interactions)": "656566",
+      "fit samples": "1",
+      "fit min": "1297.60 s",
+      "fit median": "1297.60 s",
+      "fit max": "1297.60 s",
+      "rank batch (users x items)": "6040 x 3646",
+      "rank samples": "5",
+      "rank mean": "42 ms",
+      "rank median": "42 ms",
+      "rank q95": "43 ms",
+      "rank q99": "43 ms"
+    }
+  }
+}

@@ -17,7 +17,7 @@ from typing import Any, TypeAlias
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys.metrics._ranking import _average
+from skrecsys.metrics._ranking import _average, _check_two_dimensional
 from skrecsys.utils.validation import check_interactions
 
 RankedItems: TypeAlias = NDArray[Any] | Sequence[Sequence[Any]]
@@ -48,8 +48,8 @@ def _ranked_rows(
     Unlike the ranking metrics, rows may be short or padded, so the returned lists have
     varying lengths.
     """
-    if isinstance(y_pred, np.ndarray) and y_pred.ndim != 2:  # noqa: PLR2004
-        raise ValueError(f"y_pred must be two-dimensional, got shape {y_pred.shape}.")
+    if isinstance(y_pred, np.ndarray):
+        _check_two_dimensional(y_pred)
     # Rows are not stacked into one array: that would coerce a NaN pad next to string
     # identifiers into the string "nan", and ragged rows into an object array.
     rows = [list(row.tolist()) if isinstance(row, np.ndarray) else list(row) for row in y_pred]

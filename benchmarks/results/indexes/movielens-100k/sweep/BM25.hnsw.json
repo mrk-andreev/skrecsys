@@ -1,0 +1,231 @@
+{
+  "key": "a0c2bc9879583b17",
+  "unit": "indexes/movielens-100k/BM25/hnsw/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:56:50+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BM25Recommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          16,
+          32,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "BM25",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2661",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "BM25",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "7 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "1,426,582"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "recall@10": "0.9180",
+          "NDCG@10": "0.2570",
+          "dNDCG@10": "-0.0092",
+          "top-1 churn": "0.0541",
+          "score gap@1": "+0.0221",
+          "dcat cov": "+0.0036"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "fit": "7 ms",
+          "build": "38 ms",
+          "build %fit": "578.5%",
+          "index MB": "0.2",
+          "vectors MB": "0.6",
+          "rank median": "2 ms",
+          "rank q95": "3 ms",
+          "speedup": "0.30x",
+          "users/s": "432,478"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9704",
+          "NDCG@10": "0.2624",
+          "dNDCG@10": "-0.0037",
+          "top-1 churn": "0.0201",
+          "score gap@1": "+0.0083",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "7 ms",
+          "build": "38 ms",
+          "build %fit": "578.5%",
+          "index MB": "0.2",
+          "vectors MB": "0.6",
+          "rank median": "3 ms",
+          "rank q95": "4 ms",
+          "speedup": "0.23x",
+          "users/s": "331,607"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9937",
+          "NDCG@10": "0.2662",
+          "dNDCG@10": "+0.0001",
+          "top-1 churn": "0.0032",
+          "score gap@1": "+0.0005",
+          "dcat cov": "-0.0030"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "7 ms",
+          "build": "38 ms",
+          "build %fit": "578.5%",
+          "index MB": "0.2",
+          "vectors MB": "0.6",
+          "rank median": "4 ms",
+          "rank q95": "6 ms",
+          "speedup": "0.17x",
+          "users/s": "240,102"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "0.9977",
+          "NDCG@10": "0.2660",
+          "dNDCG@10": "-0.0002",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "-0.0024"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "7 ms",
+          "build": "38 ms",
+          "build %fit": "578.5%",
+          "index MB": "0.2",
+          "vectors MB": "0.6",
+          "rank median": "5 ms",
+          "rank q95": "8 ms",
+          "speedup": "0.12x",
+          "users/s": "172,220"
+        }
+      },
+      {
+        "quality": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2661",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "BM25",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "fit": "7 ms",
+          "build": "38 ms",
+          "build %fit": "578.5%",
+          "index MB": "0.2",
+          "vectors MB": "0.6",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "1.00x",
+          "users/s": "1,423,486"
+        }
+      }
+    ]
+  }
+}

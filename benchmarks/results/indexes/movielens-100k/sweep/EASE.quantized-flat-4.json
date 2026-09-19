@@ -1,0 +1,230 @@
+{
+  "key": "4a055028e4923a55",
+  "unit": "indexes/movielens-100k/EASE/quantized-flat-4/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:39:03+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "EASE",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 4,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "EASE",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2767",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "EASE",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "29 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "3 ms",
+        "rank q95": "3 ms",
+        "speedup": "1.00x",
+        "users/s": "308,357"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=1",
+          "recall@10": "0.8456",
+          "NDCG@10": "0.2749",
+          "dNDCG@10": "-0.0018",
+          "top-1 churn": "0.0032",
+          "score gap@1": "+0.0004",
+          "dcat cov": "+0.0226"
+        },
+        "cost": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=1",
+          "fit": "29 ms",
+          "build": "17 ms",
+          "build %fit": "58.6%",
+          "index MB": "1.4",
+          "vectors MB": "22.6",
+          "rank median": "78 ms",
+          "rank q95": "79 ms",
+          "speedup": "0.04x",
+          "users/s": "12,070"
+        }
+      },
+      {
+        "quality": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=2",
+          "recall@10": "0.9709",
+          "NDCG@10": "0.2760",
+          "dNDCG@10": "-0.0007",
+          "top-1 churn": "0.0011",
+          "score gap@1": "+0.0003",
+          "dcat cov": "+0.0054"
+        },
+        "cost": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=2",
+          "fit": "29 ms",
+          "build": "17 ms",
+          "build %fit": "58.6%",
+          "index MB": "1.4",
+          "vectors MB": "22.6",
+          "rank median": "81 ms",
+          "rank q95": "82 ms",
+          "speedup": "0.04x",
+          "users/s": "11,673"
+        }
+      },
+      {
+        "quality": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=4",
+          "recall@10": "0.9922",
+          "NDCG@10": "0.2766",
+          "dNDCG@10": "-0.0001",
+          "top-1 churn": "0.0011",
+          "score gap@1": "+0.0003",
+          "dcat cov": "+0.0030"
+        },
+        "cost": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=4",
+          "fit": "29 ms",
+          "build": "17 ms",
+          "build %fit": "58.6%",
+          "index MB": "1.4",
+          "vectors MB": "22.6",
+          "rank median": "85 ms",
+          "rank q95": "87 ms",
+          "speedup": "0.04x",
+          "users/s": "11,050"
+        }
+      },
+      {
+        "quality": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=8",
+          "recall@10": "0.9973",
+          "NDCG@10": "0.2769",
+          "dNDCG@10": "+0.0001",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0012"
+        },
+        "cost": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=8",
+          "fit": "29 ms",
+          "build": "17 ms",
+          "build %fit": "58.6%",
+          "index MB": "1.4",
+          "vectors MB": "22.6",
+          "rank median": "93 ms",
+          "rank q95": "95 ms",
+          "speedup": "0.03x",
+          "users/s": "10,131"
+        }
+      },
+      {
+        "quality": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=16",
+          "recall@10": "0.9995",
+          "NDCG@10": "0.2768",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0006"
+        },
+        "cost": {
+          "Model": "EASE",
+          "Index": "quantized-flat(bits=4)",
+          "dial": "ov=16",
+          "fit": "29 ms",
+          "build": "17 ms",
+          "build %fit": "58.6%",
+          "index MB": "1.4",
+          "vectors MB": "22.6",
+          "rank median": "108 ms",
+          "rank q95": "110 ms",
+          "speedup": "0.03x",
+          "users/s": "8,760"
+        }
+      }
+    ]
+  }
+}

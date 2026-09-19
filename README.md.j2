@@ -1,0 +1,752 @@
+{#- The source of README.md. `python benchmarks/run.py render` turns it into the README;
+    the benchmark tables, and the sentences around them, are the macros of
+    benchmarks/templates/report.md.j2 applied to benchmarks/results. -#}
+{%- import "report.md.j2" as r -%}
+<!-- Generated from README.md.j2 by `python benchmarks/run.py render`: edit the template, not this file. -->
+# skrecsys
+
+[![PyPI](https://img.shields.io/pypi/v/skrecsys)](https://pypi.org/project/skrecsys/)
+[![Python](https://img.shields.io/pypi/pyversions/skrecsys)](https://pypi.org/project/skrecsys/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+Recommender systems in the scikit-learn style, built on NumPy, SciPy and scikit-learn.
+
+Every model has the same `fit`, `partial_fit`, `recommend` and `predict` interface, and
+works with scikit-learn's model selection tools. Around the models, skrecsys provides
+top-k ranking and beyond-accuracy metrics, a cross-validation splitter that keeps every
+test user and item in training, dataset loaders, and approximate nearest-neighbour
+indexes for large catalogs. The models are classical collaborative filtering (item kNN,
+BM25, RP3beta, EASE, SLIM, ALS, BPR) plus graph-based and sequential neural recommenders
+(SimpleX, XSimGCL, HSTU, Mamba4Rec).
+
+The estimators are Python; the inner loops are not. The similarity kernels, the
+elastic-net and least-squares solvers, the BPR sampler, identifier encoding, sparse
+matrix assembly and top-k selection are all written in Rust and exposed through PyO3 as
+`skrecsys._core`. They parallelize with [rayon](https://github.com/rayon-rs/rayon) and
+release the GIL while they run, and every recommender in `skrecsys.recommendation`
+scores and ranks a batch of queries inside one kernel, without ever materializing a dense
+score matrix in NumPy. The hot loops are written for the auto-vectorizer and use fused
+multiply-add where the hardware has it — NEON on Apple silicon and other aarch64, AVX2
+and FMA on x86-64 through runtime dispatch. Nothing in the crate uses `unsafe`, and both
+crates `#![forbid(unsafe_code)]` so it stays that way.
+
+The installed library is small: four runtime dependencies, all of them ones a
+scikit-learn user already has — NumPy, SciPy, scikit-learn and joblib, plus
+`typing-extensions` on Python 3.11 only. pandas is optional, and only needed for the
+dataset loaders' `as_frame=True`.
+
+## Installation
+
+```sh
+pip install skrecsys
+```
+
+or with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv add skrecsys
+```
+
+Requires Python 3.11+, on Linux, macOS or Windows. The wheels carry the compiled
+extension, so installing needs no Rust toolchain; they are built against the stable ABI,
+which means one wheel per platform covers every supported interpreter. Building from a
+source checkout needs a Rust toolchain and [maturin](https://www.maturin.rs/).
+
+Two optional extras add dependencies the core does not need:
+
+```sh
+pip install skrecsys[pandas]   # `as_frame=True` on the dataset loaders
+pip install skrecsys[nn]       # PyTorch, for the recommenders in `skrecsys.nn`
+```
+
+`skrecsys.nn` raises an `ImportError` naming the extra when torch is missing; everything
+else works without it. Torch is needed to *fit* a neural recommender, not to use one: a
+fitted model holds nothing but numpy arrays, so it scores, pickles and unpickles in an
+environment that has no torch installed.
+
+## Usage
+
+Training data `X` has exactly two columns: user identifiers in column 0 and item
+identifiers in column 1. Each row is one interaction. For ordinary recommenders the rows
+are an unordered set of interactions, so their order does not matter. An optional `y`
+array carries the interaction value (such as a rating or confidence) for each row; it is
+separate from `X` and must have the same number of rows. This layout also applies when
+`X` is a pandas DataFrame: the first two columns are used in order, regardless of their
+column names.
+
+Every recommender in `skrecsys.recommendation` and `skrecsys.nn` has the same four
+methods:
+
+```python
+import numpy as np
+
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = np.array(
+    [
+        ["alice", "matrix"],
+        ["alice", "alien"],
+        ["bob", "matrix"],
+        ["bob", "blade runner"],
+        ["carol", "alien"],
+        ["carol", "blade runner"],
+        ["carol", "heat"],
+    ]
+)
+
+# fit: learn from interactions
+rec = ItemKNNRecommender().fit(X)
+
+# recommend: top-k items per user, best first; items a user already has are left out
+items, scores = rec.recommend(["alice", "bob"], n_recommendations=2)
+# items  -> [["blade runner", "heat"], ["alien", "heat"]]
+# scores -> [[1.0, 0.707], [1.0, 0.707]]
+
+# predict: the score of given user-item pairs
+rec.predict([["alice", "blade runner"], ["bob", "heat"]])  # -> [1.0, 0.707]
+
+# partial_fit: add a new batch without refitting; new users and items are fine
+rec.partial_fit([["dave", "heat"], ["dave", "alien"], ["alice", "blade runner"]])
+rec.recommend(["alice", "dave"], n_recommendations=1)[0]  # -> [["heat"], ["blade runner"]]
+
+# also skip pairs the model hasn't been updated with yet, such as items just shown
+rec.recommend(["dave"], n_recommendations=1, exclude_interactions=[["dave", "blade runner"]])[0]
+# -> [["matrix"]]
+```
+
+- `fit(X, y=None)` learns from scratch. `y` is optional: one rating or weight per row.
+- `recommend(users, n_recommendations=k)` returns two `(n_users, k)` arrays: item IDs
+  and their scores. Only users seen by `fit` or `partial_fit` can be queried.
+  `candidates=` limits the ranking to some items, `exclude_seen=False` keeps a user's own
+  items, and `exclude_interactions=` removes further user-item pairs.
+- `predict(pairs)` scores given `(user, item)` pairs, both of which the model has seen.
+- `partial_fit(X, y=None)` adds a batch to what the model knows. See
+  [incremental fitting](#incremental-fitting) for which models reproduce `fit` exactly
+  and which continue from where they stopped.
+
+How these calls divide between training jobs and a serving process is covered under
+[production lifecycle](#production-lifecycle).
+
+### Model selection
+
+Recommenders are scikit-learn estimators, so `GridSearchCV` and `cross_validate` work on
+them. `WarmStartKFold` splits interactions so that every user and item in a test fold also
+appears in its training fold, and `make_recommender_scorer` turns a top-k metric into a
+scorer:
+
+```python
+from sklearn.model_selection import GridSearchCV
+
+from skrecsys.datasets import fetch_movielens_100k
+from skrecsys.metrics import make_recommender_scorer, ndcg_at_k
+from skrecsys.model_selection import WarmStartKFold
+
+X, y = fetch_movielens_100k(return_X_y=True)
+search = GridSearchCV(
+    ItemKNNRecommender(),
+    {"n_neighbors": [10, 50, 200], "shrink": [0.0, 10.0]},
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+).fit(X)
+```
+
+{% include "docs/production.md.j2" %}
+## Datasets
+
+Loaders download public datasets once, cache them in `~/skrecsys_data` (override with
+`data_home=` or `SKRECSYS_DATA`) and return them as `(user_id, item_id)` pairs plus ratings,
+like `sklearn.datasets`.
+
+```python
+from sklearn.model_selection import cross_validate
+
+from skrecsys.datasets import fetch_movielens_100k
+
+X, y = fetch_movielens_100k(return_X_y=True)
+cross_validate(
+    ItemKNNRecommender(),
+    X,
+    y,
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+)
+
+# official u1-u5 / ua / ub splits, timestamps and user/movie metadata
+ml = fetch_movielens_100k(subset="u1")
+cross_validate(
+    ItemKNNRecommender(),
+    ml.data,
+    ml.target,
+    cv=[(ml.train_indices, ml.test_indices)],
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+)
+```
+
+`fetch_movielens_1m` is the same shape one size up, and the dataset the sequential
+benchmark runs on: a million ratings from 6,040 users, unfiltered and with MovieLens's own
+identifiers. With `subset="leave-one-out"` and `max_sequence_length=200` it is the
+`ml-1m-l200` that HSTU and SASRec publish numbers on.
+
+```python
+from skrecsys.datasets import fetch_movielens_1m
+
+ml = fetch_movielens_1m(subset="leave-one-out", max_sequence_length=200)
+ml.train_indices, ml.test_indices  # all but each user's last rating, and that rating
+```
+
+Amazon Books arrives preprocessed the way the sequential-recommendation literature uses
+it — the 5-core of the 2014 review dump, chronological, cut to a 50-interaction history
+per user — so it is the `amzn-books-l50` that HSTU and SASRec publish numbers on.
+
+```python
+from skrecsys.datasets import fetch_amazon_books
+
+books = fetch_amazon_books(subset="leave-one-out")  # 8.1M interactions, 695k items
+books.data, books.target, books.timestamps  # pairs, ratings, Unix seconds
+books.item_info.asin[books.data[0, 1]]  # the product behind an item id
+
+full = fetch_amazon_books(max_sequence_length=None)  # 10.1M, every 5-core interaction
+```
+
+The first call downloads ~900 MB and spends about half a minute and ~6 GB of memory
+parsing it; afterwards it loads from the cache in seconds, and changing
+`max_sequence_length` re-parses nothing. `subset="leave-one-out"` holds out each user's
+last interaction, the protocol those papers evaluate with, and keeps one extra history
+slot so the held-out interaction is predicted from a full window.
+
+`as_frame=True` returns pandas objects and requires `pip install skrecsys[pandas]`.
+
+## Sequential recommendation
+
+`skrecsys.nn.HSTU` and `skrecsys.nn.Mamba4Rec` predict what a user does *next* rather
+than what they like. Their `X` still has exactly two columns — user ID first, item ID
+second — but row order is now significant: within a user, row `i` precedes row `j`
+whenever `i < j`. If you have timestamps, sort by user and timestamp before fitting;
+timestamps are not passed as a third column or used by these models. Rows of different
+users may be interleaved. Every loader here already sorts its rows by user and then by
+time, so its output is ready to fit, but shuffling the rows first trains the models on
+an incorrect sequence they cannot detect.
+
+```python
+from skrecsys.nn import HSTU, Mamba4Rec
+
+ml = fetch_movielens_1m(subset="leave-one-out", max_sequence_length=200)
+hstu = HSTU(random_state=0).fit(ml.data[ml.train_indices])
+items, scores = hstu.recommend(ml.data[ml.test_indices][:, 0], n_recommendations=10)
+
+mamba = Mamba4Rec(random_state=0).fit(ml.data[ml.train_indices])
+```
+
+The two read a history in different ways. HSTU attends over the window, so every position
+is compared against every other and the cost grows with the square of
+`max_sequence_length`; Mamba4Rec runs a selective state space recurrence over it, which
+carries a fixed-size state from one position to the next and costs the same per position
+however long the window is.
+
+Either one scores from the history it was fitted on: `recommend` takes user identifiers,
+not sequences. Two differences from the published models: HSTU also biases
+attention by the *time* gaps between interactions, and `fit` receives identifiers only,
+so this one carries the positional half of that bias alone. Mamba4Rec's recurrence is
+plain PyTorch rather than the fused CUDA kernel of `mamba-ssm`: the arithmetic is the
+same, the constant factor is not, so a fit is expensive and the paper's efficiency claims
+cannot be checked against it.
+
+Because a fit is expensive, both take a `device`. It defaults to `"cpu"`, the one backend
+every wheel has, and `device="auto"` picks CUDA, then MPS, then CPU — which is what
+`benchmarks/config/sequential.json` and the benchmark tests fit with, so they use whatever
+accelerator the host has:
+
+```python
+mamba = Mamba4Rec(random_state=0, device="auto").fit(ml.data[ml.train_indices])
+```
+
+The seeded batch order and dropout masks are drawn on the CPU whatever the device is, so
+moving a fit to an accelerator changes the last floating point digits of the result and
+nothing else.
+
+Every `skrecsys.nn` model shares one training loop, and it watches the training loss. An
+epoch that fails to beat the best loss so far by `tol` counts as a stall; after
+`n_iter_no_change` of them the `"adaptive"` schedule divides the Adam step size by five,
+and once the step size has bottomed out `early_stopping` ends the fit. `n_iter_` reports
+the epochs actually run and `best_loss_` the lowest loss reached. Pass
+`early_stopping=False, learning_rate_schedule="constant"` for the plain fixed-budget loop:
+
+```python
+hstu = HSTU(random_state=0, early_stopping=False, learning_rate_schedule="constant")
+```
+
+The signal is the training loss, not a held-out split, so this ends a fit that has
+converged rather than one that has begun to overfit — catching that would mean holding
+interactions back from `fit`. In practice it fires rarely at these defaults: measured on
+`ml-1m`, HSTU's loss goes at most one epoch without improving across a hundred of them,
+so its fit is untouched.
+
+## Leaderboard
+
+### MovieLens 100K
+
+{{ r.leaderboard(report.leaderboard["movielens-100k"]) }}
+
+Every model uses its default hyper-parameters, so this ranks the library's baselines,
+not the best each method can do. `R@10` equals `P@10` because the `ua` split holds out
+exactly 10 items per user, and `user cov` is 1 by construction: `recommend` raises
+rather than return a short list. The beyond-accuracy columns are the interesting ones —
+`MostPopular` has the highest `mean pop` and the lowest `novelty`, and `BM25` buys its
+ranking score by covering a tenth of the catalog where `EASE` covers a third. `SLIM`
+leads on every ranking metric while keeping a fifth of the catalog reachable, at a
+similarity matrix a quarter as dense as `RP3Beta`'s. `BPR` is the only model here
+trained on pairwise preferences rather than fitted in closed form, and it buys the
+second-best ranking with the widest catalog coverage of all; it is also the slowest to
+fit, and the entry is seeded, which pins it to a single thread.
+
+The second table times the same runs. Both operations are batched — one fit over the
+whole training split, one `recommend` call scoring all 943 held-out users against all
+1680 items the model saw — so these are throughput numbers, and the per-request latency
+of a single user is a different measurement. Ranking separates the models by what they
+have to touch rather than by how good they are. Every model goes through a kernel that
+scores a query, drops what the user has seen and keeps the best ten before moving on, so
+no score matrix is ever built: the neighbourhood models accumulate only the items a
+query reaches, the factor models scan the catalog a tile of users at a time, and both
+finish in about 1 ms. `EASE` is the slowest at 3 ms because its similarity matrix is
+dense, so every item a user has seen adds a full catalog-wide row to their scores. The
+`max` column is where a run's variance shows — `RP3Beta` fits in 8 ms at the median but
+18 ms at its slowest sample. How many samples a row gets is the budget's doing, which is
+why `BPR` at 1.3 s a fit gets sixteen and `MostPopular` gets its full thousand;
+`--budget` and `--repeat` buy more.
+
+### Amazon Books
+
+{{ r.leaderboard(report.leaderboard["amazon-books"]) }}
+
+## Sequential benchmark
+
+A different question, and so a different table: each user's last interaction is held out,
+the model reads the 200 before it, and the held-out item is ranked against the whole
+catalog. This is the leave-one-out protocol the sequential-recommendation literature
+reports on, which is what `skrecsys.nn.HSTU` is built for and what the numbers in the
+HSTU and SASRec papers can be read against. It is **not** comparable with the leaderboard
+above, which splits interactions rather than predicting the next one.
+
+```sh
+uv run python benchmarks/run.py run sequential --dry-run   # say what is out of date
+uv run python benchmarks/run.py run sequential             # measure it, re-render the table below
+```
+
+{{ r.sequential(report.sequential["movielens-1m"]) }}
+
+HSTU wins by a factor of three over the best non-sequential model here, which is the
+point of the table: on this split the answer depends on what a user watched *most
+recently*, and a model that reads their history as an unordered bag cannot use that. The
+ordering underneath is worth reading too — `EASE` and `SLIM`, the two models that solve
+for an item-item matrix in closed form, beat the neighbourhood models, and `ALS` at eight
+factors comes last, below even `MostPopular`.
+
+For scale, the HSTU authors report HR@10 0.3097 / NDCG@10 0.1720 for HSTU on this dataset
+and 0.2853 / 0.1603 for SASRec. This implementation lands at 0.2871 / 0.1665: between the
+two, about 7% under published HSTU on HR@10 and 3% under on NDCG@10. That gap is the
+expected size and direction, because the relative attention bias here carries positions
+only — the published model also buckets the *time* gaps between interactions, which `fit`
+never sees. The result confirms that the block, the causal masking and the sampled softmax behave as
+published.
+
+The cost is the other half of the story. One HSTU fit is 22 minutes against 33 ms for
+`ItemKNN` — some 40,000 times more compute for three times the hit rate, on a CPU and
+without the fused kernels the paper uses. Scoring, on the other hand, is a dot product
+against a precomputed state, so a fitted HSTU ranks the catalog for all 6,040 users in
+42 ms, in the same range as the classical models (16–32 ms, and 83 ms for `EASE`).
+
+Every score is an order of magnitude below the MovieLens table, and that is the dataset
+rather than the models: one held-out interaction per user over a 661k-item catalog,
+where MovieLens holds out ten out of 1682. `R@10` equals the hit rate for the same
+reason — a single relevant item is either in the list or not — and `P@10` is that hit
+rate over ten. For scale, the HSTU authors report HR@10 0.0416 / NDCG@10 0.0227 for HSTU
+and 0.0306 / 0.0164 for SASRec on this dataset. Those are close enough in protocol to be
+worth quoting — leave-one-out, full-corpus ranking, seen items filtered — but they were
+not produced by this harness, so compare them with the rows above with care: the candidate set here is the 660,940 items seen in
+training rather than the full 695,762-item space, and the rows are scored on a 10,000-user
+sample.
+
+Ranking order changes completely. `BM25` leads, the neighbourhood models take the top
+three places, and the two models fitted by gradient descent collapse: `BPR` scores a
+fifth of `BM25` while recommending the head of the catalog (`mean pop` 754 against 53),
+and `ALS` at its default eight factors is indistinguishable from noise. Both defaults
+were chosen against a 1.7k-item catalog and neither has the capacity for this one; they
+are not evidence about the methods, only about the defaults. `MostPopular` is the reference
+baseline of a long-tailed catalog — its catalog coverage rounds to zero, because ten
+items out of 660,940 is what a global ranking can reach.
+
+The timing table shows where sparsity pays. A catalog 400 times larger costs the
+neighbourhood models about a hundred times their MovieLens fit (0.6 s for `BM25`) because
+the item-item work follows co-occurrences rather than catalog size, and ranking 10,000
+users against all 660,940 items takes 22–46 ms. The models that score every item for
+every user pay for the catalog instead: `MostPopular` inverts the usual order at 0.6 s
+per call, with nothing to fit and no structure to exploit, and the factor models rank in
+1 s (`ALS`, eight factors) and 3.9 s (`BPR`, sixty-four). `BPR` is also the slowest to
+fit at 5 minutes, single-threaded because the entry is seeded.
+
+## Vector indexes
+
+Every recommender here scores a query against the whole catalog, which is exact and
+linear in the catalog. An index trades one of those properties away, and there are two
+of them, which give up different things.
+
+`index="hnsw"` gives up *linear*: the model builds a navigable graph over its item
+vectors at fit time, and `recommend` walks it instead of scoring everything, so a query
+touches a few hundred items rather than all of them. What it gives up in return is
+exactness — the answer is the best items the walk found.
+
+`index="quantized-flat"` gives up *exact*, but only just, and keeps linear. It stores
+the item vectors a second time as narrow codes, scans every candidate with those, and
+then rescores the best `oversample * k` of them with the original vectors. The scores it
+returns are therefore always exact, at any code width; the only thing quantization can
+cost is a true top-k item that never made the shortlist.
+
+```python
+from skrecsys.indexing import HNSW, QuantizedFlatIndex
+from skrecsys.recommendation import AlternatingLeastSquares
+
+rec = AlternatingLeastSquares(index=None).fit(X, y)  # exact scoring (the default)
+rec = AlternatingLeastSquares(index="hnsw").fit(X, y)  # always index
+rec = AlternatingLeastSquares(index=HNSW(m=32, ef_search=128)).fit(X, y)
+rec = AlternatingLeastSquares(index=QuantizedFlatIndex(bits=4, oversample=8)).fit(X, y)
+```
+
+**Choosing an index.** On the catalogs benchmarked below, the quantized index keeps
+near-exact recall with exact scores, but it is slower than the exact path for every
+model. Use the exact path (the default) or HNSW when latency matters; see
+[what the quantized scan costs](#what-the-quantized-scan-costs) for the numbers.
+
+`QuantizedFlatIndex` takes four parameters:
+
+- **`bits`** (default `8`), one of `1`, `2`, `4`, `8`. Codes are bit-packed, so four
+  bits really is half the memory of eight. Widths that are not powers of two are refused
+  rather than rounded: a code that straddled a byte would cost a two-byte read and a pair
+  of shifts per value.
+- **`quantile`** (default `0.0`), the share of each tail clipped when the code range is
+  chosen. A single outlier in a dimension otherwise spends the whole range on itself and
+  leaves the bulk two levels to share; trimming puts it outside the range, where it clips
+  — losing its magnitude but not its rank.
+- **`oversample`** (default `4`), the shortlist in multiples of `k`. The
+  recall-for-latency dial, and like `ef_search` the only one that can be turned on a
+  model that is already fitted. Narrow codes need a wider shortlist: measured on the test
+  fixture, eight and four bits keep the exact top ten at `oversample=4` for most models,
+  while one bit needs thirty-two and still reaches only 0.36 on
+  `AlternatingLeastSquares`. `SimpleX` needs more than the rest at every width; see
+  [what the quantized scan costs](#what-the-quantized-scan-costs).
+- **`min_index_size`** (default `4096`), as on `HNSW`.
+
+Quantization is affine — `value ≈ code * scale + offset` — with a scale and an offset per
+dimension for a dense space, and one pair over all the stored values for a sparse one,
+where a catalog-sized column dimension has no per-column statistics worth keeping. The
+scan never decodes: the scale is folded into the query once, so the inner loop multiplies
+a query value by a code and nothing else. It also skips the norm-equalizing dimension
+`HNSW` needs, since a scan reaches every candidate whatever its norm.
+
+One thing it does **not** do is shrink a fitted model: the original vectors are kept for
+the rerank, so the codes are an addition to the footprint. The `index MB` and
+`vectors MB` columns below are printed side by side for that reason.
+
+Choose an index explicitly after measuring it for your model and data. With the default `index=None`, recommendations score candidates exactly and build no index. `index="hnsw"` is honoured at any size and density, subject to the index's own query-time floor.
+
+Everything `recommend` promised it still promises. It returns exactly the number of
+items asked for, excludes what the user has seen, breaks ties by fitted item order, and
+raises rather than padding when too few items are eligible; a fitted model still holds
+nothing but numpy arrays, so it still pickles and scores anywhere. What changes is that
+the items are the best ones the walk **found**, which is usually and not always the best
+ones there are.
+
+Two further details of the graph index. An index is skipped at *query*
+time too, for
+candidate sets below `min_index_size` (4096 by default), because a graph walked with few
+eligible nodes needs proportionally more walking while an exact scan over a short list is
+already cheap — so `candidates=` filters quietly stay exact and identical. And scores are
+inner products, which are not a metric, so the index spends one extra
+dimension equalizing the item norms; without it a model with a bias term loses about a
+fifth of its recall. A build on more than one thread is not reproducible, because
+concurrent insertions see different partial graphs, so a model with `random_state` set
+builds on one thread unless `n_jobs` says otherwise.
+
+Whether an index pays off depends on the model and the catalog. The benchmark harness
+measures both on your own data:
+
+```sh
+uv run python benchmarks/run.py run indexes --dataset movielens-100k     # re-measure what changed
+uv run python benchmarks/run.py run indexes --dataset amazon-books --only BM25 ALS BPR
+uv run python benchmarks/run.py run indexes --index hnsw --kind sweep --no-store   # look, keep nothing
+```
+
+{{ r.indexes(report.indexes["movielens-100k"]) }}
+
+{{ r.indexes(report.indexes["amazon-books"]) }}
+
+What those two tables say about explicit index choices.
+
+**A latent-factor model is where an index pays.** It compresses a catalog into a few
+dozen dimensions, which is the geometry a graph is good at. On Amazon Books, `BPR` ranks
+10,000 users **66x faster at 0.96 recall** (`ef=64`) and `ALS` **56x faster at 0.94**
+(`ef=32`), for a build that costs about as much as the fit. Those multiples are over an
+exact path that scores all 660,940 items for every user, which no kernel can make
+sublinear. On a 1,680-item catalog the same models keep essentially perfect recall and
+lose on time, because there is nothing there to save.
+
+**A neighbourhood model is where it does not.** `recommend::top_k_from_similarity` is
+already an inverted-index scan whose cost follows the user's history and the width of a
+similarity row rather than the catalog, so a graph has little to win — and at six figures
+it does not merely lose on time, it stops working. `BM25` retrieves `0.0002` of the exact
+answer on Amazon Books, `ItemKNN` `0.016`. That is noise, not approximation, and the
+reason is structural: an item keeps 50 neighbours out of 660,940 columns, so two item
+vectors share a stored value with probability about `0.004`. Nearly every pair scores
+zero while the graph is being built, the graph comes out of ties, and the walk returns
+whatever it reaches.
+
+**`EASE` is the row that justifies printing both tables.** On MovieLens the graph
+retrieves `0.27` of the right answer at `ef=16` and gives up `0.10` of NDCG, and it is
+no longer even fast: the exact path adds one catalog-wide row per item a user has seen
+and ranks all 943 users in 3 ms, so the graph is `1.04x` at best and `0.62x` at `ef=64`.
+The quantized scan is the same row read the other way:
+on that model it keeps `1.0000` recall at `bits=8, ov=2`, and runs at `0.04x` of the
+exact path's speed.
+
+### What the quantized scan costs
+
+**On both datasets `QuantizedFlatIndex` is slower than the exact path for every model, at
+every setting measured.** On MovieLens the speedups run from `0.12x` (`ALS`, `bits=8`, `ov=1`)
+down to `0.01x` (`RP3Beta`, `bits=4`); on Amazon Books the best is `0.09x` (`BPR`,
+`bits=8`) and the neighbourhood models round to `0.00x`. The scan visits every
+candidate on one thread, while the exact neighbourhood path only touches the items a user's
+history reaches, and the exact factor path is a tiled, multi-threaded kernel.
+
+What it does deliver is the other three columns:
+
+- **Accuracy, essentially free.** At `bits=8, ov=2` it reproduces the exact answer —
+  `recall@10` of `1.0000` — on `ALS`, `BPR`, `ItemKNN`, `BM25`, `RP3Beta`, `SLIM`, `EASE`
+  and `XSimGCL` on MovieLens, and on Amazon Books it holds `1.0000` for `ALS` and `BPR`
+  and at least `0.999` for the neighbourhood models, where the graph retrieves under
+  `0.03`. Compare the graph on `EASE`, which needs `ef=256` to reach the same place.
+- **Exact scores, and a `score gap@1` that says something different from the graph's.**
+  81 of the 90 MovieLens quantized rows show `+0.0000`, and the nine that do not are all
+  `bits=4`, all under `+0.0006`; on Amazon Books the thirteen that do not are `bits=4`
+  too, all under `+0.02`. Those rows are not dequantized numbers leaking into the output
+  — they cannot be, because the shortlist is rescored with the original vectors before
+  anything is returned. They are rows where the shortlist missed the true best item, so
+  first place went to a genuinely lower-scoring one, and the gap is the real difference
+  between two real scores. The graph's gaps reach `+0.16` on MovieLens and `+0.99` on
+  Amazon Books for the same reason.
+- **A build that rounds to nothing.** `0` to `17 ms` on MovieLens, against `88 ms` for
+  the graph on `ALS` and `402 ms` on `EASE`; `17` to `254 ms` on Amazon Books, against
+  graph builds of 14 s (`BM25`) to 14 minutes (`RP3Beta`).
+
+**`SimpleX` is the model that does not fit the summary**, and is worth reading before
+choosing `bits`. At `bits=8` it needs `ov=8` to pass `0.99`; at `bits=4` it reaches only
+`0.84` even at `ov=16`. Its factors evidently carry more in their fine structure than the
+other models' do, and four bits throws that away. The graph has no such trouble with it
+(`0.992` at `ef=16`). Narrow codes are a per-model decision, not a global one.
+
+Integer (int8×int8) arithmetic for the scan was evaluated and not adopted; the measurements
+are in [`docs/quantized_integer_arithmetic.md`](docs/quantized_integer_arithmetic.md).
+
+The Amazon Books block is a long run to reproduce: the quantized rows alone take hours
+over a 660,940-item catalog, because the scan is sequential by design, and the `ItemKNN`
+and `RP3Beta` graph builds are `686 s` and `869 s`.
+`python benchmarks/run.py run indexes --dataset amazon-books` re-measures only the rows
+whose config has changed.
+
+Use `index=None` for the exact path, which is the default. The tables show where an explicit approximate index helps and where it costs time or quality; measure the model and catalog before choosing one.
+
+`MostPopularRecommender` has no `index` parameter and appears in neither table: its score
+does not depend on the query, so there is nothing for a neighbour index to narrow.
+
+## Incremental fitting
+
+Every recommender here also takes its interactions in batches. `partial_fit(X, y=None)` is
+`SGDClassifier`'s protocol with one deliberate difference: a batch may name users and items the
+model has never seen, and the fitted vocabularies grow to admit them. The first call is equivalent
+to `fit`.
+
+```python
+from skrecsys.recommendation import ItemKNNRecommender
+
+rec = ItemKNNRecommender().partial_fit(monday)
+rec.partial_fit(tuesday)  # new users, new items, new interactions
+rec.recommend(["u1"], n_recommendations=10)
+```
+
+What it saves is the *model* fit, not every pass over the data: accumulating `interactions_` costs
+one pass over everything stored so far whenever a new identifier renumbers the codes, and an
+`index` is rebuilt from scratch at the end of every call. What each estimator does with the batch
+differs, and its docstring says which of these it is.
+
+| Estimator | `partial_fit` reproduces `fit` on the concatenated batches | What it does |
+| --- | --- | --- |
+| `MostPopularRecommender` | yes | adds the batch to the counts |
+| `ItemKNNRecommender` | yes | recomputes the neighbour rows the batch reaches in two hops |
+| `BM25Recommender` | yes | the same, but its corpus-wide statistics usually widen that to the whole catalog |
+| `RP3Beta` | yes | the same, keeping `walk_` so the column-wise pruning pass can be redone |
+| `EASE` | yes | a Sherman-Morrison-Woodbury update of `inverse_gram_`, `O(n_items² · users touched)` instead of `O(n_items³)` |
+| `SLIMElasticNet` | no | warm-started coordinate descent on the reachable columns over an updated `gram_` |
+| `AlternatingLeastSquares` | no | resumes the ALS sweeps from the fitted parameters |
+| `BayesianPersonalizedRanking` | no | resumes the descent, drawing every positive from the batch |
+| `skrecsys.nn` models | no | resume training, rebuilding the module around the grown data and carrying the parameters and Adam's moments across |
+
+The four that say "no" are warm starts, and say so rather than hiding it: a model that resumes from
+where it stopped does not forget where that was. `EASE` and `SLIMElasticNet` keep a second matrix
+quadratic in the catalog once `partial_fit` is used.
+
+The neural models work the same way, and need no torch to be installed for any of it. A fit keeps
+its trained parameters and Adam's moments as numpy arrays rather than as a live module, so the
+usual sequence just works — including across a pickle, which is the point of streaming:
+
+```python
+import pickle
+
+from skrecsys.nn import SimpleX
+
+rec = SimpleX(n_factors=64, max_iter=20).fit(monday)
+rec.partial_fit(tuesday)  # resumes where the fit stopped
+rec = pickle.loads(pickle.dumps(rec))  # store it, reload it tomorrow
+rec.partial_fit(wednesday)  # and carry on
+```
+
+The module itself is rebuilt from the grown interaction matrix on every call, because the padded
+histories, normalized adjacency and windowed sequences it holds are functions of that matrix and
+change meaning the moment the catalog grows. A sequential model (`HSTU`, `Mamba4Rec`) additionally
+keeps `ordered_history_`, the identifiers in the order they arrived, because a CSR row is a set and
+the order within a user is the whole of what those models read — one identifier pair per stored
+interaction, roughly what `interactions_` already costs.
+
+## Modules
+
+| Module | Contents |
+| --- | --- |
+| `skrecsys` | `RecommenderMixin`, `is_recommender`, `supports_partial_fit` |
+| `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer` |
+| `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
+| `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
+| `skrecsys.model_selection` | `WarmStartKFold` |
+| `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
+| `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
+| `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |
+
+## Development
+
+Native kernels (for example the libFM-style ALS solver) are written in Rust under `rust/` and built
+by [maturin](https://www.maturin.rs) as `skrecsys._core`, so development needs a Rust toolchain
+(`rustup` or your package manager). `uv sync` rebuilds the extension when Rust sources change.
+
+The Rust side is a two-crate workspace. `rust/kernels` (`skrecsys-kernels`) holds the kernels and
+knows nothing about Python: its functions take borrowed slices and the sparse types in
+`sparse.rs`. `rust/src/lib.rs` is the `skrecsys._core` extension module, which validates the numpy
+arrays that come in, converts them and releases the GIL around a kernel call. The split is what
+lets the benchmarks link the kernels while the extension stays LTO'd; see `[lib] crate-type` below.
+
+```sh
+git clone https://github.com/mrk-andreev/skrecsys.git
+cd skrecsys
+uv sync
+uv run pytest
+uv run pytest -m benchmark  # quality benchmarks on real datasets (downloads data)
+LIBFM_BIN=/path/to/libfm/bin/libFM uv run pytest -m benchmark -k libfm  # ALS vs libFM
+uv run --group reference pytest -m benchmark -k implicit  # BM25 vs implicit
+uv run pytest -m benchmark -k rectools  # EASE vs RecTools (needs network on first run)
+uv run pytest -m benchmark -k dacrema  # RP3Beta and SLIMElasticNet vs their reference framework (needs network)
+uv run pytest -m benchmark -k cornac   # BayesianPersonalizedRanking vs Cornac (needs network on first run)
+uv run ruff check
+uv run ty check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo bench -- --test  # run every benchmark once, without measuring
+```
+
+The release profile uses fat LTO and a single codegen unit. `[lib] crate-type` deliberately
+lists only `cdylib`: adding `rlib` back would make Cargo drop LTO silently, because it cannot
+link-time-optimize a unit that also emits an rlib. The kernels live in their own crate so that
+the benchmarks have an rlib to link against without the extension needing one; `cargo build
+--release -v` shows `-C lto=fat` on the `cdylib` and `-C linker-plugin-lto` on the kernels, so
+LTO still crosses the crate boundary.
+
+### Benchmarks
+
+The tables in this README are generated, and so is the README itself: `README.md.j2` is
+the source, and `python benchmarks/run.py render` fills in its tables, and the sentences
+around them, from the results stored in `benchmarks/results`. Edit the template, not
+`README.md`; a test fails when the two disagree.
+
+What the benchmarks run is configuration rather than code. `benchmarks/config/`
+holds one file per report — `leaderboard.json`, `sequential.json`, `indexes.json` — each
+listing its entries, a model or an index named by `package` and `cls` with its `params`,
+a `version` and a `comment`, and the datasets it runs on with the settings each is timed
+under; `datasets.json` defines the datasets they share. The sequential and index reports
+take their models from the leaderboard's, so a model is defined once. Every result is
+keyed on a hash of everything its entry and its dataset say, which makes the workflow:
+
+- **Adding a model** is adding an entry to `leaderboard.json` and running
+  `python benchmarks/run.py run leaderboard`. That measures the new model, and nothing else.
+- **Editing a parameter or a setting** re-runs exactly the results it touches, with no
+  version to remember to bump.
+- **Bumping a `version`** re-runs an entry after a change the config cannot see — a
+  rewritten kernel, a fixed bug. That is why the quantized index is at `v2`.
+
+`status` lists what is out of date. A *missing* result was never measured; a *stale* one
+was measured under a config that has since changed. A stale result is still reported,
+with a note under its table's caption, because an outdated measurement is still a
+measurement: it is only the run that treats it as work to do.
+
+```sh
+uv run python benchmarks/run.py status                    # fresh, stale and missing results
+uv run python benchmarks/run.py run indexes --dry-run     # what a run would measure
+uv run python benchmarks/run.py run indexes --dataset movielens-100k --index quantized-flat-8
+uv run python benchmarks/run.py run leaderboard           # measure what is out of date, re-render README.md
+uv run python benchmarks/run.py run leaderboard --dataset amazon-books --only ALS --force
+uv run python benchmarks/run.py run leaderboard --no-store --set repeat=20 --set rank_repeat=5000
+uv run python benchmarks/run.py render --check            # exit 1 if README.md is out of date
+```
+
+`--no-store` measures without keeping the result, which suits tighter timing runs like the
+one above; to change what the README reports, change the settings in
+`benchmarks/config/leaderboard.json` instead.
+
+Each result records the host it was measured on. A run re-measures some rows and not
+others, so one table can hold rows from two machines; the caption under it then says which
+ran where, since a timing only compares against one taken on the same host.
+
+`rust/kernels/benches` measures the kernels with [criterion](https://bheisler.github.io/criterion.rs/book/),
+grouped into `sparse` (the transpose, the parallel row builder, the accumulator), `similarity`
+(item-item kNN, cosine, RP3beta, pruning), `ranking` (dense and fused top-k selection), `encode`
+(id factorization, COO to CSR) and `fit` (EASE, SLIM, FM-ALS, BPR).
+
+```sh
+cargo bench                           # every group, roughly six minutes
+cargo bench --bench similarity        # one group
+cargo bench -- 'knn::'                # benchmarks whose id matches a regex
+cargo bench -- --save-baseline main   # record the current numbers under a name
+cargo bench -- --baseline main        # compare the working tree against that baseline
+```
+
+Criterion reports the change against the previous run -- or against a saved baseline, which is the
+reliable way to compare two commits -- and says whether it is statistically significant. The
+`--save-baseline` form on a clean checkout of `main`, then `--baseline main` on the branch, is the
+way to check a change that was meant to be faster. HTML reports with the distributions land in
+`target/criterion/report/index.html`.
+
+Every input is generated from a fixed seed, and the rayon pool is pinned to four threads (or fewer
+on a smaller machine) so that two runs are comparable; `SKRECSYS_BENCH_THREADS=n` overrides it, and
+scaling numbers come from varying it deliberately. Comparisons are only meaningful between runs on
+the same machine, since the benchmarks inherit the release profile and the kernels are
+memory-bound.
+
+`python scripts/pgo.py` rebuilds the extension with profile-guided optimization, training on a
+short leaderboard run. It is opt-in and not part of `uv sync` or the release workflow: an
+interleaved A/B on an Apple M4 Pro put the kernels within a few percent either way for a 3%
+smaller binary and roughly triple the build time, which is not a trade worth making by default.
+Tight numeric loops with predictable branches give PGO little to work with, but that result is
+specific to this workload and micro-architecture, so the script is there to re-measure with.
+
+## Releasing
+
+1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
+2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
+3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.
+
+## License
+
+[MIT](LICENSE)

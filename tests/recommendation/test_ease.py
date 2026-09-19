@@ -77,3 +77,54 @@ def test_invalid_l2_reg_raises(l2_reg):
 def test_invalid_n_jobs_raises(n_jobs):
     with pytest.raises(ValueError, match="n_jobs"):
         EASE(n_jobs=n_jobs).fit(*_counts())
+
+
+def test_partial_fit_updates_the_inverse_gram_exactly():
+    """Woodbury must land on the inverse a fresh factorization would have produced.
+
+    The batch touches three users out of two hundred, so the update runs at rank six
+    against a sixty-item catalog -- the regime the identity exists for, and the one the
+    common-check fixtures are far too small to reach.
+    """
+    rng = np.random.default_rng(0)
+    n_users, n_items, l2_reg = 200, 60, 5.0
+    pairs = {(int(u), int(i)) for u, i in rng.integers(0, [n_users, n_items], size=(1500, 2))}
+    pairs |= {(u, 0) for u in range(n_users)}
+    X = np.array(sorted(pairs))
+    recent = X[:, 0] >= n_users - 3
+
+    est = EASE(l2_reg=l2_reg).partial_fit(X[~recent])
+    est.partial_fit(X[recent])
+    full = EASE(l2_reg=l2_reg).fit(X)
+
+    gram = (full.interactions_.T @ full.interactions_).toarray()
+    expected = np.linalg.inv(gram + l2_reg * np.eye(n_items))
+    np.testing.assert_allclose(est.inverse_gram_, expected, rtol=1e-7, atol=1e-10)
+    np.testing.assert_allclose(est.similarity_, full.similarity_, rtol=1e-7, atol=1e-10)
+
+
+def test_many_batches_do_not_drift():
+    """A long chain of rank-limited updates must not wander off the factorized answer."""
+    rng = np.random.default_rng(1)
+    n_users, n_items, l2_reg = 200, 60, 5.0
+    pairs = {(int(u), int(i)) for u, i in rng.integers(0, [n_users, n_items], size=(1500, 2))}
+    pairs |= {(u, 0) for u in range(n_users)}
+    X = np.array(sorted(pairs))
+
+    chunks = np.array_split(X, 12)
+    est = EASE(l2_reg=l2_reg).partial_fit(chunks[0])
+    for chunk in chunks[1:]:
+        est.partial_fit(chunk)
+    full = EASE(l2_reg=l2_reg).fit(X)
+    np.testing.assert_allclose(est.similarity_, full.similarity_, rtol=1e-6, atol=1e-9)
+
+
+def test_fit_keeps_the_memory_it_always_did():
+    """The inverse is state only an incremental fit has any use for."""
+    X = np.array([["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"]], dtype=object)
+    est = EASE(l2_reg=1.0).fit(X)
+    assert not hasattr(est, "inverse_gram_")
+    est.partial_fit(np.array([["u3", "a"]], dtype=object))
+    assert est.inverse_gram_.shape == (est.n_items_, est.n_items_)
+    est.fit(X)
+    assert not hasattr(est, "inverse_gram_"), "a refit left a stale inverse behind."

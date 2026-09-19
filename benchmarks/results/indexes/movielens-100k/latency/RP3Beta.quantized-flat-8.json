@@ -1,0 +1,92 @@
+{
+  "key": "e807552c9782ceeb",
+  "unit": "indexes/movielens-100k/RP3Beta/quantized-flat-8/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:45:24+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "RP3Beta",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "21 us",
+        "exact per user": "21 us",
+        "setting": "ov=4",
+        "rank": "153 us",
+        "speedup": "0.14x"
+      },
+      {
+        "users/request": "10",
+        "exact": "88 us",
+        "exact per user": "9 us",
+        "setting": "ov=4",
+        "rank": "761 us",
+        "speedup": "0.12x"
+      },
+      {
+        "users/request": "100",
+        "exact": "184 us",
+        "exact per user": "2 us",
+        "setting": "ov=4",
+        "rank": "6.99 ms",
+        "speedup": "0.03x"
+      }
+    ]
+  }
+}
