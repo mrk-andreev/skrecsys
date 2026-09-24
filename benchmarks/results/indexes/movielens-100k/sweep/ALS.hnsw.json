@@ -1,0 +1,233 @@
+{
+  "key": "012e66a8360a57fb",
+  "unit": "indexes/movielens-100k/ALS/hnsw/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:06:37+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "AlternatingLeastSquares",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          16,
+          32,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "ALS",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.0422",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "ALS",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "323 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "1,456,325"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "recall@10": "0.9951",
+          "NDCG@10": "0.0421",
+          "dNDCG@10": "-0.0001",
+          "top-1 churn": "0.0032",
+          "score gap@1": "+0.0002",
+          "dcat cov": "-0.0012"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "fit": "323 ms",
+          "build": "88 ms",
+          "build %fit": "27.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.1",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "0.83x",
+          "users/s": "1,209,104"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9992",
+          "NDCG@10": "0.0421",
+          "dNDCG@10": "-0.0001",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "-0.0006"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "323 ms",
+          "build": "88 ms",
+          "build %fit": "27.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.1",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "0.63x",
+          "users/s": "917,985"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9999",
+          "NDCG@10": "0.0422",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "323 ms",
+          "build": "88 ms",
+          "build %fit": "27.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.1",
+          "rank median": "2 ms",
+          "rank q95": "2 ms",
+          "speedup": "0.43x",
+          "users/s": "627,212"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.0422",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "323 ms",
+          "build": "88 ms",
+          "build %fit": "27.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.1",
+          "rank median": "2 ms",
+          "rank q95": "3 ms",
+          "speedup": "0.27x",
+          "users/s": "398,153"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.0422",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "fit": "323 ms",
+          "build": "88 ms",
+          "build %fit": "27.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.1",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "1.00x",
+          "users/s": "1,458,389"
+        }
+      }
+    ]
+  }
+}

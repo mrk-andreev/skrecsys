@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "settings": {
+    "k": 10,
+    "repeat": 1000,
+    "rank_repeat": 1000,
+    "budget": 20.0,
+    "warmup": {"fit": 1, "rank": 10}
+  },
+  "datasets": {
+    "movielens-100k": {},
+    "amazon-books": {
+      "settings": {"repeat": 5, "rank_repeat": 50, "budget": 60.0, "warmup": {"fit": 1, "rank": 2}},
+      "skip": {
+        "EASE": "a dense 674k x 674k item matrix does not fit in memory",
+        "SLIM": "one elastic net per item over a 674k-item catalog does not finish",
+        "SimpleX": "one training epoch of 7.4M interactions runs over an hour on CPU",
+        "XSimGCL": "one training epoch of 7.4M interactions runs over an hour on CPU"
+      }
+    }
+  },
+  "models": [
+    {
+      "name": "SLIM",
+      "package": "skrecsys.recommendation",
+      "cls": "SLIMElasticNet",
+      "params": {},
+      "version": "v2",
+      "comment": "Elastic-net item-item regression, one coordinate-descent problem per item; v2: FMA coordinate-descent axpy; fused recommend kernel reading the fitted matrices in place"
+    },
+    {
+      "name": "EASE",
+      "package": "skrecsys.recommendation",
+      "cls": "EASE",
+      "params": {},
+      "version": "v2",
+      "comment": "Closed-form dense item-item model; v2: fused dense-row recommend kernel (was a scipy sparse-by-dense product and a dense score matrix)"
+    },
+    {
+      "name": "RP3Beta",
+      "package": "skrecsys.recommendation",
+      "cls": "RP3Beta",
+      "params": {},
+      "version": "v2",
+      "comment": "Three-step random walk with popularity penalty; v2: cached thread pools, serial small batches, fused recommend kernel reading the fitted matrices in place"
+    },
+    {
+      "name": "BPR",
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {"random_state": 0},
+      "version": "v2",
+      "comment": "Pairwise matrix factorization; seeded, so it fits on one thread; v2: fused latent-factor recommend kernel (was a numpy score matrix plus bias broadcasts)"
+    },
+    {
+      "name": "BM25",
+      "package": "skrecsys.recommendation",
+      "cls": "BM25Recommender",
+      "params": {},
+      "version": "v2",
+      "comment": "Item-item neighbours with BM25 weighting; v2: cached thread pools, serial small batches, fused recommend kernel reading the fitted matrices in place"
+    },
+    {
+      "name": "ItemKNN",
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2",
+      "comment": "Cosine item-item neighbours; v2: cached thread pools, serial small batches, dense accumulation for long rows"
+    },
+    {
+      "name": "MostPopular",
+      "package": "skrecsys.recommendation",
+      "cls": "MostPopularRecommender",
+      "params": {},
+      "version": "v2",
+      "comment": "Popularity baseline; its score does not depend on the query; v2: ranked by the latent-factor kernel as a zero-factor model"
+    },
+    {
+      "name": "ALS",
+      "package": "skrecsys.recommendation",
+      "cls": "AlternatingLeastSquares",
+      "params": {"random_state": 0},
+      "version": "v2",
+      "comment": "libFM-style ALS with global, user and item biases; v2: fused latent-factor recommend kernel (was a numpy score matrix plus bias broadcasts)"
+    },
+    {
+      "name": "SimpleX",
+      "package": "skrecsys.nn",
+      "cls": "SimpleX",
+      "params": {"learning_rate": 0.01, "random_state": 0},
+      "version": "v1",
+      "comment": "Cosine contrastive CF; a user fuses its own embedding with an aggregate of its items; needs the nn extra"
+    },
+    {
+      "name": "XSimGCL",
+      "package": "skrecsys.nn",
+      "cls": "XSimGCL",
+      "params": {"learning_rate": 0.01, "contrastive_weight": 0.01, "random_state": 0},
+      "version": "v1",
+      "comment": "LightGCN plus a contrast between two noise-perturbed layers of its own propagation; needs the nn extra"
+    }
+  ]
+}

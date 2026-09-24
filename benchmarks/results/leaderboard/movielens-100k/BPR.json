@@ -1,0 +1,74 @@
+{
+  "key": "d2f8edbb3c028812",
+  "unit": "leaderboard/movielens-100k/BPR",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:00:18+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 1000,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "BPR",
+      "NDCG@10": "0.2800",
+      "P@10": "0.2467",
+      "R@10": "0.2467",
+      "hit rate": "0.9226",
+      "MAP": "0.1451",
+      "MRR": "0.5782",
+      "cat cov": "0.3542",
+      "user cov": "1.0000",
+      "mean pop": "228.5243",
+      "novelty": "8.84"
+    },
+    "timing": {
+      "Model": "BPR",
+      "fit batch (interactions)": "90570",
+      "fit samples": "16",
+      "fit min": "1.30 s",
+      "fit median": "1.31 s",
+      "fit max": "1.32 s",
+      "rank batch (users x items)": "943 x 1680",
+      "rank samples": "1000",
+      "rank mean": "1 ms",
+      "rank median": "1 ms",
+      "rank q95": "1 ms",
+      "rank q99": "1 ms"
+    }
+  }
+}

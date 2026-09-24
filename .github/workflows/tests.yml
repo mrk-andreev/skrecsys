@@ -34,6 +34,29 @@ jobs:
       - name: Run the tests
         run: uv run --no-sync pytest
 
+  # The `nn` extra is heavy and pure Python, so it is exercised once rather than across
+  # the whole matrix; the matrix above stays torch-free, which is what keeps the import
+  # guard in skrecsys/nn/__init__.py honest.
+  nn:
+    name: Neural recommenders (torch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nn
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Sync the environment
+        run: uv sync --locked --group dev --extra nn
+      - name: Run the tests
+        run: uv run --no-sync pytest tests/nn --no-cov
+      - name: Type-check the subpackage the root config excludes
+        run: uv run --no-sync ty check --config-file ty.nn.toml
+
   lint:
     name: Lint and type-check
     runs-on: ubuntu-latest
@@ -54,6 +77,11 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
       - run: cargo test
+      # Runs every criterion benchmark once and throws the timings away: a shared runner
+      # cannot measure anything, but it can still catch a benchmark that panics or whose
+      # fixture no longer satisfies what the kernel it feeds assumes.
+      - name: Smoke-test the benchmarks
+        run: cargo bench -- --test
 
   # Guards the abi3 promise: one wheel built at the floor must import everywhere.
   abi3:

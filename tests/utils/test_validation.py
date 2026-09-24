@@ -4,7 +4,13 @@ import scipy.sparse as sp
 
 from skrecsys import _core
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
-from skrecsys.utils.validation import check_ids, check_interactions, encode_ids, factorize
+from skrecsys.utils.validation import (
+    check_ids,
+    check_interactions,
+    encode_ids,
+    factorize,
+    lookup_ids,
+)
 
 
 def test_check_interactions_default_weights():
@@ -50,6 +56,19 @@ def test_encode_ids():
         encode_ids(np.array(["c"], dtype=object), fitted, name="item")
     with pytest.raises(ValueError, match="Unknown item"):
         encode_ids(np.array(["z"], dtype=object), fitted, name="item")
+
+
+def test_lookup_ids_marks_unknown_identifiers_rather_than_raising():
+    fitted = np.array(["a", "b", "d"], dtype=object)
+    positions, known = lookup_ids(np.array(["d", "c", "a", "z"], dtype=object), fitted, name="item")
+    np.testing.assert_array_equal(known, [True, False, True, False])
+    np.testing.assert_array_equal(positions[known], [2, 0])
+
+
+def test_lookup_ids_against_nothing_fitted():
+    positions, known = lookup_ids(np.array([1, 2]), np.array([], dtype=np.int64), name="user")
+    assert positions.shape == (2,)
+    assert not known.any()
 
 
 FACTORIZE_CASES = {

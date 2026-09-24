@@ -110,7 +110,7 @@ def reference_repo(tools, tmp_path_factory):
         [tools["git"], "-C", str(target), "sparse-checkout", "set", *directories],
     ]  # fmt: skip
     for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             pytest.skip(f"Could not clone the reference framework:\n{result.stderr[-2000:]}")
     return target
@@ -132,7 +132,7 @@ def _run_reference(uv_bin, repo, interactions, reference, tmp_path):
         "python", str(script), str(repo),
         str(tmp_path / "input.npz"), str(tmp_path / "output.npz"), *reference.arguments,
     ]  # fmt: skip
-    result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         pytest.skip(
             f"Could not run the reference in an isolated environment:\n{result.stderr[-2000:]}"

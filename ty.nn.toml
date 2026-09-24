@@ -1,0 +1,13 @@
+# Type-checks the optional PyTorch subpackage, which the root config excludes because
+# torch is absent from the environment `ty check` normally runs in. Used by the `nn` job
+# in .github/workflows/tests.yml, where the `nn` extra is installed.
+
+[environment]
+# The one interpreter the nn extra is tested on; see the `nn` job in tests.yml.
+python-version = "3.11"
+
+[src]
+include = ["src/skrecsys/nn", "tests/nn"]
+
+[rules]
+all = "error"

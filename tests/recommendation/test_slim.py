@@ -199,3 +199,56 @@ def test_invalid_tol_raises(tol):
 def test_invalid_n_jobs_raises(n_jobs):
     with pytest.raises(ValueError, match="n_jobs"):
         SLIMElasticNet(n_jobs=n_jobs).fit(*_counts())
+
+
+def test_partial_fit_keeps_the_gram_matrix_exact():
+    """The rank-limited Gram update must land on the product of the grown matrix.
+
+    Everything the solver does reads the Gram matrix and nothing else, so an error here
+    would show up as weights that are merely plausible rather than as a failure.
+    """
+    rng = np.random.default_rng(0)
+    pairs = {(int(u), int(i)) for u, i in rng.integers(0, [120, 25], size=(700, 2))}
+    pairs |= {(u, 0) for u in range(120)}
+    X = np.array(sorted(pairs))
+    recent = X[:, 0] >= 117
+
+    est = SLIMElasticNet(alpha=0.02, n_neighbors=8).partial_fit(X[~recent])
+    est.partial_fit(X[recent])
+    full = SLIMElasticNet(alpha=0.02, n_neighbors=8).fit(X)
+    expected = (full.interactions_.T @ full.interactions_).toarray()
+    np.testing.assert_allclose(est.gram_, expected, rtol=0, atol=1e-12)
+
+
+def test_a_warm_start_reaches_the_same_weights_at_a_tight_tolerance():
+    """The approximation is the tolerance, not the warm start.
+
+    Coordinate descent on a strictly convex problem converges to one optimum whatever it
+    starts from, so tightening `tol` must close the gap between a warm-started column and
+    a cold one. What `partial_fit` does not reproduce is the columns it never re-solves.
+    """
+    rng = np.random.default_rng(1)
+    pairs = {(int(u), int(i)) for u, i in rng.integers(0, [120, 25], size=(700, 2))}
+    pairs |= {(u, 0) for u in range(120)}
+    X = np.array(sorted(pairs))
+    recent = X[:, 0] >= 117
+
+    def model():
+        return SLIMElasticNet(alpha=0.02, n_neighbors=25, max_iter=5000, tol=1e-12)
+
+    est = model().partial_fit(X[~recent])
+    est.partial_fit(X[recent])
+    full = model().fit(X)
+    difference = abs(est.similarity_ - full.similarity_)
+    assert difference.nnz == 0 or difference.max() < 1e-7
+
+
+def test_fit_keeps_the_memory_it_always_did():
+    """The Gram matrix is dense and quadratic; only an incremental fit needs it."""
+    X = np.array([["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"], ["u3", "b"]], dtype=object)
+    est = SLIMElasticNet(alpha=0.01, max_iter=MAX_ITER, tol=TOL).fit(X)
+    assert not hasattr(est, "gram_")
+    est.partial_fit(np.array([["u1", "c"]], dtype=object))
+    assert est.gram_.shape == (est.n_items_, est.n_items_)
+    est.fit(X)
+    assert not hasattr(est, "gram_"), "a refit left a stale Gram matrix behind."

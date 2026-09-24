@@ -1,0 +1,236 @@
+{
+  "key": "27af9150e9e23ff6",
+  "unit": "indexes/movielens-100k/SimpleX/hnsw/sweep",
+  "provenance": {
+    "source": "imported",
+    "from": "README.md in the working tree on top of fc23fd1",
+    "at": "2026-09-22T20:52:15+00:00",
+    "note": "Measured by the pre-config harness and parsed back out of its table. The settings in `inputs` are the config's at import time; the run's own were not recorded separately."
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.nn",
+      "cls": "SimpleX",
+      "params": {
+        "learning_rate": 0.01,
+        "random_state": 0
+      },
+      "version": "v1"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          16,
+          32,
+          64,
+          128,
+          256
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "SimpleX",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2520",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "SimpleX",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "103.64 s",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "985,264"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "recall@10": "0.9920",
+          "NDCG@10": "0.2525",
+          "dNDCG@10": "+0.0005",
+          "top-1 churn": "0.0032",
+          "score gap@1": "+0.0000",
+          "dcat cov": "-0.0042"
+        },
+        "cost": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=16",
+          "fit": "103.64 s",
+          "build": "290 ms",
+          "build %fit": "0.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.9",
+          "rank median": "3 ms",
+          "rank q95": "3 ms",
+          "speedup": "0.32x",
+          "users/s": "318,084"
+        }
+      },
+      {
+        "quality": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9980",
+          "NDCG@10": "0.2521",
+          "dNDCG@10": "+0.0001",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "-0.0024"
+        },
+        "cost": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "103.64 s",
+          "build": "290 ms",
+          "build %fit": "0.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.9",
+          "rank median": "4 ms",
+          "rank q95": "4 ms",
+          "speedup": "0.25x",
+          "users/s": "249,960"
+        }
+      },
+      {
+        "quality": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9998",
+          "NDCG@10": "0.2520",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "-0.0006"
+        },
+        "cost": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "103.64 s",
+          "build": "290 ms",
+          "build %fit": "0.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.9",
+          "rank median": "5 ms",
+          "rank q95": "6 ms",
+          "speedup": "0.19x",
+          "users/s": "186,823"
+        }
+      },
+      {
+        "quality": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "0.9998",
+          "NDCG@10": "0.2520",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "-0.0000",
+          "dcat cov": "-0.0006"
+        },
+        "cost": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "103.64 s",
+          "build": "290 ms",
+          "build %fit": "0.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.9",
+          "rank median": "7 ms",
+          "rank q95": "7 ms",
+          "speedup": "0.14x",
+          "users/s": "137,086"
+        }
+      },
+      {
+        "quality": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2520",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "SimpleX",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=256",
+          "fit": "103.64 s",
+          "build": "290 ms",
+          "build %fit": "0.3%",
+          "index MB": "0.2",
+          "vectors MB": "0.9",
+          "rank median": "1 ms",
+          "rank q95": "1 ms",
+          "speedup": "1.00x",
+          "users/s": "986,187"
+        }
+      }
+    ]
+  }
+}

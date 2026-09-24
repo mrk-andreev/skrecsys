@@ -1,0 +1,102 @@
+{
+  "key": "65348aab9af52802",
+  "unit": "indexes/amazon-books/ALS/quantized-flat-8/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T11:28:05+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "AlternatingLeastSquares",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "525 us",
+        "exact per user": "525 us",
+        "setting": "ov=4",
+        "rank": "10.94 ms",
+        "speedup": "0.05x"
+      },
+      {
+        "users/request": "10",
+        "exact": "6.04 ms",
+        "exact per user": "604 us",
+        "setting": "ov=4",
+        "rank": "18.66 ms",
+        "speedup": "0.32x"
+      },
+      {
+        "users/request": "100",
+        "exact": "12.16 ms",
+        "exact per user": "122 us",
+        "setting": "ov=4",
+        "rank": "145.67 ms",
+        "speedup": "0.08x"
+      },
+      {
+        "users/request": "1,000",
+        "exact": "84.61 ms",
+        "exact per user": "85 us",
+        "setting": "ov=4",
+        "rank": "1.38 s",
+        "speedup": "0.06x"
+      }
+    ]
+  }
+}

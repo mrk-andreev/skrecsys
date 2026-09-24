@@ -1,0 +1,94 @@
+{
+  "key": "ec055ba8263b0ab6",
+  "unit": "indexes/movielens-100k/BPR/quantized-flat-8/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:51:17+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "22 us",
+        "exact per user": "22 us",
+        "setting": "ov=4",
+        "rank": "182 us",
+        "speedup": "0.12x"
+      },
+      {
+        "users/request": "10",
+        "exact": "91 us",
+        "exact per user": "9 us",
+        "setting": "ov=4",
+        "rank": "223 us",
+        "speedup": "0.41x"
+      },
+      {
+        "users/request": "100",
+        "exact": "276 us",
+        "exact per user": "3 us",
+        "setting": "ov=4",
+        "rank": "1.56 ms",
+        "speedup": "0.18x"
+      }
+    ]
+  }
+}

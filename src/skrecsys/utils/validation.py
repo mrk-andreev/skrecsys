@@ -8,7 +8,7 @@ from sklearn.utils.validation import check_array, check_consistent_length
 
 from skrecsys import _core
 
-__all__ = ["check_ids", "check_interactions", "encode_ids", "factorize"]
+__all__ = ["check_ids", "check_interactions", "encode_ids", "factorize", "lookup_ids"]
 
 _N_COLUMNS = 2
 _INT64_BYTES = 8
@@ -54,8 +54,23 @@ def check_interactions(
     return users, items, weights
 
 
+#: Dtype kinds an identifier array can already be in that ``check_array`` with
+#: ``dtype=None`` hands back unchanged: integers, floats, strings and objects.
+_PASSTHROUGH_KINDS = frozenset("iufUO")
+
+
 def check_ids(ids: ArrayLike, *, name: str = "X") -> NDArray[Any]:
     """Validate a one-dimensional array of identifiers."""
+    # The common case in a serving loop -- a non-empty 1-D ndarray -- is returned as is.
+    # ``check_array`` would return the same array, but only after probing it for every
+    # dataframe library it knows, which was most of a one-user ``recommend``.
+    if (
+        type(ids) is np.ndarray
+        and ids.ndim == 1
+        and ids.size
+        and ids.dtype.kind in _PASSTHROUGH_KINDS
+    ):
+        return ids
     arr = check_array(ids, ensure_2d=False, dtype=None, ensure_all_finite=False)
     if arr.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional array of identifiers.")
@@ -99,6 +114,31 @@ def _factorize_objects(values: NDArray[Any]) -> tuple[NDArray[Any], NDArray[np.i
     return uniques, rank[codes]
 
 
+def lookup_ids(
+    ids: NDArray[Any], fitted_ids: NDArray[Any], *, name: str
+) -> tuple[NDArray[np.intp], NDArray[np.bool_]]:
+    """Positions of identifiers in the sorted array ``fitted_ids``, and which exist.
+
+    ``positions[i]`` is meaningful only where ``known[i]`` is true. The lenient form of
+    :func:`encode_ids`, for inputs that may legitimately name identifiers the model has
+    never seen and are expected to skip them.
+
+    Raises
+    ------
+    ValueError
+        If the identifiers cannot be ordered against the fitted ones at all.
+    """
+    try:
+        positions = np.searchsorted(fitted_ids, ids)
+    except TypeError as exc:
+        raise ValueError(f"Unknown {name} identifiers: incompatible types.") from exc
+    if not len(fitted_ids):
+        return np.zeros(len(ids), dtype=np.intp), np.zeros(len(ids), dtype=bool)
+    positions = np.minimum(positions, len(fitted_ids) - 1)
+    known = np.asarray(fitted_ids[positions] == ids, dtype=bool)
+    return positions.astype(np.intp), known
+
+
 def encode_ids(ids: NDArray[Any], fitted_ids: NDArray[Any], *, name: str) -> NDArray[np.intp]:
     """Map identifiers to positions in the sorted array ``fitted_ids``.
 
@@ -107,13 +147,8 @@ def encode_ids(ids: NDArray[Any], fitted_ids: NDArray[Any], *, name: str) -> NDA
     ValueError
         If any identifier was not seen during ``fit``.
     """
-    try:
-        positions = np.searchsorted(fitted_ids, ids)
-    except TypeError as exc:
-        raise ValueError(f"Unknown {name} identifiers: incompatible types.") from exc
-    positions = np.minimum(positions, len(fitted_ids) - 1)
-    unknown = fitted_ids[positions] != ids if len(fitted_ids) else np.ones(len(ids), bool)
-    if np.any(unknown):
-        sample = list(np.asarray(ids)[unknown][:5])
+    positions, known = lookup_ids(ids, fitted_ids, name=name)
+    if not np.all(known):
+        sample = list(np.asarray(ids)[~known][:5])
         raise ValueError(f"Unknown {name} identifiers: {sample}.")
-    return positions.astype(np.intp)
+    return positions

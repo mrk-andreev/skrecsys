@@ -1,0 +1,101 @@
+{
+  "key": "397b5bce4511aef6",
+  "unit": "indexes/amazon-books/ItemKNN/hnsw/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T10:53:32+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          64
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "116 us",
+        "exact per user": "116 us",
+        "setting": "ef=64",
+        "rank": "18.50 ms",
+        "speedup": "0.01x"
+      },
+      {
+        "users/request": "10",
+        "exact": "573 us",
+        "exact per user": "57 us",
+        "setting": "ef=64",
+        "rank": "21.88 ms",
+        "speedup": "0.03x"
+      },
+      {
+        "users/request": "100",
+        "exact": "3.19 ms",
+        "exact per user": "32 us",
+        "setting": "ef=64",
+        "rank": "23.81 ms",
+        "speedup": "0.13x"
+      },
+      {
+        "users/request": "1,000",
+        "exact": "13.82 ms",
+        "exact per user": "14 us",
+        "setting": "ef=64",
+        "rank": "44.06 ms",
+        "speedup": "0.31x"
+      }
+    ]
+  }
+}

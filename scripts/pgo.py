@@ -32,12 +32,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # Instrumented code is several times slower, and the profile only needs to see which
 # branches are hot, so the training run is deliberately shorter than a real benchmark.
-TRAINING = ["benchmarks/leaderboard.py", "--repeat", "2", "--rank-repeat", "100"]
+# `--force` runs every model whether or not its stored result is current, and
+# `--no-store` keeps the instrumented build's timings out of `benchmarks/results`.
+TRAINING = [
+    "benchmarks/run.py",
+    "run",
+    "leaderboard",
+    "--dataset",
+    "movielens-100k",
+    "--force",
+    "--no-store",
+    "--set",
+    "repeat=2",
+    "--set",
+    "rank_repeat=100",
+]
 # Longer command lines are summarized when echoed; only `llvm-profdata merge` reaches it.
 MAX_ECHOED_ARGS = 8
 
 
-def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    stdout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run `command` from the repository root, echoing it first.
 
     The merge step takes one argument per dumped profile, so a long tail is summarized
@@ -48,14 +67,14 @@ def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str
         if len(command) <= MAX_ECHOED_ARGS
         else [*command[:5], f"... +{len(command) - 5} more"]
     )
-    print(f"$ {' '.join(shown)}", flush=True)  # noqa: T201
-    return subprocess.run(command, cwd=ROOT, text=True, check=True, **kwargs)  # type: ignore[call-overload]  # noqa: S603
+    print(f"$ {' '.join(shown)}", flush=True)
+    return subprocess.run(command, cwd=ROOT, text=True, check=True, env=env, stdout=stdout)
 
 
 def rustc_llvm_version() -> str:
     """The LLVM major version rustc emits profiles for, for example `22`."""
     probe = [os.environ.get("RUSTC", "rustc"), "-vV"]
-    out = subprocess.run(probe, capture_output=True, text=True, check=True).stdout  # noqa: S603
+    out = subprocess.run(probe, capture_output=True, text=True, check=True).stdout
     match = re.search(r"^LLVM version:\s*(\d+)", out, re.MULTILINE)
     if match is None:
         raise SystemExit("could not read rustc's LLVM version from `rustc -vV`.")
@@ -76,7 +95,7 @@ def find_llvm_profdata(major: str) -> str:
     ]
     rustup = shutil.which("rustup")
     if rustup is not None:
-        sysroot = subprocess.run(  # noqa: S603
+        sysroot = subprocess.run(
             [rustup, "run", "stable", "rustc", "--print", "sysroot"],
             capture_output=True,
             text=True,
@@ -91,7 +110,7 @@ def find_llvm_profdata(major: str) -> str:
     for candidate in candidates:
         if not candidate.exists():
             continue
-        version = subprocess.run(  # noqa: S603
+        version = subprocess.run(
             [str(candidate), "--version"], capture_output=True, text=True, check=False
         )
         if version.returncode == 0 and f"version {major}" in version.stdout:
@@ -122,16 +141,16 @@ def main(argv: list[str] | None = None) -> int:
 
     major = rustc_llvm_version()
     profdata = find_llvm_profdata(major)
-    print(f"rustc emits LLVM {major} profiles; using {profdata}", flush=True)  # noqa: T201
+    print(f"rustc emits LLVM {major} profiles; using {profdata}", flush=True)
 
     workdir = Path(tempfile.mkdtemp(prefix="skrecsys-pgo-"))
     raw, merged = workdir / "raw", workdir / "merged.profdata"
     raw.mkdir()
     try:
-        print("\n== 1/3 instrumented build ==", flush=True)  # noqa: T201
+        print("\n== 1/3 instrumented build ==", flush=True)
         maturin("-Cprofile-generate", raw)
 
-        print("\n== 2/3 training run ==", flush=True)  # noqa: T201
+        print("\n== 2/3 training run ==", flush=True)
         run(["uv", "run", "--quiet", "python", *TRAINING], stdout=subprocess.DEVNULL)
         dumps = sorted(raw.glob("*.profraw"))
         if not dumps:
@@ -139,18 +158,18 @@ def main(argv: list[str] | None = None) -> int:
                 "the training run produced no .profraw files; the instrumented build "
                 "may not have been the one imported."
             )
-        print(f"collected {len(dumps)} profile dumps", flush=True)  # noqa: T201
+        print(f"collected {len(dumps)} profile dumps", flush=True)
         run([profdata, "merge", "-o", str(merged), *map(str, dumps)])
 
-        print("\n== 3/3 optimized build ==", flush=True)  # noqa: T201
+        print("\n== 3/3 optimized build ==", flush=True)
         maturin("-Cprofile-use", merged)
     finally:
         if args.keep:
-            print(f"\nprofiles left in {workdir}", flush=True)  # noqa: T201
+            print(f"\nprofiles left in {workdir}", flush=True)
         else:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    print(  # noqa: T201
+    print(
         "\nPGO build installed. It stays until the next `uv sync` or `maturin develop`, "
         "which rebuild without a profile.",
         flush=True,

@@ -73,7 +73,7 @@ def test_als_matches_libfm(libfm_bin, movielens_100k_ua, tmp_path, request):
         "-seed", "0", "-out", str(tmp_path / "pred.txt"),
     ]  # fmt: skip
     start = time.perf_counter()
-    result = subprocess.run(command, capture_output=True, text=True, check=True)  # noqa: S603
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
     libfm_seconds = time.perf_counter() - start
 
     # libFM's time includes reading the text files and predicting the test set.

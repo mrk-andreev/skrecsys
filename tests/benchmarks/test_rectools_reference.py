@@ -53,7 +53,7 @@ def _run_rectools(uv_bin, interactions, l2_reg, tmp_path):
         "python", str(SCRIPT),
         str(tmp_path / "input.npz"), str(tmp_path / "output.npz"), str(l2_reg),
     ]  # fmt: skip
-    result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         pytest.skip(f"Could not run RecTools in an isolated environment:\n{result.stderr[-2000:]}")
 

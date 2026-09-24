@@ -1,0 +1,46 @@
+[package]
+name = "skrecsys-kernels"
+description = "Native kernels behind skrecsys, independent of Python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "skrecsys_kernels"
+
+[dependencies]
+faer.workspace = true
+multiversion.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "sparse"
+harness = false
+
+[[bench]]
+name = "similarity"
+harness = false
+
+[[bench]]
+name = "ranking"
+harness = false
+
+[[bench]]
+name = "encode"
+harness = false
+
+[[bench]]
+name = "fit"
+harness = false
+
+[[bench]]
+name = "hnsw"
+harness = false
+
+[[bench]]
+name = "quantized"
+harness = false

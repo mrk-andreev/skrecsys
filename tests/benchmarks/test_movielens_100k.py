@@ -27,6 +27,11 @@ from skrecsys.recommendation import (
     SLIMElasticNet,
 )
 
+try:
+    from skrecsys import nn
+except ImportError:  # the `nn` extra is optional; see src/skrecsys/nn/__init__.py
+    nn = None
+
 pytestmark = pytest.mark.benchmark
 
 K = 10
@@ -74,6 +79,32 @@ BENCHMARKS = {
         {"ndcg": 0.040, "precision": 0.038, "hit_rate": 0.30, "map": 0.0136, "mrr": 0.106},
     ),
 }
+
+
+def _neural_benchmarks():
+    """The `nn` extra's models, or nothing when torch is not installed.
+
+    Both override the paper's learning rate: it is tuned for datasets orders of magnitude
+    larger than this one, and at its default a fit here barely leaves the initialization.
+    """
+    if nn is None:
+        return {}
+    return {
+        "SimpleX": (
+            nn.SimpleX(learning_rate=1e-2, random_state=0),
+            {"ndcg": 0.234, "precision": 0.203, "hit_rate": 0.797, "map": 0.120, "mrr": 0.507},
+        ),
+        # The contrastive term is worth little on a catalog this small: 0.2931 NDCG at
+        # this weight against 0.2952 with the term switched off entirely, while the
+        # paper's 0.2 costs 0.08. It is kept non-zero so the row is the model it names.
+        "XSimGCL": (
+            nn.XSimGCL(learning_rate=1e-2, contrastive_weight=0.01, random_state=0),
+            {"ndcg": 0.278, "precision": 0.243, "hit_rate": 0.886, "map": 0.146, "mrr": 0.575},
+        ),
+    }
+
+
+BENCHMARKS |= _neural_benchmarks()
 
 # Maximum test RMSE on the ``ua`` split for rating predictors.
 RMSE_BENCHMARKS = {

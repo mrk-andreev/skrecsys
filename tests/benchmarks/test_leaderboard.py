@@ -1,49 +1,27 @@
-"""Unit tests for the leaderboard generator. No network and no `benchmark` marker:
-the script is exercised on a synthetic dataset so that it cannot rot unnoticed.
+"""Unit tests for the leaderboard's measurement: fitting, scoring, timing and tables.
+
+No network and no `benchmark` marker: the module is exercised on a synthetic dataset so
+that it cannot rot unnoticed. What runs, and how the README reports it, is tested in
+``test_spec``, ``test_suite`` and ``test_readme``.
 """
 
-import importlib.util
-import sys
 import time
-from pathlib import Path
-from types import SimpleNamespace
 
+import leaderboard
 import numpy as np
 import pytest
-
-_PATH = Path(__file__).resolve().parents[2] / "benchmarks" / "leaderboard.py"
-_spec = importlib.util.spec_from_file_location("leaderboard", _PATH)
-assert _spec is not None and _spec.loader is not None
-leaderboard = importlib.util.module_from_spec(_spec)
-sys.modules["leaderboard"] = leaderboard
-_spec.loader.exec_module(leaderboard)
+import spec
 
 
-@pytest.fixture
-def dataset():
-    """40 users over 12 items: each user likes one contiguous band of the catalog."""
-    rows, targets = [], []
-    for user in range(40):
-        start = user % 6
-        for item in range(start, start + 6):
-            rows.append([f"u{user}", f"i{item}"])
-            targets.append(5.0)
-    data = np.array(rows)
-    target = np.array(targets)
-    # Hold out the last two interactions of every user.
-    indices = np.arange(len(data))
-    test = indices[(indices % 6) >= 4]
-    train = indices[(indices % 6) < 4]
-    return SimpleNamespace(data=data, target=target, train_indices=train, test_indices=test)
+def _model(name):
+    """A fresh estimator as ``leaderboard.json`` configures it."""
+    return spec.load("leaderboard").model(name).build()
 
 
 @pytest.fixture
 def built(dataset):
-    models = {
-        "MostPopular": leaderboard.default_models()["MostPopular"],
-        "ItemKNN": leaderboard.default_models()["ItemKNN"],
-    }
-    return leaderboard.build_rows(models, dataset, k=3, repeat=2, rank_repeat=3, verbose=False)
+    models = {"MostPopular": _model("MostPopular"), "ItemKNN": _model("ItemKNN")}
+    return leaderboard.build_rows(models, dataset, k=3, repeat=2, rank_repeat=3)
 
 
 @pytest.fixture
@@ -109,9 +87,7 @@ def test_sample_never_exceeds_a_cap_below_the_floor():
 
 
 def test_warmup_calls_are_not_timed(dataset):
-    evaluation = leaderboard.evaluate(
-        leaderboard.default_models()["MostPopular"], dataset, k=3, repeat=2, rank_repeat=3
-    )
+    evaluation = leaderboard.evaluate(_model("MostPopular"), dataset, k=3, repeat=2, rank_repeat=3)
     # The warm-up runs in addition to the requested samples, never in place of them.
     assert evaluation.fit.seconds.shape == (2,)
     assert evaluation.rank.seconds.shape == (3,)
@@ -131,18 +107,15 @@ def test_metric_values_are_in_range(rows):
 
 
 def test_popularity_baseline_is_the_least_novel(dataset):
-    models = leaderboard.default_models()
-    popular = leaderboard.evaluate(models["MostPopular"], dataset, k=3, repeat=1, rank_repeat=1)
-    knn = leaderboard.evaluate(models["ItemKNN"], dataset, k=3, repeat=1, rank_repeat=1)
+    popular = leaderboard.evaluate(_model("MostPopular"), dataset, k=3, repeat=1, rank_repeat=1)
+    knn = leaderboard.evaluate(_model("ItemKNN"), dataset, k=3, repeat=1, rank_repeat=1)
     scored = [leaderboard.score(evaluation, 3) for evaluation in (popular, knn)]
     assert float(scored[0]["novelty"]) < float(scored[1]["novelty"])
     assert float(scored[0]["cat cov"]) < float(scored[1]["cat cov"])
 
 
 def test_evaluate_covers_the_whole_catalog_in_popularity(dataset):
-    evaluation = leaderboard.evaluate(
-        leaderboard.default_models()["MostPopular"], dataset, k=3, repeat=2, rank_repeat=3
-    )
+    evaluation = leaderboard.evaluate(_model("MostPopular"), dataset, k=3, repeat=2, rank_repeat=3)
     assert set(evaluation.popularity) == set(evaluation.catalog.tolist())
     assert evaluation.fit.seconds.shape == (2,)
     assert evaluation.rank.seconds.shape == (3,)
@@ -181,39 +154,20 @@ def test_render_markdown_and_csv():
     ]
 
 
-def test_write_readme_replaces_only_the_block(tmp_path):
-    readme = tmp_path / "README.md"
-    readme.write_text("intro\n\n<!-- leaderboard -->\nstale\n<!-- /leaderboard -->\n\noutro\n")
-    leaderboard.write_readme(readme, "caption\n\n| a |")
-    assert readme.read_text() == (
-        "intro\n\n<!-- leaderboard -->\ncaption\n\n| a |\n<!-- /leaderboard -->\n\noutro\n"
-    )
+def test_sampling_users_is_a_stable_subset():
+    users = np.arange(100)
+    y_true = [{index} for index in users]
+    sampled, sampled_true = leaderboard._sample_users(users, y_true, 10)
+    assert len(sampled) == len(sampled_true) == 10
+    assert sorted(sampled) == list(sampled), "users stay in their original order"
+    assert [next(iter(s)) for s in sampled_true] == list(sampled), "sets follow their user"
+    assert leaderboard._sample_users(users, y_true, 1000)[0] is users
+    again, _ = leaderboard._sample_users(users, y_true, 10)
+    np.testing.assert_array_equal(sampled, again)
 
 
-def test_write_readme_requires_the_markers(tmp_path):
-    readme = tmp_path / "README.md"
-    readme.write_text("no markers here\n")
-    with pytest.raises(ValueError, match="no leaderboard block"):
-        leaderboard.write_readme(readme, "caption\n\n| a |")
-
-
-def test_readme_leaderboard_is_up_to_date():
-    readme = (_PATH.parents[1] / "README.md").read_text()
-    assert leaderboard.README_MARKER in readme
-    assert leaderboard.README_END_MARKER in readme
-    block = readme.split(leaderboard.README_MARKER)[1].split(leaderboard.README_END_MARKER)[0]
-    for header in [column.header for column in leaderboard.columns(10)] + (
-        leaderboard.timing_columns()
-    ):
-        assert f"| {header} |" in block or f" {header} |" in block
-
-
-def test_main_rejects_bad_arguments():
-    for argv in (
-        ["--k", "0"],
-        ["--repeat", "0"],
-        ["--rank-repeat", "0"],
-        ["--models", "NoSuchModel"],
-    ):
-        with pytest.raises(SystemExit):
-            leaderboard.main(argv)
+def test_host_facts_name_the_machine_and_the_build():
+    facts = leaderboard.host_facts()
+    assert set(facts) == {"cpu", "cores", "platform", "python", "numpy", "skrecsys", "build"}
+    assert facts["build"] in {"debug", "release"}
+    assert facts["cores"] is None or facts["cores"] >= 1

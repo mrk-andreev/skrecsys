@@ -1,0 +1,98 @@
+{
+  "key": "47c4f7f416a5b562",
+  "unit": "indexes/movielens-100k/XSimGCL/quantized-flat-4/latency",
+  "provenance": {
+    "source": "imported",
+    "from": "README.md in the working tree on top of fc23fd1",
+    "at": "2026-09-22T20:52:15+00:00",
+    "note": "Measured by the pre-config harness and parsed back out of its table. The settings in `inputs` are the config's at import time; the run's own were not recorded separately. Measured with the per-query scan kernel, before the query-tiled one of v2."
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.nn",
+      "cls": "XSimGCL",
+      "params": {
+        "learning_rate": 0.01,
+        "contrastive_weight": 0.01,
+        "random_state": 0
+      },
+      "version": "v1"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 4,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "112 us",
+        "exact per user": "112 us",
+        "setting": "ov=4",
+        "rank": "104 us",
+        "speedup": "1.07x"
+      },
+      {
+        "users/request": "10",
+        "exact": "234 us",
+        "exact per user": "23 us",
+        "setting": "ov=4",
+        "rank": "326 us",
+        "speedup": "0.72x"
+      },
+      {
+        "users/request": "100",
+        "exact": "337 us",
+        "exact per user": "3 us",
+        "setting": "ov=4",
+        "rank": "2.88 ms",
+        "speedup": "0.12x"
+      }
+    ]
+  }
+}

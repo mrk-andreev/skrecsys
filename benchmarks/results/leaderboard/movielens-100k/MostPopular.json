@@ -1,0 +1,72 @@
+{
+  "key": "6e8f0055714f48cb",
+  "unit": "leaderboard/movielens-100k/MostPopular",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T22:00:34+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "leaderboard",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 1000,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "MostPopularRecommender",
+      "params": {},
+      "version": "v2"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "MostPopular",
+      "NDCG@10": "0.1331",
+      "P@10": "0.1215",
+      "R@10": "0.1215",
+      "hit rate": "0.7306",
+      "MAP": "0.0545",
+      "MRR": "0.3218",
+      "cat cov": "0.0530",
+      "user cov": "1.0000",
+      "mean pop": "371.7549",
+      "novelty": "7.97"
+    },
+    "timing": {
+      "Model": "MostPopular",
+      "fit batch (interactions)": "90570",
+      "fit samples": "1000",
+      "fit min": "1 ms",
+      "fit median": "1 ms",
+      "fit max": "1 ms",
+      "rank batch (users x items)": "943 x 1680",
+      "rank samples": "1000",
+      "rank mean": "1 ms",
+      "rank median": "1 ms",
+      "rank q95": "1 ms",
+      "rank q99": "1 ms"
+    }
+  }
+}

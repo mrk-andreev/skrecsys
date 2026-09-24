@@ -65,7 +65,7 @@ def _run_cornac(uv_bin, interactions, estimator, tmp_path):
         str(estimator.n_factors), str(estimator.learning_rate), str(estimator.regularization),
         str(estimator.max_iter), str(SEED),
     ]  # fmt: skip
-    result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         pytest.skip(f"Could not run Cornac in an isolated environment:\n{result.stderr[-2000:]}")
     return np.load(tmp_path / "output.npz")

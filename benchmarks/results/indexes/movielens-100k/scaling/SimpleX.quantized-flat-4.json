@@ -1,0 +1,115 @@
+{
+  "key": "3bd3b3a840ed4b7c",
+  "unit": "indexes/movielens-100k/SimpleX/quantized-flat-4/scaling",
+  "provenance": {
+    "source": "imported",
+    "from": "README.md in the working tree on top of fc23fd1",
+    "at": "2026-09-22T20:52:15+00:00",
+    "note": "Measured by the pre-config harness and parsed back out of its table. The settings in `inputs` are the config's at import time; the run's own were not recorded separately. Measured with the per-query scan kernel, before the query-tiled one of v2."
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "catalog_scale": [
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0
+      ]
+    },
+    "model": {
+      "package": "skrecsys.nn",
+      "cls": "SimpleX",
+      "params": {
+        "learning_rate": 0.01,
+        "random_state": 0
+      },
+      "version": "v1"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 4,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "scaling"
+  },
+  "payload": {
+    "points": [
+      {
+        "items": "84",
+        "users": "936",
+        "exact rank": "0 ms",
+        "setting": "ov=4",
+        "rank": "0 ms",
+        "speedup": "1.00x"
+      },
+      {
+        "items": "168",
+        "users": "942",
+        "exact rank": "0 ms",
+        "setting": "ov=4",
+        "rank": "5 ms",
+        "speedup": "0.09x"
+      },
+      {
+        "items": "420",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "16 ms",
+        "speedup": "0.04x"
+      },
+      {
+        "items": "840",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "17 ms",
+        "speedup": "0.04x"
+      },
+      {
+        "items": "1,680",
+        "users": "943",
+        "exact rank": "1 ms",
+        "setting": "ov=4",
+        "rank": "29 ms",
+        "speedup": "0.04x"
+      }
+    ]
+  }
+}

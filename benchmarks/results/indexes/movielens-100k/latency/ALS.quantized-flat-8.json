@@ -1,0 +1,94 @@
+{
+  "key": "da6a98ed01509372",
+  "unit": "indexes/movielens-100k/ALS/quantized-flat-8/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:06:39+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "AlternatingLeastSquares",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          4
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "14 us",
+        "exact per user": "14 us",
+        "setting": "ov=4",
+        "rank": "69 us",
+        "speedup": "0.20x"
+      },
+      {
+        "users/request": "10",
+        "exact": "45 us",
+        "exact per user": "5 us",
+        "setting": "ov=4",
+        "rank": "103 us",
+        "speedup": "0.44x"
+      },
+      {
+        "users/request": "100",
+        "exact": "166 us",
+        "exact per user": "2 us",
+        "setting": "ov=4",
+        "rank": "844 us",
+        "speedup": "0.20x"
+      }
+    ]
+  }
+}

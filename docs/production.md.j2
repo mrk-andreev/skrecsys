@@ -1,0 +1,220 @@
+{#- Included by README.md.j2 right after "Usage", so headings start at level two and
+    relative links resolve from the repository root. -#}
+## Production lifecycle
+
+[Usage](#usage) shows each call on its own. This section is about how `fit`, `partial_fit`
+and `recommend` fit together in a running system: which process makes each call, when, and
+what gets cached.
+
+### Roles and serving modes
+
+A deployment has three jobs, and they should not share a live object:
+
+- the **trainer** calls `fit` on a window of the interaction log;
+- the **updater** calls `partial_fit` on micro-batches of new events;
+- the **recommendation service** answers requests.
+
+What passes between them is a pickled, versioned model. Every fitted estimator pickles,
+index included, and a `skrecsys.nn` model unpickles and scores without torch installed.
+
+The service gets its answers in one of two ways, and a deployment picks **one**:
+
+- **A. Batch.** A job calls `recommend` for every user after each new version and writes the
+  results to a key-value cache. The service only looks results up and never loads a model.
+- **B. Realtime.** Each service replica holds the model in memory, swaps to every new
+  version atomically, and calls `recommend` on the request path. There is no per-user
+  result cache.
+
+```mermaid
+flowchart LR
+    log[("Interaction log")]
+    stream[["Event stream"]]
+    trainer["Trainer<br/>fit(window)"]
+    updater["Updater<br/>partial_fit(batch)"]
+    store[("Model store<br/>v1, v2, ...")]
+    client(["Client"])
+
+    log -->|"nightly / weekly"| trainer
+    trainer -->|"publish v(n)"| store
+    stream -->|"every few minutes"| updater
+    store -->|"load latest"| updater
+    updater -->|"publish v(n+1)"| store
+
+    subgraph A["A. Batch: pick this..."]
+        direction TB
+        batch["Batch job<br/>recommend(all users)"]
+        cache[("Key-value cache<br/>(user, version) to items")]
+        serviceA["Recommendation service<br/>cache lookup only"]
+        batch --> cache --> serviceA
+    end
+
+    subgraph B["B. Realtime: ...or this"]
+        direction TB
+        serviceB["Recommendation service<br/>model in memory<br/>recommend(user, candidates,<br/>exclude_interactions)"]
+    end
+
+    store -->|"on every version"| batch
+    store -->|"atomic swap"| serviceB
+    client -.->|"either"| serviceA
+    client -.->|"or"| serviceB
+```
+
+Neither mode calls `partial_fit` on a model that is serving requests. `partial_fit` updates
+the model in place and rebinds `user_ids_`, `item_ids_`, `interactions_` and the fitted arrays
+one after another, so a `recommend` running at the same time can read a vocabulary from
+one version and a matrix from the other. The updater works on its own copy and publishes
+a new version, which the batch job reads (A) or each replica swaps to in one step (B).
+
+### When to `fit`
+
+A full `fit` is the baseline that everything else is measured against. Run it:
+
+- **on a schedule** (nightly or weekly, whichever the fit time allows) over a *window* of
+  the log, not all of history;
+- **after any hyperparameter change**, because nothing incremental can apply one;
+- **to forget.** `partial_fit` only adds. It never decays, expires or deletes an interaction,
+  so removing an old interaction, handling a deletion request, or stopping
+  `interactions_` from growing forever all take a refit;
+- **to reset drift** in the estimators whose `partial_fit` is a warm start (table below).
+
+Choose hyperparameters offline with `WarmStartKFold`. When the real decision is ordered in
+time (training on the past, serving the future), a random split of interactions
+overestimates the score, so hold out the last period instead when you judge a
+configuration.
+
+### When to `partial_fit`
+
+Between refits, `partial_fit` brings new users, new items and new interactions into the
+model. Call it on **micro-batches** (every few minutes to every hour), not once per event,
+because every call pays fixed costs that do not shrink with the batch:
+
+- an `index` is rebuilt from scratch at the end of every call;
+- `interactions_` is rebuilt in full whenever a new identifier sorts *before* an existing one
+  and renumbers the codes. Identifiers that only ever increase (sequence numbers, time-ordered
+  UUIDs) keep that relabelling off;
+- a neighbourhood model recomputes every row within two hops of the batch, and a popular
+  item puts most of the catalog within two hops.
+
+| Estimator | After `partial_fit` | Cost that grows with the batch | Refit needed for |
+| --- | --- | --- | --- |
+| `MostPopularRecommender` | exact | the batch | forgetting |
+| `ItemKNNRecommender`, `RP3Beta` | exact | rows two hops from the batch | forgetting |
+| `BM25Recommender` | exact | usually the whole catalog (corpus-wide statistics) | forgetting |
+| `EASE` | exact | `O(n_items² · users touched)`, plus a second dense item×item matrix | forgetting, memory |
+| `SLIMElasticNet` | warm start | coordinate descent on reachable columns, plus `gram_` | drift, forgetting |
+| `AlternatingLeastSquares`, `BayesianPersonalizedRanking` | warm start | resumed sweeps / descent | drift, forgetting |
+| `skrecsys.nn` models | warm start | resumed training on the grown data | drift, forgetting |
+
+"Exact" means the model after `partial_fit` is the one `fit` on the concatenated batches would
+have produced, so for those estimators the scheduled refit exists only to forget. "Warm
+start" means the model continues from where it stopped and gradually drifts from a fresh
+fit, so the refit also corrects that drift.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unfitted
+    Unfitted --> Serving: fit(window), publish v1
+    Serving --> Serving: partial_fit(micro-batch), publish v(n+1)
+    Serving --> Refit: schedule, hyperparameter change, deletion request
+    Refit --> Serving: fit(new window), new version line replaces the old
+```
+
+### Choosing the mode
+
+`recommend` is built for batches. It ranks queries a block at a time inside one kernel,
+and ranking every MovieLens-100K user against the whole catalog takes about a
+millisecond (see [the leaderboard](#leaderboard)). Two properties of the API decide which
+mode fits:
+
+- `recommend` accepts **only users the model has seen**. An unknown user raises
+  `ValueError`, for every estimator, `MostPopularRecommender` included;
+- `candidates=` restricts the ranking to a set of items **shared by the whole call**. A
+  batch job cannot know a request's candidates in advance, so per-request eligibility (in
+  stock, region, category, page) is only possible in realtime;
+- `exclude_interactions=` removes user-item pairs **per query**: the events a user produced
+  after the model was fitted. Pass them as they are, in the layout of `fit`'s `X`. Pairs for
+  other users or for items the model doesn't know are ignored. A batch job can only exclude
+  what has already happened when it runs; a realtime call excludes what has happened by
+  the time of the request.
+
+**Batch** fits when every request for a user gets the same list and most users come back
+between versions. The job passes the events that arrived after the version was fitted as
+`exclude_interactions`, so each list starts fresh. Events that arrive after the job ran
+still have to be filtered out at lookup time, so set `n_recommendations` above what a page
+shows to leave enough items after filtering. Key the cache by `(user, model_version)` so that a new version
+replaces every entry at once, and never mix lists from two versions: their scores are on
+different scales. How fresh the results are depends on how long the batch job takes, since
+a version is not live until its job finishes.
+
+**Realtime** fits when eligibility depends on the request, or when the user base is large
+and mostly inactive, so computing lists for everyone wastes work. Each replica loads the
+pickle once and never refits at startup. Each call passes the user's recent events as
+`exclude_interactions`, so it returns exactly the number of fresh items asked for, with no
+over-fetching and no filtering afterwards. Replicas should batch concurrent requests into
+one `recommend` call; the pairs of every user in the batch can go in together. On large catalogs an `index` makes each call cheaper, but see
+[vector indexes](#vector-indexes) for what it costs in exactness and speed first.
+
+```mermaid
+flowchart TD
+    start(["Choose a serving mode"]) --> percand{"Candidates depend<br/>on the request?"}
+    percand -->|yes| realtime["B. Realtime"]
+    percand -->|no| active{"Most users active<br/>between versions?"}
+    active -->|yes| batch["A. Batch"]
+    active -->|no| realtime
+```
+
+### The request path
+
+Both modes read the user's recent events and fall back to a popular list for unknown
+users. They differ in where the recent events are applied: inside `recommend` (realtime),
+or to a list computed earlier (batch).
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Recommendation service
+    participant V as Results for v(n)
+    participant R as Recent events
+
+    C->>S: recommendations for user u
+    S->>R: events of u since v(n) was fitted
+    R-->>S: recent (user, item) pairs
+    alt A. Batch
+        S->>V: cache.get(u, v(n))
+        V-->>S: top-(N + margin), or a miss if u is unknown
+        S->>S: drop recent items, cut to N
+    else B. Realtime
+        S->>V: model.recommend([u], n_recommendations=N,<br/>candidates=..., exclude_interactions=recent)
+        V-->>S: exactly N items, or ValueError if u is unknown
+    end
+    opt u unknown to v(n)
+        S->>S: popular list for v(n), minus recent items, cut to N
+    end
+    S-->>C: N items
+```
+
+A user unknown to the model gets a popular list that does not depend on the user. Compute
+it once per version, either with `MostPopularRecommender` ranking any known user with
+`exclude_seen=False` or directly from the counts. The batch job writes it to the cache under
+its own key (A), and a realtime replica keeps it in memory next to the model (B).
+
+The recent events close a freshness gap that `exclude_seen` cannot. `exclude_seen` filters
+against `interactions_` as the model saw it, so without them anything the user took after
+the snapshot stays eligible until the next `partial_fit`. The store only needs to hold events
+newer than the serving version: once `partial_fit` has taken them in, `exclude_seen` covers
+them. The same store holds events from users who are new since the snapshot, and those
+users get the fallback until the next update adds them.
+
+### Responsibilities of the serving layer
+
+A model object ranks and scores. These parts of a deployment belong to the service around it:
+
+- **Unknown users.** `recommend` raises `ValueError` for a user the model has not seen; the
+  service serves the popular fallback above.
+- **Anonymous sessions.** The classical estimators score users by identifier, so a session
+  becomes rankable once `partial_fit` has taken in its events.
+- **Retention.** `partial_fit` only adds interactions; time decay, windows and deletion
+  requests are applied by refitting on the chosen window.
+- **Concurrency.** A model is updated as a snapshot and swapped in, never mutated while it
+  serves.
+- **Versioning.** The model store records each version and the window it was fitted on.

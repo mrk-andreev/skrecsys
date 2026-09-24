@@ -1,0 +1,177 @@
+{
+  "key": "ec7d1ca7de2a8d4c",
+  "unit": "indexes/amazon-books/ALS/hnsw/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T11:21:56+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 50,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "AlternatingLeastSquares",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          32,
+          64,
+          128
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 660940,
+    "exact": {
+      "quality": {
+        "Model": "ALS",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.0000",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "ALS",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "65.30 s",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "994 ms",
+        "rank q95": "1.01 s",
+        "speedup": "1.00x",
+        "users/s": "10,061"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "recall@10": "0.9413",
+          "NDCG@10": "0.0000",
+          "dNDCG@10": "-0.0000",
+          "top-1 churn": "0.0930",
+          "score gap@1": "+0.0091",
+          "dcat cov": "-0.0005"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=32",
+          "fit": "65.30 s",
+          "build": "85.16 s",
+          "build %fit": "130.4%",
+          "index MB": "95.7",
+          "vectors MB": "52.9",
+          "rank median": "18 ms",
+          "rank q95": "20 ms",
+          "speedup": "55.84x",
+          "users/s": "561,819"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "recall@10": "0.9413",
+          "NDCG@10": "0.0000",
+          "dNDCG@10": "-0.0000",
+          "top-1 churn": "0.0930",
+          "score gap@1": "+0.0091",
+          "dcat cov": "-0.0005"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=64",
+          "fit": "65.30 s",
+          "build": "85.16 s",
+          "build %fit": "130.4%",
+          "index MB": "95.7",
+          "vectors MB": "52.9",
+          "rank median": "20 ms",
+          "rank q95": "22 ms",
+          "speedup": "50.47x",
+          "users/s": "507,820"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "recall@10": "0.9430",
+          "NDCG@10": "0.0000",
+          "dNDCG@10": "-0.0000",
+          "top-1 churn": "0.0833",
+          "score gap@1": "+0.0075",
+          "dcat cov": "-0.0005"
+        },
+        "cost": {
+          "Model": "ALS",
+          "Index": "hnsw(m=16,efc=200)",
+          "dial": "ef=128",
+          "fit": "65.30 s",
+          "build": "85.16 s",
+          "build %fit": "130.4%",
+          "index MB": "95.7",
+          "vectors MB": "52.9",
+          "rank median": "25 ms",
+          "rank q95": "27 ms",
+          "speedup": "39.07x",
+          "users/s": "393,142"
+        }
+      }
+    ]
+  }
+}

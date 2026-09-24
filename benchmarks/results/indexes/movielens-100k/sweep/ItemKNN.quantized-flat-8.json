@@ -1,0 +1,230 @@
+{
+  "key": "cc3fa58d9931dd5f",
+  "unit": "indexes/movielens-100k/ItemKNN/quantized-flat-8/sweep",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-22T23:02:19+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "ua",
+      "load": {},
+      "max_eval_users": null
+    },
+    "settings": {
+      "k": 10,
+      "repeat": 5,
+      "rank_repeat": 1000,
+      "budget": 20.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "ItemKNNRecommender",
+      "params": {},
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "QuantizedFlatIndex",
+      "params": {
+        "bits": 8,
+        "min_index_size": 1
+      },
+      "version": "v2",
+      "dial": {
+        "param": "oversample",
+        "values": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ]
+      }
+    },
+    "kind": "sweep"
+  },
+  "payload": {
+    "n_items": 1680,
+    "exact": {
+      "quality": {
+        "Model": "ItemKNN",
+        "Index": "exact",
+        "dial": "-",
+        "recall@10": "1.0000",
+        "NDCG@10": "0.2550",
+        "dNDCG@10": "+0.0000",
+        "top-1 churn": "0.0000",
+        "score gap@1": "+0.0000",
+        "dcat cov": "+0.0000"
+      },
+      "cost": {
+        "Model": "ItemKNN",
+        "Index": "exact",
+        "dial": "-",
+        "fit": "6 ms",
+        "build": "-",
+        "build %fit": "-",
+        "index MB": "-",
+        "vectors MB": "-",
+        "rank median": "1 ms",
+        "rank q95": "1 ms",
+        "speedup": "1.00x",
+        "users/s": "881,137"
+      }
+    },
+    "rows": [
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "recall@10": "0.9977",
+          "NDCG@10": "0.2551",
+          "dNDCG@10": "+0.0001",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=1",
+          "fit": "6 ms",
+          "build": "0 ms",
+          "build %fit": "2.7%",
+          "index MB": "0.1",
+          "vectors MB": "1.4",
+          "rank median": "38 ms",
+          "rank q95": "39 ms",
+          "speedup": "0.03x",
+          "users/s": "24,543"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=2",
+          "fit": "6 ms",
+          "build": "0 ms",
+          "build %fit": "2.7%",
+          "index MB": "0.1",
+          "vectors MB": "1.4",
+          "rank median": "41 ms",
+          "rank q95": "41 ms",
+          "speedup": "0.03x",
+          "users/s": "23,241"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=4",
+          "fit": "6 ms",
+          "build": "0 ms",
+          "build %fit": "2.7%",
+          "index MB": "0.1",
+          "vectors MB": "1.4",
+          "rank median": "44 ms",
+          "rank q95": "44 ms",
+          "speedup": "0.02x",
+          "users/s": "21,582"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=8",
+          "fit": "6 ms",
+          "build": "0 ms",
+          "build %fit": "2.7%",
+          "index MB": "0.1",
+          "vectors MB": "1.4",
+          "rank median": "49 ms",
+          "rank q95": "49 ms",
+          "speedup": "0.02x",
+          "users/s": "19,252"
+        }
+      },
+      {
+        "quality": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "recall@10": "1.0000",
+          "NDCG@10": "0.2550",
+          "dNDCG@10": "+0.0000",
+          "top-1 churn": "0.0000",
+          "score gap@1": "+0.0000",
+          "dcat cov": "+0.0000"
+        },
+        "cost": {
+          "Model": "ItemKNN",
+          "Index": "quantized-flat(bits=8)",
+          "dial": "ov=16",
+          "fit": "6 ms",
+          "build": "0 ms",
+          "build %fit": "2.7%",
+          "index MB": "0.1",
+          "vectors MB": "1.4",
+          "rank median": "58 ms",
+          "rank q95": "59 ms",
+          "speedup": "0.02x",
+          "users/s": "16,127"
+        }
+      }
+    ]
+  }
+}

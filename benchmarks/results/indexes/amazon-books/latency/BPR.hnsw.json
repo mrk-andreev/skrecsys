@@ -1,0 +1,103 @@
+{
+  "key": "509fdecfbf51b787",
+  "unit": "indexes/amazon-books/BPR/hnsw/latency",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-23T05:40:36+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-26.7-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.4.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "indexes",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_amazon_books",
+      "subset": "leave-one-out",
+      "load": {},
+      "max_eval_users": 10000
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 5,
+      "budget": 60.0,
+      "warmup": {
+        "fit": 1,
+        "rank": 2
+      },
+      "latency_batch": [
+        1,
+        10,
+        100,
+        1000
+      ]
+    },
+    "model": {
+      "package": "skrecsys.recommendation",
+      "cls": "BayesianPersonalizedRanking",
+      "params": {
+        "random_state": 0
+      },
+      "version": "v2"
+    },
+    "index": {
+      "package": "skrecsys.indexing",
+      "cls": "HNSW",
+      "params": {
+        "m": 16,
+        "ef_construction": 200,
+        "min_index_size": 1
+      },
+      "version": "v1",
+      "dial": {
+        "param": "ef_search",
+        "values": [
+          64
+        ]
+      }
+    },
+    "kind": "latency"
+  },
+  "payload": {
+    "points": [
+      {
+        "users/request": "1",
+        "exact": "1.89 ms",
+        "exact per user": "1.89 ms",
+        "setting": "ef=64",
+        "rank": "9.51 ms",
+        "speedup": "0.20x"
+      },
+      {
+        "users/request": "10",
+        "exact": "21.15 ms",
+        "exact per user": "2.11 ms",
+        "setting": "ef=64",
+        "rank": "9.50 ms",
+        "speedup": "2.23x"
+      },
+      {
+        "users/request": "100",
+        "exact": "42.98 ms",
+        "exact per user": "430 us",
+        "setting": "ef=64",
+        "rank": "10.99 ms",
+        "speedup": "3.91x"
+      },
+      {
+        "users/request": "1,000",
+        "exact": "327.12 ms",
+        "exact per user": "327 us",
+        "setting": "ef=64",
+        "rank": "19.15 ms",
+        "speedup": "17.09x"
+      }
+    ]
+  }
+}

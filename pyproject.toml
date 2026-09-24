@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.3.0"
+version = "0.4.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -37,6 +37,9 @@ dependencies = [
 
 [project.optional-dependencies]
 pandas = ["pandas>=3.0.5"]
+# Neural recommenders live in skrecsys.nn and are trained with PyTorch. The extra is
+# opt-in: torch dwarfs every other dependency, and nothing outside skrecsys.nn needs it.
+nn = ["torch>=2.6"]
 
 [project.urls]
 Homepage = "https://github.com/mrk-andreev/skrecsys"
@@ -52,10 +55,17 @@ module-name = "skrecsys._core"
 python-source = "src"
 
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "rust/**/*.rs" }]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "rust/kernels/Cargo.toml" },
+    { file = "rust/**/*.rs" },
+]
 
 [dependency-groups]
 dev = [
+    # Renders README.md from README.md.j2; see benchmarks/readme.py.
+    "jinja2>=3.1",
     "pandas>=3.0.5",
     "pandas-stubs>=3.0.5.260730",
     "pre-commit>=4.6.2",
@@ -119,20 +129,32 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004"]  # assert and literal expectations are idiomatic in pytest
-"src/skrecsys/utils/estimator_checks.py" = ["S101"]  # checks report failures via assert
+# assert and literal expectations are idiomatic in pytest; the pickles a test loads are
+# the ones it just dumped, and the commands it runs are the reference tools it compares to.
+"tests/**" = ["S101", "PLR2004", "S301", "S603"]
+# Command-line entry points: printing is their interface, and the build script's whole
+# job is running the toolchain.
+"benchmarks/run.py" = ["T201"]
+"scripts/**" = ["T201", "S603"]
+
+[tool.ruff.lint.pep8-naming]
+# `from torch.nn import functional as F` is how PyTorch itself spells it.
+extend-ignore-names = ["F"]
 
 [tool.ruff.lint.pylint]
-max-args = 15
+max-args = 20
 
 [tool.ty.environment]
 # The newest supported interpreter, not the floor: targeting 3.11 makes the numpy and
 # scipy stubs resolve their own version branches into false positives. Runtime
 # compatibility with the floor is covered by the CI test matrix instead.
 python-version = "3.14"
+# The benchmark harness is a directory of scripts that import one another as siblings,
+# and its tests import them the same way; this is where ty finds them.
+extra-paths = ["benchmarks"]
 
 [tool.ty.src]
-include = ["src", "tests"]
+include = ["src", "tests", "benchmarks"]
 # Run only inside throwaway `uv run --isolated` environments, against packages and
 # repositories that are deliberately absent from our own.
 exclude = [
@@ -140,6 +162,10 @@ exclude = [
     "tests/benchmarks/_dacrema_rp3beta.py",
     "tests/benchmarks/_dacrema_slim.py",
     "tests/benchmarks/_cornac_bpr.py",
+    # torch is an optional extra, absent from the environment this config is checked in;
+    # ty.nn.toml checks these with it installed. See the `nn` job in tests.yml.
+    "src/skrecsys/nn",
+    "tests/nn",
 ]
 
 [tool.ty.rules]
@@ -148,6 +174,9 @@ all = "error"
 [tool.pytest.ini_options]
 addopts = "--cov=skrecsys --cov-report=term-missing -m 'not benchmark'"
 testpaths = ["tests"]
+# The benchmark harness is a directory of scripts rather than a package, and its modules
+# import one another as siblings; the tests import them the same way.
+pythonpath = ["benchmarks"]
 markers = [
     "benchmark: end-to-end quality benchmarks on real datasets; downloads data, run with `pytest -m benchmark`",
 ]
