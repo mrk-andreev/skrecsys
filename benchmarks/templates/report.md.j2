@@ -86,6 +86,50 @@ Measured under an earlier version of the index, and due a re-run: {{ index_list(
 {%- endif %}
 {%- endmacro %}
 
+{#-
+  The reranking block: pipelines side by side, split by the kind of user. Its only timing
+  is one request for one user, so it has no batch caption and no fit column.
+-#}
+{% macro reranking(b) -%}
+{{ b.dataset.title() }}, k={{ b.settings.k }}. Regenerate with `{{ b.command }}`.{{ rows_notes(b) }}
+{%- if b.quality %}
+
+{{ b.quality | table }}
+
+{{ hosts(b) }}
+
+Each row below is one call of `recommend` for a single user, the way a serving process sees a request: each request asks for the next user of its segment, so the samples cover every warm or cold user rather than one user's cached history. Sampled until {{ "{:.0f}".format(b.settings.budget) }}s or {{ thousands(b.settings.latency_repeat) }} requests per row, after {{ b.settings.warmup.rank }} untimed ones; `q95` and `q99` are nearest-rank quantiles, so each is a request that really happened.
+
+{{ b.latency | table }}
+{%- if b.examples %}
+
+The first {{ b.examples | length }} cold users by id, and the top {{ b.example_depth }} of what each pipeline serves them. **Bold** titles are ones the user rated in the held-out set; `held out` is how many they rated in all.
+
+{{ b.examples | table }}
+{%- endif %}
+{%- endif %}
+{%- endmacro %}
+
+{#-
+  The candidate generation block: one row per generator set, one column per budget. A
+  merged set's cells carry its gain over the best of its own members at that budget.
+-#}
+{% macro candidates(b) -%}
+{{ b.dataset.title() }}, warm held-out users only, every generator at its default hyper-parameters. Regenerate with `{{ b.command }}`.{{ rows_notes(b) }}
+{%- if b.recall %}
+
+`candidate recall@N` is measured at each budget `N` of distinct items retrieved per user: the share of a user's held-out items among the candidates, averaged over users, which is the most any ranker could recall from them. A merged set's gain over the best of its own members at the same `N` is in brackets.
+
+{{ b.recall | table }}
+
+{{ hosts(b) }}
+
+`median latency@N` is the median time to retrieve one user's `N` candidates, the way `Cascade.recommend` does before any feature or ranker runs; a merged set's time includes the `predict` calls that fill in the score of every generator that did not retrieve a candidate. Sampled until {{ "{:.0f}".format(b.settings.budget) }}s or {{ thousands(b.settings.latency_repeat) }} requests per cell, after {{ b.settings.warmup.rank }} untimed ones.
+
+{{ b.latency | table }}
+{%- endif %}
+{%- endmacro %}
+
 {% macro index_caption(b) %}{% set k = b.settings.k %}The `exact` row of each model is the baseline every delta in its block is measured against. `recall@{{ k }}` is agreement with that exact model, not with the truth, which is why `dNDCG@{{ k }}` is beside it: recall counts items the index missed, and `dNDCG@{{ k }}` says whether missing them cost anything. The `dial` column names the query-time width each row was measured at: `ef` is HNSW's candidate list and `ov` is the quantized scan's shortlist, in multiples of `k`. Those two are not comparable to each other -- they are each index's own recall-for-latency knob, and only the columns either side of them are. The quantized rows' scores are always exact, because the shortlist is rescored with the original vectors before anything is returned: their `score gap@1` moves only when the shortlist missed the true best item, never because a number was dequantized. A `speedup` below `1.00x` means the index costs more than it saves. This is expected for neighbourhood models, whose exact path is an inverted-index scan that only touches items a user's history reaches.{% if b.n_items is not none and b.n_items < b.min_index_size %} This catalog holds {{ thousands(b.n_items) }} items, which is below the default `min_index_size` of {{ thousands(b.min_index_size) }}, so a model configured with `index="hnsw"` would have taken the exact path here and the rows below would not exist. The benchmark lowers that floor to measure the index itself; a `speedup` under `1.00x` on a catalog this small is the reason the default floor exists.{% endif %}{% endmacro %}
 
 {% macro indexes(b) -%}

@@ -1,0 +1,65 @@
+{#- Included by README.md.j2 after "Production lifecycle", so headings start at level two. -#}
+## Datasets
+
+Loaders download public datasets once, cache them in `~/skrecsys_data` (override with
+`data_home=` or `SKRECSYS_DATA`) and return them as `(user_id, item_id)` pairs plus ratings,
+like `sklearn.datasets`.
+
+```python
+from sklearn.model_selection import cross_validate
+
+from skrecsys.datasets import fetch_movielens_100k
+
+X, y = fetch_movielens_100k(return_X_y=True)
+cross_validate(
+    ItemKNNRecommender(),
+    X,
+    y,
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+)
+
+# official u1-u5 / ua / ub splits, timestamps and user/movie metadata
+ml = fetch_movielens_100k(subset="u1")
+cross_validate(
+    ItemKNNRecommender(),
+    ml.data,
+    ml.target,
+    cv=[(ml.train_indices, ml.test_indices)],
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+)
+```
+
+`fetch_movielens_1m` is the same shape one size up, and the dataset the sequential
+benchmark runs on: a million ratings from 6,040 users, unfiltered and with MovieLens's own
+identifiers. With `subset="leave-one-out"` and `max_sequence_length=200` it is the
+`ml-1m-l200` that HSTU and SASRec publish numbers on.
+
+```python
+from skrecsys.datasets import fetch_movielens_1m
+
+ml = fetch_movielens_1m(subset="leave-one-out", max_sequence_length=200)
+ml.train_indices, ml.test_indices  # all but each user's last rating, and that rating
+```
+
+Amazon Books arrives preprocessed the way the sequential-recommendation literature uses
+it — the 5-core of the 2014 review dump, chronological, cut to a 50-interaction history
+per user — so it is the `amzn-books-l50` that HSTU and SASRec publish numbers on.
+
+```python
+from skrecsys.datasets import fetch_amazon_books
+
+books = fetch_amazon_books(subset="leave-one-out")  # 8.1M interactions, 695k items
+books.data, books.target, books.timestamps  # pairs, ratings, Unix seconds
+books.item_info.asin[books.data[0, 1]]  # the product behind an item id
+
+full = fetch_amazon_books(max_sequence_length=None)  # 10.1M, every 5-core interaction
+```
+
+The first call downloads ~900 MB and spends about half a minute and ~6 GB of memory
+parsing it; afterwards it loads from the cache in seconds, and changing
+`max_sequence_length` re-parses nothing. `subset="leave-one-out"` holds out each user's
+last interaction, the protocol those papers evaluate with, and keeps one extra history
+slot so the held-out interaction is predicted from a full window.
+
+`as_frame=True` returns pandas objects and requires `pip install skrecsys[pandas]`.

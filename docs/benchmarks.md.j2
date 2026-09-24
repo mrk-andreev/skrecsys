@@ -1,0 +1,81 @@
+{#- Included by README.md.j2 at the end of "Development", so headings start at level three. -#}
+### Benchmarks
+
+The tables in this README are generated, and so is the README itself: `README.md.j2` is
+the source, with one `docs/*.md.j2` fragment per section, and
+`python benchmarks/run.py render` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
+`README.md`; a test fails when the two disagree.
+
+What the benchmarks run is configuration rather than code. `benchmarks/config/`
+holds one file per report — `leaderboard.json`, `sequential.json`, `reranking.json`,
+`indexes.json` — each
+listing its entries, a model or an index named by `package` and `cls` with its `params`,
+a `version` and a `comment`, and the datasets it runs on with the settings each is timed
+under; `datasets.json` defines the datasets they share, and may replace a dataset's own split
+with a splitter such as `ColdStartSplit`. The sequential and index reports take their models
+from the leaderboard's, so a model is defined once. A reranking entry names a builder in
+`benchmarks/pipelines.py` rather than a class, because its feature tables come from the
+dataset. Every result is
+keyed on a hash of everything its entry and its dataset say, which makes the workflow:
+
+- **Adding a model** is adding an entry to `leaderboard.json` and running
+  `python benchmarks/run.py run leaderboard`. That measures the new model, and nothing else.
+- **Editing a parameter or a setting** re-runs exactly the results it touches, with no
+  version to remember to bump.
+- **Bumping a `version`** re-runs an entry after a change the config cannot see — a
+  rewritten kernel, a fixed bug. That is why the quantized index is at `v2`.
+
+`status` lists what is out of date. A *missing* result was never measured; a *stale* one
+was measured under a config that has since changed. A stale result is still reported,
+with a note under its table's caption, because an outdated measurement is still a
+measurement: it is only the run that treats it as work to do.
+
+```sh
+uv run python benchmarks/run.py status                    # fresh, stale and missing results
+uv run python benchmarks/run.py run indexes --dry-run     # what a run would measure
+uv run python benchmarks/run.py run indexes --dataset movielens-100k --index quantized-flat-8
+uv run python benchmarks/run.py run leaderboard           # measure what is out of date, re-render README.md
+uv run python benchmarks/run.py run leaderboard --dataset amazon-books --only ALS --force
+uv run python benchmarks/run.py run leaderboard --no-store --set repeat=20 --set rank_repeat=5000
+uv run python benchmarks/run.py render --check            # exit 1 if README.md is out of date
+```
+
+`--no-store` measures without keeping the result, which suits tighter timing runs like the
+one above; to change what the README reports, change the settings in
+`benchmarks/config/leaderboard.json` instead.
+
+Each result records the host it was measured on. A run re-measures some rows and not
+others, so one table can hold rows from two machines; the caption under it then says which
+ran where, since a timing only compares against one taken on the same host.
+
+`rust/kernels/benches` measures the kernels with [criterion](https://bheisler.github.io/criterion.rs/book/),
+grouped into `sparse` (the transpose, the parallel row builder, the accumulator), `similarity`
+(item-item kNN, cosine, RP3beta, pruning), `ranking` (dense and fused top-k selection), `encode`
+(id factorization, COO to CSR) and `fit` (EASE, SLIM, FM-ALS, BPR).
+
+```sh
+cargo bench                           # every group, roughly six minutes
+cargo bench --bench similarity        # one group
+cargo bench -- 'knn::'                # benchmarks whose id matches a regex
+cargo bench -- --save-baseline main   # record the current numbers under a name
+cargo bench -- --baseline main        # compare the working tree against that baseline
+```
+
+Criterion reports the change against the previous run -- or against a saved baseline, which is the
+reliable way to compare two commits -- and says whether it is statistically significant. The
+`--save-baseline` form on a clean checkout of `main`, then `--baseline main` on the branch, is the
+way to check a change that was meant to be faster. HTML reports with the distributions land in
+`target/criterion/report/index.html`.
+
+Every input is generated from a fixed seed, and the rayon pool is pinned to four threads (or fewer
+on a smaller machine) so that two runs are comparable; `SKRECSYS_BENCH_THREADS=n` overrides it, and
+scaling numbers come from varying it deliberately. Comparisons are only meaningful between runs on
+the same machine, since the benchmarks inherit the release profile and the kernels are
+memory-bound.
+
+`python scripts/pgo.py` rebuilds the extension with profile-guided optimization, training on a
+short leaderboard run. It is opt-in and not part of `uv sync` or the release workflow: an
+interleaved A/B on an Apple M4 Pro put the kernels within a few percent either way for a 3%
+smaller binary and roughly triple the build time, which is not a trade worth making by default.
+Tight numeric loops with predictable branches give PGO little to work with, but that result is
+specific to this workload and micro-architecture, so the script is there to re-measure with.

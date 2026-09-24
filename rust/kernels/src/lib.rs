@@ -25,4 +25,5 @@ pub mod recommend;
 pub mod rp3beta;
 pub mod slim;
 pub mod sparse;
+pub mod tune;
 pub mod vectors;

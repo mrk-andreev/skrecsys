@@ -1,3 +1,5 @@
+import datetime
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -5,8 +7,12 @@ import scipy.sparse as sp
 from skrecsys import _core
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
 from skrecsys.utils.validation import (
+    check_as_of,
     check_ids,
     check_interactions,
+    check_optionally_timed,
+    check_times,
+    drop_time,
     encode_ids,
     factorize,
     lookup_ids,
@@ -193,3 +199,128 @@ def test_fit_honours_n_jobs_for_the_matrix_it_builds():
     np.testing.assert_array_equal(single.interactions_.indices, every.interactions_.indices)
     assert single._build_threads() == 1
     assert every._build_threads() == 0
+
+
+def test_check_interactions_with_time_returns_the_times():
+    X = np.array([["u", "a", 5], ["v", "b", 7]], dtype=object)
+    users, items, y, times = check_interactions(X, time=True)
+    assert users.tolist() == ["u", "v"]
+    assert items.tolist() == ["a", "b"]
+    np.testing.assert_array_equal(y, [1.0, 1.0])
+    assert times.dtype == np.int64
+    np.testing.assert_array_equal(times, [5, 7])
+
+
+def test_check_interactions_with_time_requires_three_columns():
+    with pytest.raises(ValueError, match="3 columns"):
+        check_interactions([["u", "a"]], time=True)
+
+
+def test_check_interactions_without_time_rejects_a_time_column_with_a_hint():
+    with pytest.raises(ValueError, match=r"2 columns.*time=True"):
+        check_interactions([[1, 2, 3]])
+
+
+def test_check_interactions_gives_numeric_ids_back_their_dtype():
+    X = np.empty((2, 3), dtype=object)
+    X[:, 0], X[:, 1] = [1, 2], [3, 4]
+    X[:, 2] = [datetime.datetime(2024, 1, 1), datetime.datetime(2024, 1, 2)]
+    users, items, _, times = check_interactions(X, time=True)
+    assert users.dtype.kind == "i"
+    assert items.dtype.kind == "i"
+    assert times.dtype == np.dtype("datetime64[ns]")
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype"),
+    [
+        (np.array([1, 2]), np.int64),
+        (np.array([1.5, 2.0]), np.float64),
+        (np.array(["2024-01-01", "2024-01-02"], dtype="datetime64[D]"), "datetime64[D]"),
+        (np.array([datetime.datetime(2024, 1, 1), datetime.date(2024, 1, 2)]), "datetime64[ns]"),
+        (np.array([np.datetime64("2024-01-01"), None], dtype=object), "datetime64[ns]"),
+        (np.array([1, 2], dtype=object), np.int64),
+        (np.array([1, None], dtype=object), np.float64),
+    ],
+    ids=str,
+)
+def test_check_times_accepts_numbers_and_datetimes(values, dtype):
+    assert check_times(values, allow_missing=True).dtype == np.dtype(dtype)
+
+
+def test_check_times_accepts_pandas_timestamps():
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame(
+        {"user": ["u", "v"], "item": [1, 2], "time": pd.to_datetime(["2024-01-01", "2024-01-02"])}
+    )
+    *_, times = check_interactions(frame, time=True)
+    assert times.dtype == np.dtype("datetime64[ns]")
+    assert times[1] == np.datetime64("2024-01-02")
+
+
+@pytest.mark.parametrize(
+    "values",
+    [np.array(["a", "b"]), np.array([True, False]), np.array([1, "a"], dtype=object)],
+    ids=str,
+)
+def test_check_times_rejects_what_is_not_a_time(values):
+    with pytest.raises(TypeError, match="numbers or datetimes"):
+        check_times(values)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [np.array([1.0, np.nan]), np.array(["2024-01-01", "NaT"], dtype="datetime64[D]")],
+    ids=str,
+)
+def test_check_times_rejects_missing_times_unless_allowed(values):
+    with pytest.raises(ValueError, match="missing"):
+        check_times(values)
+    assert len(check_times(values, allow_missing=True)) == 2
+
+
+def test_check_times_rejects_infinite_and_non_1d_times():
+    with pytest.raises(ValueError, match="infinite"):
+        check_times([1.0, np.inf])
+    with pytest.raises(ValueError, match="one-dimensional"):
+        check_times([[1, 2]])
+
+
+def test_check_as_of_broadcasts_and_marks_latest_as_missing():
+    numbers = np.dtype(np.int64)
+    assert np.isnan(check_as_of(None, 3, numbers)).all()
+    np.testing.assert_array_equal(check_as_of(5, 3, numbers), [5, 5, 5])
+    np.testing.assert_array_equal(check_as_of([1, np.nan], 2, numbers), [1.0, np.nan])
+    dates = np.dtype("datetime64[ns]")
+    latest = check_as_of(None, 2, dates)
+    assert latest.dtype == dates
+    assert np.isnat(latest).all()
+    assert check_as_of(np.datetime64("2024-01-01"), 1, dates).dtype == dates
+
+
+def test_check_as_of_checks_length_and_kind():
+    with pytest.raises(ValueError, match="one per query"):
+        check_as_of([1, 2], 3, np.dtype(np.int64))
+    with pytest.raises(TypeError, match="datetimes"):
+        check_as_of(5, 1, np.dtype("datetime64[ns]"))
+    with pytest.raises(TypeError, match="numbers"):
+        check_as_of(np.datetime64("2024-01-01"), 1, np.dtype(np.int64))
+
+
+def test_check_optionally_timed_reads_a_third_column_as_time():
+    assert check_optionally_timed([["u", "a"]])[3] is None
+    timed = np.array([["u", "a", 3]], dtype=object)
+    np.testing.assert_array_equal(check_optionally_timed(timed)[3], [3])
+
+
+def test_check_interactions_explains_times_turned_into_strings():
+    with pytest.raises(TypeError, match="object array or a DataFrame"):
+        check_interactions([["u", "a", 5]], time=True)
+
+
+def test_drop_time_leaves_untimed_identifiers_alone():
+    X = np.array([["u", "a"], ["v", "b"]], dtype=object)
+    assert drop_time(X) is not None
+    np.testing.assert_array_equal(drop_time(X), X)
+    mixed = np.array([["u", 1, 5]], dtype=object)
+    assert drop_time(mixed).dtype == object

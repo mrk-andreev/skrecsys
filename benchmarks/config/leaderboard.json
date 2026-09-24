@@ -14,6 +14,7 @@
       "skip": {
         "EASE": "a dense 674k x 674k item matrix does not fit in memory",
         "SLIM": "one elastic net per item over a 674k-item catalog does not finish",
+        "BM25+AutoTune": "50 trials of 3-fold cross-validation over 7.4M interactions is hours of fitting",
         "SimpleX": "one training epoch of 7.4M interactions runs over an hour on CPU",
         "XSimGCL": "one training epoch of 7.4M interactions runs over an hour on CPU"
       }
@@ -59,6 +60,18 @@
       "params": {},
       "version": "v2",
       "comment": "Item-item neighbours with BM25 weighting; v2: cached thread pools, serial small batches, fused recommend kernel reading the fitted matrices in place"
+    },
+    {
+      "name": "BM25+AutoTune",
+      "package": "skrecsys.tune",
+      "cls": "AutoTune",
+      "params": {
+        "estimator": {"package": "skrecsys.recommendation", "cls": "BM25Recommender"},
+        "n_trials": 50,
+        "random_state": 0
+      },
+      "version": "v1",
+      "comment": "BM25 with n_neighbors, k1 and b tuned by TPE over 50 trials of 3-fold warm-start cross-validation on the training split alone; fit time includes the search"
     },
     {
       "name": "ItemKNN",

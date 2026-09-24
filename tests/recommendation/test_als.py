@@ -168,6 +168,8 @@ def test_random_state_reproducible():
     [
         {"n_factors": -1},
         {"n_factors": 2.5},
+        {"n_factors": True},
+        {"reg_global": float("inf")},
         {"n_iter": -1},
         {"init_stdev": -0.1},
         {"reg_global": -1.0},

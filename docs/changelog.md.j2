@@ -1,0 +1,79 @@
+{#- Included by README.md.j2 after "Releasing", so headings start at level two. Versions
+    are listed oldest first; add a section at the bottom when bumping the version. -#}
+## Changelog
+
+### 0.1.0
+
+- Project skeleton: packaging, typed `skrecsys` package and the PyPI release workflow.
+
+### 0.2.0
+
+- First working release: scikit-learn-style recommenders with `fit`, `partial_fit`,
+  `recommend` and `predict`, backed by Rust kernels exposed through PyO3 as `skrecsys._core`.
+- `skrecsys.recommendation`: `MostPopularRecommender`, `ItemKNNRecommender`,
+  `AlternatingLeastSquares`, `BM25Recommender`, `EASE` and `RP3Beta`.
+- `skrecsys.metrics`: ranking metrics (NDCG, precision, recall, hit rate, MAP, MRR) and
+  beyond-accuracy metrics (catalog and user coverage, mean popularity, novelty), plus
+  `make_recommender_scorer` for scikit-learn model selection.
+- `skrecsys.model_selection.WarmStartKFold` and the `fetch_movielens_100k` dataset loader.
+- MovieLens 100K leaderboard, checked against reference implementations (implicit, RecTools,
+  libFM and the Dacrema et al. baselines).
+- Test CI and pre-commit hooks; macOS x86_64 dropped from the release targets.
+
+### 0.3.0
+
+- New estimators: `SLIMElasticNet` and `BayesianPersonalizedRanking`.
+- Faster `fit` and `recommend`: identifier encoding, similarity pruning and top-k ranking
+  moved to Rust, and neighbourhood models rank a batch of queries in one kernel without
+  building a dense score matrix.
+- Profile-guided optimization build script (`scripts/pgo.py`).
+- Leaderboard reports fit and ranking timings separately, with sample counts and quantiles.
+
+### 0.4.0
+
+- `skrecsys.nn`: neural recommenders `HSTU`, `Mamba4Rec`, `SimpleX` and `XSimGCL`, behind
+  the opt-in `nn` extra. Fitted models unpickle and score without torch.
+- `skrecsys.indexing`: `HNSW` and `QuantizedFlatIndex` vector indexes with an index registry
+  (`make_index`, `register_index`), usable by the factor and neural models.
+- Incremental fitting reworked: `partial_fit` grows the user and item vocabularies and
+  updates the model from the batch instead of refitting on the full history.
+- New datasets: `fetch_movielens_1m` and `fetch_amazon_books`.
+- Core refactored into a separate `rust/kernels` crate with Criterion benchmarks.
+- Benchmark suite (`benchmarks/run.py`) with configs for the leaderboard, sequential
+  and index benchmarks; the README is now rendered from `README.md.j2`.
+- Documentation of the production lifecycle (fit, `partial_fit`, serving modes).
+
+### 0.5.0
+
+- `skrecsys.compose`: `Switch` and `Cascade` composites, built from conditions (`KnownUser`,
+  `MinInteractions`, `QueryIn`, `AllOf`, `AnyOf`, `Not`), feature components and rankers
+  (`PointwiseRanker`, `GroupRanker`, `BlendRanker`).
+- `Cascade` takes a list of candidate generators: their candidates are interleaved by rank,
+  deduplicated and capped at `n_retrieved` per query, and every generator scores every
+  candidate, so `GeneratorScores(n_generators=...)` gives the ranker one feature per generator.
+- Reciprocal rank fusion, which needs no training: `ReciprocalRankFusion` fuses the lists of
+  several recommenders and stands wherever a recommender does, and `ReciprocalRankRanker` is a
+  `Cascade` ranker fusing feature columns or other rankers by rank.
+- `skrecsys.integrations`: `CatBoostRanker`, `LGBMRanker` and `XGBRanker` for `Cascade`,
+  each behind its own opt-in extra.
+- `skrecsys.tune`: TPE hyperparameter tuner with a Rust sampler; estimators declare their
+  search space as annotations on `__init__`, and `AutoTune` tunes a recommender inside `fit`.
+- `skrecsys.model_selection.ColdStartSplit` for training cold-start rankers.
+- Shared parameter validation: estimators check their parameters at `fit` time with
+  consistent error messages.
+- Reranking benchmark comparing `Switch` pipelines with and without a second-stage ranker, on
+  MovieLens 100K and 1M split by `ColdStartSplit`.
+- Candidate generation benchmark: candidate recall of single and merged generators at
+  several budgets, against the best member of each merge, and the cost of one request.
+- README split into per-topic templates under `docs/`.
+- `skrecsys.metrics.evaluate_recommender` evaluates several metrics at several cutoffs from
+  one `recommend` call, and `make_recommender_scorer` takes lists of metrics and cutoffs to make
+  a scikit-learn multi-metric scorer.
+- `JoinDynamicFeatures` takes a tuple of kinds, such as `kind=("user", "item")`, to compute
+  pair features: the callback gets the distinct combinations of those columns.
+- `Cascade(postprocess=...)`: business rules on top of the ranker. A callback receives every
+  candidate of each query, best first, and returns the lists to serve, which it may reorder,
+  shorten or extend with items that were not candidates. It applies in `recommend` only, so
+  the ranker trains without it while evaluation and tuning measure it.
+- `recommend(exclude_interactions=...)` accepts an empty array, such as a request with no
+  events since the fit, and excludes nothing instead of raising.

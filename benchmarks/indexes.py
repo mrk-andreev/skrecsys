@@ -16,13 +16,11 @@ This module measures and shapes tables; ``benchmarks/run.py`` decides what to ru
 """
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from sklearn.base import clone
 
 # The shared timing machinery lives in the sibling module; importing it keeps one
 # implementation of "what a benchmark row looks like".
@@ -30,9 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import leaderboard
 from leaderboard import WARMUP, Timing, sample
-from spec import IndexEntry
+from spec import IndexEntry, Settings, Split, Warmup
+from store import Cells, SeriesPayload, SweepPayload, SweepRow
 
+from skrecsys._typing import clone_as
+from skrecsys.indexing import VectorIndex
 from skrecsys.metrics import catalog_coverage_at_k, ndcg_at_k
+from skrecsys.recommendation._base import BaseRecommender
 
 #: The tables of the report, each stored as its own result so that one can be re-run
 #: without the others: the sweep table (answers and cost at every dial value), the
@@ -45,8 +47,8 @@ class Measurement:
 
     def __init__(
         self,
-        items: NDArray[Any],
-        scores: NDArray[np.float64],
+        items: NDArray[np.generic],
+        scores: NDArray[np.floating],
         fit: Timing,
         build: Timing | None,
         rank: Timing,
@@ -67,16 +69,16 @@ class Measurement:
 
 
 def measure_model(
-    estimator: Any,
-    query_users: NDArray[Any],
-    X_train: NDArray[Any],
+    estimator: BaseRecommender,
+    query_users: NDArray[np.generic],
+    X_train: NDArray[np.generic],
     y_train: NDArray[np.float64] | None,
     k: int,
     indexes: Sequence[IndexEntry],
     repeat: int,
     rank_repeat: int,
     budget: float,
-    warmup: Mapping[str, int] = WARMUP,
+    warmup: Warmup = WARMUP,
 ) -> tuple[Measurement, list[tuple[IndexEntry, int, Measurement]]]:
     """One model, ranked exactly and then at every dial value of every index.
 
@@ -91,10 +93,10 @@ def measure_model(
     is a different proposition from one that adds a twentieth, and one number hides
     which.
     """
-    bare = clone(estimator).set_params(index=None)
+    bare = _exact_clone(estimator)
 
-    def fit_once() -> Any:
-        return clone(bare).fit(X_train, y_train)
+    def fit_once() -> BaseRecommender:
+        return clone_as(bare).fit(X_train, y_train)
 
     for _ in range(warmup["fit"]):
         fit_once()
@@ -102,10 +104,10 @@ def measure_model(
     fit = Timing(np.asarray(fit_seconds), f"{len(X_train)}", "fit")
     batch = f"{len(query_users)} x {fitted.n_items_}"
 
-    def rank_once() -> tuple[NDArray[Any], NDArray[np.float64]]:
+    def rank_once() -> tuple[NDArray[np.generic], NDArray[np.floating]]:
         return fitted.recommend(query_users, n_recommendations=k, exclude_seen=True)
 
-    def rank() -> tuple[Timing, NDArray[Any], NDArray[np.float64]]:
+    def rank() -> tuple[Timing, NDArray[np.generic], NDArray[np.floating]]:
         for _ in range(warmup["rank"]):
             rank_once()
         seconds, (items, scores) = leaderboard.timed(rank_once, rank_repeat, budget)
@@ -116,17 +118,18 @@ def measure_model(
 
     approximate: list[tuple[IndexEntry, int, Measurement]] = []
     for index in indexes:
-        fitted.set_params(index=index.build())
+        fitted.set_params(index=index.build(VectorIndex))
         # Warmed like the fit is, and for the same reason; on a six-figure catalog a
         # build costs minutes, so a fit warm-up of 0 is how a caller buys one not two.
         for _ in range(warmup["fit"]):
             fitted._fit_index()
         build_seconds = sample(fitted._fit_index, repeat, budget)
         build = Timing(np.asarray(build_seconds), f"{fitted.n_items_}", "fit")
-        index_bytes, vectors_bytes = fitted.index_.nbytes, fitted.index_.space_.nbytes
+        built = _built_index(fitted, index)
+        index_bytes, vectors_bytes = built.nbytes, built.space_.nbytes
 
         for value in index.dial.values:
-            fitted.index_.set_params(**{index.dial.param: value})
+            built.set_params(**{index.dial.param: value})
             index_rank, items, scores = rank()
             approximate.append(
                 (
@@ -138,19 +141,19 @@ def measure_model(
     return exact, approximate
 
 
-def recall_at_k(approx: NDArray[Any], exact: NDArray[Any]) -> float:
+def recall_at_k(approx: NDArray[np.generic], exact: NDArray[np.generic]) -> float:
     """Share of the exact answer the approximate one kept, averaged over queries."""
     pairs = zip(approx, exact, strict=True)
     hits = sum(len(set(a.tolist()) & set(e.tolist())) for a, e in pairs)
     return hits / float(approx.size)
 
 
-def top_one_churn(approx: NDArray[Any], exact: NDArray[Any]) -> float:
+def top_one_churn(approx: NDArray[np.generic], exact: NDArray[np.generic]) -> float:
     """Share of queries whose first recommendation changed -- the one a user notices."""
     return float(np.mean(approx[:, 0] != exact[:, 0]))
 
 
-def score_gap(approx: NDArray[np.float64], exact: NDArray[np.float64]) -> float:
+def score_gap(approx: NDArray[np.floating], exact: NDArray[np.floating]) -> float:
     """Relative score lost at rank one.
 
     Says whether a churned top item was a near-tie or a real miss, which recall alone
@@ -168,10 +171,10 @@ def quality_row(
     dial: str,
     measurement: Measurement,
     baseline: Measurement,
-    y_true: list[set[Any]],
-    catalog: NDArray[Any],
+    y_true: list[set[Hashable]],
+    catalog: NDArray[np.generic],
     k: int,
-) -> dict[str, str]:
+) -> Cells:
     """One row of the table that says what the index cost in answers."""
     ndcg = float(ndcg_at_k(y_true, measurement.items, k=k))
     base_ndcg = float(ndcg_at_k(y_true, baseline.items, k=k))
@@ -196,7 +199,7 @@ def cost_row(
     dial: str,
     measurement: Measurement,
     baseline: Measurement,
-) -> dict[str, str]:
+) -> Cells:
     """One row of the table that says what the index saved in time."""
     fit_median = float(np.median(measurement.fit.seconds))
     build_median = float(np.median(measurement.build.seconds)) if measurement.build else 0.0
@@ -220,12 +223,12 @@ def cost_row(
 
 def sweep_payloads(
     name: str,
-    estimator: Any,
-    data: Any,
+    estimator: BaseRecommender,
+    data: Split,
     indexes: Sequence[IndexEntry],
-    settings: Mapping[str, Any],
+    settings: Settings,
     max_eval_users: int | None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, SweepPayload]:
     """Measure one model exactly and through each of ``indexes``, one payload per index.
 
     Every payload carries the exact row it was measured against, so a result stays
@@ -234,7 +237,7 @@ def sweep_payloads(
     """
     k = settings["k"]
     X_train, y_train, X_test, y_test = _split(data)
-    probe = clone(estimator).set_params(index=None).fit(X_train, y_train)
+    probe = _exact_clone(estimator).fit(X_train, y_train)
     query_users, y_true = leaderboard._held_out_by_user(X_test, y_test, probe.user_ids_)
     query_users, y_true = leaderboard._sample_users(query_users, y_true, max_eval_users)
     catalog = np.asarray(probe.item_ids_)
@@ -253,11 +256,11 @@ def sweep_payloads(
         settings["budget"],
         settings["warmup"],
     )
-    exact = {
+    exact: SweepRow = {
         "quality": quality_row(name, "exact", "-", baseline, baseline, y_true, catalog, k),
         "cost": cost_row(name, "exact", "-", baseline, baseline),
     }
-    payloads: dict[str, dict[str, Any]] = {
+    payloads: dict[str, SweepPayload] = {
         index.name: {"n_items": n_items, "exact": exact, "rows": []} for index in indexes
     }
     for index, value, measurement in approximate:
@@ -274,8 +277,8 @@ def sweep_payloads(
 
 
 def scale_catalog(
-    X: NDArray[Any], y: NDArray[np.float64] | None, share: float
-) -> tuple[NDArray[Any], NDArray[np.float64] | None]:
+    X: NDArray[np.generic], y: NDArray[np.float64] | None, share: float
+) -> tuple[NDArray[np.generic], NDArray[np.float64] | None]:
     """Keep a share of the catalog, and the interactions that fall in it.
 
     The items kept are the most popular ones rather than a random sample: dropping the
@@ -289,12 +292,12 @@ def scale_catalog(
 
 
 def scaling_payloads(
-    estimator: Any,
-    data: Any,
+    estimator: BaseRecommender,
+    data: Split,
     indexes: Sequence[IndexEntry],
-    settings: Mapping[str, Any],
+    settings: Settings,
     max_eval_users: int | None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, SeriesPayload]:
     """How ranking time answers to the size of the catalog, one payload per index.
 
     The falsifiable part of the report. An exact scan is linear in the catalog and a
@@ -309,11 +312,11 @@ def scaling_payloads(
     """
     k = settings["k"]
     X_train, y_train, X_test, y_test = _split(data)
-    points: dict[str, list[dict[str, str]]] = {index.name: [] for index in indexes}
+    points: dict[str, list[Cells]] = {index.name: [] for index in indexes}
     operating = [_at_middle(index) for index in indexes]
     for share in settings["catalog_scale"]:
         X, y = scale_catalog(X_train, y_train, share)
-        probe = clone(estimator).set_params(index=None).fit(X, y)
+        probe = _exact_clone(estimator).fit(X, y)
         users, _ = leaderboard._held_out_by_user(X_test, y_test, probe.user_ids_)
         # Shrinking the catalog leaves heavy users with fewer than `k` items they have
         # not already seen, and `recommend` rightly refuses those rather than returning
@@ -373,11 +376,11 @@ def format_latency(seconds: float) -> str:
 
 
 def latency_payloads(
-    estimator: Any,
-    data: Any,
+    estimator: BaseRecommender,
+    data: Split,
     indexes: Sequence[IndexEntry],
-    settings: Mapping[str, Any],
-) -> dict[str, dict[str, Any]]:
+    settings: Settings,
+) -> dict[str, SeriesPayload]:
     """What one request costs, rather than what ten thousand of them cost together.
 
     The sweep table ranks every held-out user in a single call, which is a batch job and
@@ -391,25 +394,25 @@ def latency_payloads(
     k, budget, warmup = settings["k"], settings["budget"], settings["warmup"]
     repeat = settings["latency_repeat"]
     X_train, y_train, X_test, y_test = _split(data)
-    fitted = clone(estimator).set_params(index=None).fit(X_train, y_train)
+    fitted = _exact_clone(estimator).fit(X_train, y_train)
     query_users, _ = leaderboard._held_out_by_user(X_test, y_test, fitted.user_ids_)
     # One fitted copy per index, each holding its own built index, so the timing below
     # is a `recommend` call and never a build.
     indexed = {}
     for index in indexes:
-        model = clone(estimator).set_params(index=None).fit(X_train, y_train)
-        model.set_params(index=index.build())
+        model = _exact_clone(estimator).fit(X_train, y_train)
+        model.set_params(index=index.build(VectorIndex))
         model._fit_index()
-        model.index_.set_params(**{index.dial.param: index.dial.middle()})
+        _built_index(model, index).set_params(**{index.dial.param: index.dial.middle()})
         indexed[index.name] = (index, model)
 
-    points: dict[str, list[dict[str, str]]] = {index.name: [] for index in indexes}
+    points: dict[str, list[Cells]] = {index.name: [] for index in indexes}
     for batch in settings["latency_batch"]:
         users = query_users[:batch]
         if len(users) < batch:
             continue
 
-        def timed(model: Any, users: NDArray[Any] = users) -> float:
+        def timed(model: BaseRecommender, users: NDArray[np.generic] = users) -> float:
             def once() -> None:
                 model.recommend(users, n_recommendations=k, exclude_seen=True)
 
@@ -433,12 +436,29 @@ def latency_payloads(
     return {name: {"points": series} for name, series in points.items()}
 
 
+def _exact_clone(estimator: BaseRecommender) -> BaseRecommender:
+    """An unfitted copy of ``estimator`` that ranks exactly, whatever index it was given."""
+    bare = clone_as(estimator)
+    bare.set_params(index=None)
+    return bare
+
+
+def _built_index(fitted: BaseRecommender, index: IndexEntry) -> VectorIndex:
+    """The index ``fitted`` built from ``index``; the model may judge one not worth it."""
+    built = fitted.index_
+    if built is None:
+        raise RuntimeError(f"{type(fitted).__name__} built no {index.name} index.")
+    return built
+
+
 def _at_middle(index: IndexEntry) -> IndexEntry:
     """``index`` swept at one value only, the one the single-setting tables use."""
     return index.with_values([index.dial.middle()])
 
 
-def _split(data: Any) -> tuple[Any, Any, Any, Any]:
+def _split(
+    data: Split,
+) -> tuple[NDArray[np.generic], NDArray[np.float64], NDArray[np.generic], NDArray[np.float64]]:
     train, test = data.train_indices, data.test_indices
     return data.data[train], data.target[train], data.data[test], data.target[test]
 
@@ -454,15 +474,15 @@ def _split(data: Any) -> tuple[Any, Any, Any, Any]:
 def sweep_tables(
     models: Sequence[str],
     indexes: Sequence[IndexEntry],
-    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    payloads: Mapping[tuple[str, str], SweepPayload],
+) -> tuple[list[Cells], list[Cells]]:
     """The answers table and the cost table, each model's exact row first.
 
     The exact row printed is the baseline of the first index that has a result, which
     is the one its own rows were measured against.
     """
-    quality: list[dict[str, str]] = []
-    cost: list[dict[str, str]] = []
+    quality: list[Cells] = []
+    cost: list[Cells] = []
     for model in models:
         present = [
             payloads[model, index.name] for index in indexes if (model, index.name) in payloads
@@ -480,8 +500,8 @@ def sweep_tables(
 def scaling_table(
     models: Sequence[str],
     indexes: Sequence[IndexEntry],
-    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
-) -> list[dict[str, str]]:
+    payloads: Mapping[tuple[str, str], SeriesPayload],
+) -> list[Cells]:
     """One row per model and catalog size, a pair of columns per index."""
     return _wide(
         models,
@@ -496,8 +516,8 @@ def scaling_table(
 def latency_table(
     models: Sequence[str],
     indexes: Sequence[IndexEntry],
-    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
-) -> list[dict[str, str]]:
+    payloads: Mapping[tuple[str, str], SeriesPayload],
+) -> list[Cells]:
     """One row per model and request size, a pair of columns per index."""
     return _wide(
         models,
@@ -512,12 +532,12 @@ def latency_table(
 def _wide(
     models: Sequence[str],
     indexes: Sequence[IndexEntry],
-    payloads: Mapping[tuple[str, str], Mapping[str, Any]],
+    payloads: Mapping[tuple[str, str], SeriesPayload],
     *,
     lead: tuple[str, ...],
     exact: tuple[str, ...],
-    column: Any,
-) -> list[dict[str, str]]:
+    column: Callable[[IndexEntry, Cells], str],
+) -> list[Cells]:
     """Lay per-index series side by side, keyed on the ``lead`` cells they share.
 
     The exact cells come from the first index measured at that point. Only indexes with
@@ -525,7 +545,7 @@ def _wide(
     """
     measured = [index for index in indexes if any((m, index.name) in payloads for m in models)]
     header_of: dict[str, str] = {}
-    rows: list[dict[str, str]] = []
+    rows: list[Cells] = []
     for model in models:
         series = {
             index.name: payloads[model, index.name]["points"]
@@ -535,7 +555,7 @@ def _wide(
         if not series:
             continue
         order: list[tuple[str, ...]] = []
-        by_point: dict[tuple[str, ...], dict[str, dict[str, str]]] = {}
+        by_point: dict[tuple[str, ...], dict[str, Cells]] = {}
         for index in measured:
             for point in series.get(index.name, []):
                 where = tuple(point[name] for name in lead)

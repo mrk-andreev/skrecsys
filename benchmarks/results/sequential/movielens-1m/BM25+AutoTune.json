@@ -1,0 +1,83 @@
+{
+  "key": "cd8516c4c976d224",
+  "unit": "sequential/movielens-1m/BM25+AutoTune",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-25T22:00:00+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release",
+    "device": null
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "sequential",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "cutoffs": [
+        10,
+        50,
+        200
+      ],
+      "repeat": 1,
+      "rank_repeat": 5,
+      "budget": 30.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 1
+      }
+    },
+    "model": {
+      "package": "skrecsys.tune",
+      "cls": "AutoTune",
+      "params": {
+        "estimator": {
+          "package": "skrecsys.recommendation",
+          "cls": "BM25Recommender"
+        },
+        "n_trials": 50,
+        "random_state": 0
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": {
+      "Model": "BM25+AutoTune",
+      "HR@10": "0.0684",
+      "NDCG@10": "0.0351",
+      "HR@50": "0.2081",
+      "NDCG@50": "0.0652",
+      "HR@200": "0.4220",
+      "NDCG@200": "0.0972",
+      "cat cov@10": "0.1662"
+    },
+    "timing": {
+      "Model": "BM25+AutoTune",
+      "fit batch (interactions)": "656566",
+      "fit samples": "1",
+      "fit min": "11.60 s",
+      "fit median": "11.60 s",
+      "fit max": "11.60 s",
+      "rank batch (users x items)": "6040 x 3646",
+      "rank samples": "5",
+      "rank mean": "97 ms",
+      "rank median": "97 ms",
+      "rank q95": "101 ms",
+      "rank q99": "101 ms"
+    }
+  }
+}

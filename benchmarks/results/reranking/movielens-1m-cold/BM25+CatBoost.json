@@ -1,0 +1,140 @@
+{
+  "key": "108a8972baf0acfa",
+  "unit": "reranking/movielens-1m-cold/BM25+CatBoost",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T08:24:43+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "reranking",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 1000,
+      "budget": 10.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "pipelines",
+      "cls": "switch_bm25_catboost",
+      "params": {
+        "n_retrieved": 100,
+        "iterations": 300,
+        "cold_users": 0.2,
+        "random_state": 0
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": [
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "all",
+        "n users": "6,040",
+        "NDCG@10": "0.1916",
+        "P@10": "0.1744",
+        "R@10": "0.0734",
+        "hit rate": "0.6662",
+        "MAP": "0.1087",
+        "MRR": "0.3431",
+        "cat cov": "0.2165",
+        "mean pop": "1492.6599",
+        "novelty": "9.09"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "warm",
+        "n users": "5,436",
+        "NDCG@10": "0.1572",
+        "P@10": "0.1401",
+        "R@10": "0.0766",
+        "hit rate": "0.6365",
+        "MAP": "0.0787",
+        "MRR": "0.3027",
+        "cat cov": "0.2165",
+        "mean pop": "1412.7076",
+        "novelty": "9.17"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "cold",
+        "n users": "604",
+        "NDCG@10": "0.5010",
+        "P@10": "0.4829",
+        "R@10": "0.0452",
+        "hit rate": "0.9338",
+        "MAP": "0.3779",
+        "MRR": "0.7065",
+        "cat cov": "0.0096",
+        "mean pop": "2212.2300",
+        "novelty": "8.37"
+      }
+    ],
+    "latency": [
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "warm",
+        "requests": "1,000",
+        "median": "785 us",
+        "q95": "1.38 ms",
+        "q99": "1.85 ms"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "cold",
+        "requests": "1,000",
+        "median": "406 us",
+        "q95": "465 us",
+        "q99": "503 us"
+      }
+    ],
+    "examples": [
+      {
+        "user": "2",
+        "profile": "56, M, 16",
+        "held out": "129",
+        "top": "**American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**"
+      },
+      {
+        "user": "13",
+        "profile": "45, M, 1",
+        "held out": "108",
+        "top": "American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**"
+      },
+      {
+        "user": "15",
+        "profile": "25, M, 7",
+        "held out": "201",
+        "top": "**American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991)"
+      }
+    ]
+  }
+}

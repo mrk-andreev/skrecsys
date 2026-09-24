@@ -19,6 +19,7 @@ def bpr_fit(
     seed: int,
     n_threads: int,
     positives: NDArray[np.int64] | None = ...,
+    popularity_negatives: bool = ...,
 ) -> list[float]: ...
 def coo_to_csr(
     rows: NDArray[np.int64],
@@ -298,7 +299,20 @@ def recommend_from_similarity(
     first_query: int = ...,
     excluded_indptr: NDArray[np.int64] | None = ...,
     excluded_indices: NDArray[np.int64] | None = ...,
+    implicit_ties: bool = ...,
 ) -> tuple[NDArray[np.int64], NDArray[np.float64]]: ...
+def tune_suggest(
+    kind: str,
+    low: float,
+    high: float,
+    log: bool,
+    n_choices: int,
+    observed: NDArray[np.float64],
+    scores: NDArray[np.float64],
+    n_startup_trials: int,
+    n_ei_candidates: int,
+    seed: int,
+) -> float: ...
 def top_k_per_row(
     scores: NDArray[np.float64],
     excluded_indptr: NDArray[np.int64],

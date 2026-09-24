@@ -97,8 +97,15 @@ def test_a_full_shortlist_at_eight_bits_is_the_exact_path(estimator, needs_y, in
 
     expected = exact.recommend(users, n_recommendations=10)
     got = approx.recommend(users, n_recommendations=10)
-    np.testing.assert_array_equal(got[0], expected[0])
     np.testing.assert_allclose(got[1], expected[1], atol=1e-10)
+    if getattr(exact, "_implicit_ties", False):
+        # The exact path ranks tied scores in implicit's accumulation order, which a
+        # rerank cannot replay; it must still be a top-k of exactly those scores.
+        pairs = np.column_stack([np.repeat(users, got[0].shape[1]), got[0].ravel()])
+        rescored = exact.predict(pairs).reshape(got[1].shape)
+        np.testing.assert_allclose(rescored, got[1], atol=1e-10)
+        return
+    np.testing.assert_array_equal(got[0], expected[0])
 
 
 @pytest.mark.parametrize("bits", SUPPORTED_BITS)
@@ -108,9 +115,14 @@ def test_recall_against_the_exact_path(estimator, bits, needs_y, interactions):
     exact, approx = _fit_pair(estimator, interactions, y, bits=bits, oversample=OVERSAMPLE[bits])
     users = np.unique(interactions[:, 0])[:150]
 
-    exact_items, _ = exact.recommend(users, n_recommendations=10)
-    approx_items, _ = approx.recommend(users, n_recommendations=10)
-    recall = _recall(approx_items, exact_items)
+    exact_items, exact_scores = exact.recommend(users, n_recommendations=10)
+    approx_items, approx_scores = approx.recommend(users, n_recommendations=10)
+    if getattr(exact, "_implicit_ties", False):
+        # Which of the items tied at the cutoff the exact path keeps follows implicit's
+        # accumulation order, so an item scoring at least the exact k-th score is a hit.
+        recall = np.mean(approx_scores >= exact_scores[:, -1:] - 1e-12)
+    else:
+        recall = _recall(approx_items, exact_items)
     floor = RECALL_FLOOR[bits]
     assert recall >= floor, (
         f"{estimator!r} at {bits} bits found {recall:.4f} of the exact top 10, "
@@ -150,7 +162,8 @@ def test_a_wider_shortlist_never_lowers_recall(interactions):
 
     recalls = []
     for oversample in (1, 2, 4, 16, 64):
-        approx.index_.set_params(oversample=oversample)  # ty: ignore[unresolved-attribute]
+        assert isinstance(approx.index_, QuantizedFlatIndex)
+        approx.index_.set_params(oversample=oversample)
         items, _ = approx.recommend(users, n_recommendations=10)
         recalls.append(_recall(items, exact_items))
     assert recalls == sorted(recalls), f"recall fell as the shortlist widened: {recalls}"

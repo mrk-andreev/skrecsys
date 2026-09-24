@@ -7,14 +7,14 @@ from numpy.typing import NDArray
 from skrecsys import _core
 from skrecsys._typing import override
 from skrecsys.indexing._base import (
+    MAX_TAIL_FRACTION,
     DenseSpace,
     VectorIndex,
     VectorSpace,
-    check_positive_int,
-    check_tail_fraction,
     register_index,
 )
 from skrecsys.indexing._hnsw import _as_int64, _pad_queries, kernel_ready
+from skrecsys.utils._param_validation import check_int, check_real
 
 __all__ = ["QuantizedFlatIndex"]
 
@@ -120,10 +120,13 @@ class QuantizedFlatIndex(VectorIndex):
     def _check_params(self) -> None:
         """Validate parameters, as the estimators do, rather than by constraint table."""
         for name in ("bits", "oversample", "min_index_size"):
-            check_positive_int(getattr(self, name), name)
+            check_int(getattr(self, name), name, min_value=1)
         if int(self.bits) not in SUPPORTED_BITS:
             raise ValueError(f"bits must be one of {list(SUPPORTED_BITS)}, got {self.bits!r}.")
-        check_tail_fraction(self.quantile, "quantile")
+        # A share of *each* tail, so under half in total.
+        check_real(
+            self.quantile, "quantile", min_value=0, max_value=MAX_TAIL_FRACTION, max_inclusive=False
+        )
 
     @override
     def fit(self, space: VectorSpace, *, n_threads: int = 0, seed: int = 0) -> "QuantizedFlatIndex":

@@ -8,7 +8,7 @@ window builder below turns them into the padded ``(n_users, window)`` code matri
 modules train and score from.
 """
 
-from typing import Any, Self
+from typing import Self
 
 import numpy as np
 import scipy.sparse as sp
@@ -43,7 +43,7 @@ class SequentialRecommender(TorchRecommender[ModuleT]):
     #: later batch extends these sequences rather than replacing them, and
     #: ``interactions_`` cannot stand in: a CSR row is a set and has thrown the order
     #: away. It costs one identifier pair per stored interaction.
-    ordered_history_: "tuple[NDArray[Any], NDArray[Any]]"
+    ordered_history_: "tuple[NDArray[np.generic], NDArray[np.generic]]"
 
     @override
     def _index_space(self) -> DenseSpace:

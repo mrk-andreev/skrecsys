@@ -1,14 +1,20 @@
 """The mixin that gives a recommender an optional vector index."""
 
 import numbers
-from typing import Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 from sklearn.utils import check_random_state
 
-from skrecsys.base import check_enough_eligible, seen_among, union_of_exclusions
+from skrecsys._typing import override
+from skrecsys.base import (
+    RecommenderMixin,
+    check_enough_eligible,
+    seen_among,
+    union_of_exclusions,
+)
 from skrecsys.indexing._base import (
     VectorIndex,
     VectorSpace,
@@ -23,7 +29,7 @@ __all__ = ["VectorIndexMixin"]
 _DEFAULT_SEED = 0
 
 
-class VectorIndexMixin:
+class VectorIndexMixin(RecommenderMixin):
     """Mixin giving a recommender an ``index`` parameter and the machinery behind it.
 
     A recommender opts in by implementing :meth:`_index_space` and
@@ -42,6 +48,16 @@ class VectorIndexMixin:
     default), a registered name such as ``"hnsw"``, or a configured
     :class:`~skrecsys.indexing.VectorIndex`.
     """
+
+    #: Fitted by the recommender. Annotations only, as on the mixins it extends.
+    user_ids_: NDArray[np.generic]
+    interactions_: sp.csr_array
+
+    if TYPE_CHECKING:
+        # Provided by ``BaseRecommender``; declared for ``IncrementalRecommenderMixin``,
+        # which extends this mixin. Like ``fit`` on ``RecommenderMixin``, a declaration
+        # here sits after the estimator's own class in its MRO, so it shadows nothing.
+        def _build_threads(self) -> int: ...
 
     def _index_space(self) -> VectorSpace | None:
         """The space this model's score is an inner product in, or ``None``."""
@@ -138,6 +154,7 @@ class VectorIndexMixin:
         floor = max(index.min_index_size, 10 * max(k, getattr(index, "ef_search", k)))
         return index if n_candidates >= floor else None
 
+    @override
     def _rank_chunk_size(self, n_candidates: int, k: int) -> int:
         """Queries ranked per block.
 
@@ -150,11 +167,12 @@ class VectorIndexMixin:
         """
         if self._worthwhile_index(n_candidates, k) is not None:
             return 65_536
-        return int(super()._rank_chunk_size(n_candidates, k))  # ty: ignore[unresolved-attribute]
+        return super()._rank_chunk_size(n_candidates, k)
 
+    @override
     def _rank_queries(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -170,7 +188,7 @@ class VectorIndexMixin:
         """
         index = self._worthwhile_index(len(item_indices), k)
         if index is None:
-            return self._rank_queries_exact(  # ty: ignore[unresolved-attribute]
+            return self._rank_queries_exact(
                 queries,
                 item_indices,
                 k,
@@ -191,7 +209,7 @@ class VectorIndexMixin:
     def _rank_queries_indexed(
         self,
         index: VectorIndex,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -200,10 +218,10 @@ class VectorIndexMixin:
         first_query: int,
     ) -> tuple[NDArray[np.int64], NDArray[np.floating]]:
         """Rank by walking the index, with the exact path's contract kept intact."""
-        user_idx = encode_ids(check_ids(queries), self.user_ids_, name="user")  # ty: ignore[unresolved-attribute]
+        user_idx = encode_ids(check_ids(queries), self.user_ids_, name="user")
         shape = (len(user_idx), len(item_indices))
         seen = (
-            seen_among(self.interactions_, user_idx, item_indices)  # ty: ignore[unresolved-attribute]
+            seen_among(self.interactions_, user_idx, item_indices)
             if exclude_seen
             else sp.csr_array(shape, dtype=bool)
         )

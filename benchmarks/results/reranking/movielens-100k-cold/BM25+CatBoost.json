@@ -1,0 +1,140 @@
+{
+  "key": "bd87bebacdf08bc0",
+  "unit": "reranking/movielens-100k-cold/BM25+CatBoost",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-25T22:00:00+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "reranking",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 1000,
+      "budget": 10.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "pipelines",
+      "cls": "switch_bm25_catboost",
+      "params": {
+        "n_retrieved": 100,
+        "iterations": 300,
+        "cold_users": 0.2,
+        "random_state": 0
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": [
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "all",
+        "n users": "943",
+        "NDCG@10": "0.2395",
+        "P@10": "0.2121",
+        "R@10": "0.1183",
+        "hit rate": "0.7656",
+        "MAP": "0.1365",
+        "MRR": "0.4085",
+        "cat cov": "0.2611",
+        "mean pop": "227.8753",
+        "novelty": "8.53"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "warm",
+        "n users": "849",
+        "NDCG@10": "0.2052",
+        "P@10": "0.1775",
+        "R@10": "0.1217",
+        "hit rate": "0.7420",
+        "MAP": "0.1068",
+        "MRR": "0.3709",
+        "cat cov": "0.2611",
+        "mean pop": "209.6465",
+        "novelty": "8.64"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "cold",
+        "n users": "94",
+        "NDCG@10": "0.5486",
+        "P@10": "0.5245",
+        "R@10": "0.0872",
+        "hit rate": "0.9787",
+        "MAP": "0.4048",
+        "MRR": "0.7480",
+        "cat cov": "0.0125",
+        "mean pop": "392.5160",
+        "novelty": "7.58"
+      }
+    ],
+    "latency": [
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "warm",
+        "requests": "1,000",
+        "median": "666 us",
+        "q95": "858 us",
+        "q99": "1.00 ms"
+      },
+      {
+        "Pipeline": "BM25+CatBoost",
+        "users": "cold",
+        "requests": "1,000",
+        "median": "392 us",
+        "q95": "446 us",
+        "q99": "486 us"
+      }
+    ],
+    "examples": [
+      {
+        "user": "9",
+        "profile": "29, M, student",
+        "held out": "22",
+        "top": "**Star Wars (1977)**<br>Contact (1997)<br>Return of the Jedi (1983)<br>Fargo (1996)<br>Independence Day (ID4) (1996)"
+      },
+      {
+        "user": "15",
+        "profile": "49, F, educator",
+        "held out": "104",
+        "top": "**English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Contact (1997)**"
+      },
+      {
+        "user": "32",
+        "profile": "28, F, student",
+        "held out": "41",
+        "top": "Contact (1997)<br>**Liar Liar (1997)**<br>**Star Wars (1977)**<br>**Scream (1996)**<br>Toy Story (1995)"
+      }
+    ]
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "key": "a11f7337c2f232ee",
+  "unit": "candidates/movielens-100k-cold/EASE+RP3Beta RRF",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T08:14:57+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "candidates",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "n_retrieved": [
+        10,
+        20,
+        50,
+        100,
+        200
+      ],
+      "latency_repeat": 300,
+      "budget": 2.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "candidates",
+      "cls": "fused",
+      "params": {
+        "members": [
+          "EASE",
+          "RP3Beta"
+        ],
+        "k": 60
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "recall": {
+      "Generators": "EASE+RP3Beta RRF",
+      "candidate recall@10": "0.102 (-0.007)",
+      "candidate recall@20": "0.175 (-0.009)",
+      "candidate recall@50": "0.323 (-0.003)",
+      "candidate recall@100": "0.470 (+0.010)",
+      "candidate recall@200": "0.639 (+0.014)"
+    },
+    "latency": {
+      "Generators": "EASE+RP3Beta RRF",
+      "median latency@10": "330 us",
+      "median latency@20": "325 us",
+      "median latency@50": "337 us",
+      "median latency@100": "350 us",
+      "median latency@200": "399 us"
+    }
+  }
+}

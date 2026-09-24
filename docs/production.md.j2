@@ -1,4 +1,4 @@
-{#- Included by README.md.j2 right after "Usage", so headings start at level two and
+{#- Included by README.md.j2 right after "Composing recommenders", so headings start at level two and
     relative links resolve from the repository root. -#}
 ## Production lifecycle
 
@@ -17,13 +17,8 @@ A deployment has three jobs, and they should not share a live object:
 What passes between them is a pickled, versioned model. Every fitted estimator pickles,
 index included, and a `skrecsys.nn` model unpickles and scores without torch installed.
 
-The service gets its answers in one of two ways, and a deployment picks **one**:
-
-- **A. Batch.** A job calls `recommend` for every user after each new version and writes the
-  results to a key-value cache. The service only looks results up and never loads a model.
-- **B. Realtime.** Each service replica holds the model in memory, swaps to every new
-  version atomically, and calls `recommend` on the request path. There is no per-user
-  result cache.
+Trainer and updater are the same in every deployment. The service gets its answers in one
+of two ways, and a deployment picks **one**: [Batch](#batch) or [Realtime](#realtime).
 
 ```mermaid
 flowchart LR
@@ -32,38 +27,21 @@ flowchart LR
     trainer["Trainer<br/>fit(window)"]
     updater["Updater<br/>partial_fit(batch)"]
     store[("Model store<br/>v1, v2, ...")]
-    client(["Client"])
+    serving(["Batch or Realtime<br/>serving"])
 
     log -->|"nightly / weekly"| trainer
     trainer -->|"publish v(n)"| store
     stream -->|"every few minutes"| updater
     store -->|"load latest"| updater
     updater -->|"publish v(n+1)"| store
-
-    subgraph A["A. Batch: pick this..."]
-        direction TB
-        batch["Batch job<br/>recommend(all users)"]
-        cache[("Key-value cache<br/>(user, version) to items")]
-        serviceA["Recommendation service<br/>cache lookup only"]
-        batch --> cache --> serviceA
-    end
-
-    subgraph B["B. Realtime: ...or this"]
-        direction TB
-        serviceB["Recommendation service<br/>model in memory<br/>recommend(user, candidates,<br/>exclude_interactions)"]
-    end
-
-    store -->|"on every version"| batch
-    store -->|"atomic swap"| serviceB
-    client -.->|"either"| serviceA
-    client -.->|"or"| serviceB
+    store -->|"every new version"| serving
 ```
 
 Neither mode calls `partial_fit` on a model that is serving requests. `partial_fit` updates
 the model in place and rebinds `user_ids_`, `item_ids_`, `interactions_` and the fitted arrays
 one after another, so a `recommend` running at the same time can read a vocabulary from
 one version and a matrix from the other. The updater works on its own copy and publishes
-a new version, which the batch job reads (A) or each replica swaps to in one step (B).
+a new version, which the batch job reads or each realtime replica swaps to in one step.
 
 ### When to `fit`
 
@@ -123,7 +101,7 @@ stateDiagram-v2
 
 `recommend` is built for batches. It ranks queries a block at a time inside one kernel,
 and ranking every MovieLens-100K user against the whole catalog takes about a
-millisecond (see [the leaderboard](#leaderboard)). Two properties of the API decide which
+millisecond (see [the leaderboard](#leaderboard)). Three properties of the API decide which
 mode fits:
 
 - `recommend` accepts **only users the model has seen**. An unknown user raises
@@ -137,66 +115,119 @@ mode fits:
   what has already happened when it runs; a realtime call excludes what has happened by
   the time of the request.
 
-**Batch** fits when every request for a user gets the same list and most users come back
-between versions. The job passes the events that arrived after the version was fitted as
-`exclude_interactions`, so each list starts fresh. Events that arrive after the job ran
-still have to be filtered out at lookup time, so set `n_recommendations` above what a page
-shows to leave enough items after filtering. Key the cache by `(user, model_version)` so that a new version
-replaces every entry at once, and never mix lists from two versions: their scores are on
-different scales. How fresh the results are depends on how long the batch job takes, since
-a version is not live until its job finishes.
-
-**Realtime** fits when eligibility depends on the request, or when the user base is large
-and mostly inactive, so computing lists for everyone wastes work. Each replica loads the
-pickle once and never refits at startup. Each call passes the user's recent events as
-`exclude_interactions`, so it returns exactly the number of fresh items asked for, with no
-over-fetching and no filtering afterwards. Replicas should batch concurrent requests into
-one `recommend` call; the pairs of every user in the batch can go in together. On large catalogs an `index` makes each call cheaper, but see
-[vector indexes](#vector-indexes) for what it costs in exactness and speed first.
-
 ```mermaid
 flowchart TD
     start(["Choose a serving mode"]) --> percand{"Candidates depend<br/>on the request?"}
-    percand -->|yes| realtime["B. Realtime"]
+    percand -->|yes| realtime["Realtime"]
     percand -->|no| active{"Most users active<br/>between versions?"}
-    active -->|yes| batch["A. Batch"]
+    active -->|yes| batch["Batch"]
     active -->|no| realtime
 ```
 
-### The request path
+### Batch
 
-Both modes read the user's recent events and fall back to a popular list for unknown
-users. They differ in where the recent events are applied: inside `recommend` (realtime),
-or to a list computed earlier (batch).
+A job calls `recommend` for every user after each new version and writes the results to a
+key-value cache. The service only looks results up and never loads a model. Batch fits when
+every request for a user gets the same list and most users come back between versions.
+
+```mermaid
+flowchart LR
+    store[("Model store")]
+    batch["Batch job<br/>recommend(all users,<br/>exclude_interactions)"]
+    cache[("Key-value cache<br/>(user, version) to items")]
+    service["Recommendation service<br/>cache lookup only"]
+    client(["Client"])
+
+    store -->|"on every version"| batch --> cache --> service --> client
+```
+
+- The job passes the events that arrived after the version was fitted as
+  `exclude_interactions`, so each list starts fresh.
+- Events that arrive after the job ran still have to be filtered out at lookup time, so set
+  `n_recommendations` above what a page shows to leave enough items after filtering.
+- Key the cache by `(user, model_version)` so that a new version replaces every entry at
+  once, and never mix lists from two versions: their scores are on different scales.
+- Freshness depends on how long the batch job takes, since a version is not live until its
+  job finishes.
+
+The request path reads the user's recent events, drops them from the cached list, and falls
+back to a popular list for a user the cache has no entry for:
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant S as Recommendation service
-    participant V as Results for v(n)
+    participant V as Cache
     participant R as Recent events
 
     C->>S: recommendations for user u
     S->>R: events of u since v(n) was fitted
     R-->>S: recent (user, item) pairs
-    alt A. Batch
-        S->>V: cache.get(u, v(n))
-        V-->>S: top-(N + margin), or a miss if u is unknown
+    S->>V: cache.get(u, v(n))
+    V-->>S: top-(N + margin), or a miss if u is unknown
+    S->>S: drop recent items, cut to N
+    opt miss
+        S->>V: cache.get(popular, v(n))
+        V-->>S: popular list
         S->>S: drop recent items, cut to N
-    else B. Realtime
-        S->>V: model.recommend([u], n_recommendations=N,<br/>candidates=..., exclude_interactions=recent)
-        V-->>S: exactly N items, or ValueError if u is unknown
     end
+    S-->>C: N items
+```
+
+The popular list does not depend on the user. Compute it once per version, either with
+`MostPopularRecommender` ranking any known user with `exclude_seen=False` or directly from
+the counts, and write it to the cache under its own key.
+
+### Realtime
+
+Each service replica holds the model in memory, swaps to every new version atomically, and
+calls `recommend` on the request path. There is no per-user result cache. Realtime fits
+when eligibility depends on the request, or when the user base is large and mostly
+inactive, so computing lists for everyone wastes work.
+
+```mermaid
+flowchart LR
+    store[("Model store")]
+    service["Recommendation service replica<br/>model in memory<br/>recommend(user, candidates,<br/>exclude_interactions)"]
+    client(["Client"])
+
+    store -->|"atomic swap"| service
+    client --> service
+```
+
+- Each replica loads the pickle once and never refits at startup.
+- Each call passes the user's recent events as `exclude_interactions`, so it returns exactly
+  the number of fresh items asked for, with no over-fetching and no filtering afterwards.
+- Replicas should batch concurrent requests into one `recommend` call; the pairs of every
+  user in the batch can go in together.
+- On large catalogs an `index` makes each call cheaper, but see
+  [vector indexes](#vector-indexes) for what it costs in exactness and speed first.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Recommendation service
+    participant M as Model v(n)
+    participant R as Recent events
+
+    C->>S: recommendations for user u
+    S->>R: events of u since v(n) was fitted
+    R-->>S: recent (user, item) pairs
+    S->>M: recommend([u], n_recommendations=N,<br/>candidates=..., exclude_interactions=recent)
+    M-->>S: exactly N items, or ValueError if u is unknown
     opt u unknown to v(n)
         S->>S: popular list for v(n), minus recent items, cut to N
     end
     S-->>C: N items
 ```
 
-A user unknown to the model gets a popular list that does not depend on the user. Compute
-it once per version, either with `MostPopularRecommender` ranking any known user with
-`exclude_seen=False` or directly from the counts. The batch job writes it to the cache under
-its own key (A), and a realtime replica keeps it in memory next to the model (B).
+The popular list is computed once per version, as in Batch, and kept in memory next to the
+model.
+
+### Recent events
+
+Both modes read the user's recent events. They differ in where those are applied: inside
+`recommend` (Realtime), or to a list computed earlier (Batch).
 
 The recent events close a freshness gap that `exclude_seen` cannot. `exclude_seen` filters
 against `interactions_` as the model saw it, so without them anything the user took after

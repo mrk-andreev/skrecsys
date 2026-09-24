@@ -40,7 +40,7 @@ def test_measuring_stores_a_fresh_result_per_unit(sandbox):
     assert set(_states("leaderboard").values()) == {store.FRESH}
     result = stored(suite.units(spec.load("leaderboard"), "toy")[0])
     assert result["provenance"]["source"] == "measured"
-    assert result["payload"]["quality"]["Model"] == "MostPopular"
+    assert store.row_payload(result)["quality"]["Model"] == "MostPopular"
     assert set(result["host"]) >= {"cpu", "platform", "build"}
 
 
@@ -114,22 +114,23 @@ def test_the_single_setting_tables_ignore_the_rest_of_the_dial(sandbox):
 def test_the_index_report_stores_every_table(sandbox):
     assert _measure("indexes") == []
     config = spec.load("indexes")
-    results = {unit.kind: stored(unit)["payload"] for unit in suite._index_units(config, "toy")}
-    sweep = results["sweep"]
+    results = {unit.kind: stored(unit) for unit in suite._index_units(config, "toy")}
+    sweep = store.sweep_payload(results["sweep"])
     assert sweep["exact"]["quality"]["Index"] == "exact"
     assert [row["quality"]["dial"] for row in sweep["rows"]] == ["ef=2", "ef=4", "ef=8"]
-    assert [point["setting"] for point in results["latency"]["points"]] == ["ef=4"]
-    assert [point["setting"] for point in results["scaling"]["points"]] == ["ef=4"]
+    for kind in ("latency", "scaling"):
+        points = store.series_payload(results[kind])["points"]
+        assert [point["setting"] for point in points] == ["ef=4"]
 
 
 def test_a_model_this_host_cannot_build_is_reported_and_the_rest_still_run(sandbox, monkeypatch):
     """A model needing an extra that is not installed must not cost the rest of the run."""
     real_build = spec.Entry.build
 
-    def build(entry):
+    def build(entry, kind):
         if entry.name == "ItemKNN":
             raise ImportError("No module named 'torch'", name="torch")
-        return real_build(entry)
+        return real_build(entry, kind)
 
     monkeypatch.setattr(spec.Entry, "build", build)
     failures = _measure("leaderboard")
@@ -140,10 +141,10 @@ def test_a_model_this_host_cannot_build_is_reported_and_the_rest_still_run(sandb
 def test_a_crash_in_one_model_keeps_what_the_others_measured(sandbox, monkeypatch):
     real_build = spec.Entry.build
 
-    def build(entry):
+    def build(entry, kind):
         if entry.name == "MostPopular":
             raise RuntimeError("boom")
-        return real_build(entry)
+        return real_build(entry, kind)
 
     monkeypatch.setattr(spec.Entry, "build", build)
     failures = _measure("leaderboard")
@@ -176,7 +177,7 @@ def test_rows_from_two_hosts_are_kept_apart(sandbox):
     config = spec.load("leaderboard")
     unit = suite.units(config, "toy")[1]
     result = stored(unit)
-    store.write(unit, result["payload"], host=result["host"] | {"cpu": "Another CPU"})
+    store.write(unit, store.row_payload(result), host=result["host"] | {"cpu": "Another CPU"})
     hosts = suite.blocks()["leaderboard"]["toy"]["hosts"]
     assert len(hosts) == 2
     assert sorted(len(group["models"]) for group in hosts) == [1, 1]

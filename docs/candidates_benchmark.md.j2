@@ -1,0 +1,73 @@
+{#- Included by README.md.j2 after "Reranking benchmark", so headings start at level two. -#}
+{%- import "report.md.j2" as r -%}
+## Candidate generation benchmark
+
+When is it worth giving `Cascade` several generators instead of one? A ranker can only reorder
+what the first stage retrieved, so this measures the first stage alone: how many of the items a
+user goes on to like are among the `N` candidates, for single generators and for merges of them,
+at the same budget of `N` distinct items. Each merged set is compared with the best of its own
+members, which is the alternative a merge has to beat. No ranker is trained, so every number is
+deterministic.
+
+```sh
+uv run python benchmarks/run.py run candidates   # measure it, re-render the tables below
+```
+
+### MovieLens 100K
+
+{{ r.candidates(report.candidates["movielens-100k-cold"]) }}
+
+### MovieLens 1M
+
+{{ r.candidates(report.candidates["movielens-1m"]) }}
+
+### When a merge pays
+
+A merge splits a fixed budget between its members. Round-robin gives each generator about the same
+number of slots, so the merge gains only when the items a second generator brings are worth more
+than the items of the first that they push out. On these two datasets, that happens under
+narrow conditions:
+
+- **Only at large budgets.** At `N` of 50 and below, a merge moves recall by about 0.01 either way.
+  On MovieLens 1M, every merge loses at `N=10` and `N=20`: by 0.006 to 0.012, and by up to 0.030
+  with popularity. Near the top of the list
+  the generators largely agree, so the slots a second generator takes are mostly slots the first
+  would have filled with hits. The gains appear at `N=100` and `N=200`, where each generator's
+  tail reaches items the other misses. They are modest: the best is BM25+EASE at `N=200` on
+  MovieLens 100K, 0.604 to 0.626, about 4% relative.
+- **Only between generators of similar strength.** EASE+MostPopular loses up to 0.040 of recall,
+  because popularity takes half the budget and recalls far less with it. Its one gain is +0.009
+  at `N=200` on MovieLens 100K. The same holds for any weak partner.
+- **More members is not better.** BM25+EASE+ItemKNN is never more than 0.001 ahead of the best
+  pair, and on MovieLens 100K it trails ItemKNN alone by 0.018 at `N=100` and 0.022 at `N=200`.
+- **Compare with the best single generator at your budget, not only with the merge's members.**
+  The strongest generator changes with `N`: EASE leads at small budgets and ItemKNN at large ones.
+  On MovieLens 100K, no merge beats ItemKNN alone at `N=100` or `N=200`. On MovieLens 1M, only the
+  merges holding both EASE and ItemKNN beat every single generator at `N=100` and `N=200`. The
+  better of them, EASE+ItemKNN, reaches 0.376 against EASE's 0.367 at `N=100`, and 0.519 against
+  ItemKNN's 0.511 at `N=200`.
+
+The merge also costs time. A request asks every member for the full budget, and then each member
+scores the candidates it did not retrieve with `predict`, so the ranker sees every generator's
+opinion of every candidate. That scoring is about half of a merged request. A two-generator
+merge costs 0.3–0.6 ms against 60–160 µs for one generator, and a third member adds another
+0.2 ms or so.
+
+**Reciprocal rank fusion merges slightly better, and usually faster, than round-robin.** The rows
+marked `RRF` merge the same members with `ReciprocalRankFusion`, which asks every member for the same
+`N` items and keeps the `N` with the highest fused score, so items several members rank high come
+first. Against round-robin it wins 29 of the 50 cells, ties 11 and loses 10, none by more than
+0.002. It gains most where round-robin does worst: for BM25+EASE+ItemKNN on MovieLens 100K it cuts
+the deficit to ItemKNN alone from 0.018 to 0.004 at `N=100` and from 0.022 to 0.010 at `N=200`. A
+fused request fills no missing scores with `predict`, since the fused score is the only one it
+keeps, so it is up to a quarter cheaper, and more so for more members. The exception is
+EASE+MostPopular, where filling in popularity costs almost nothing and fusion runs up to 10% slower.
+Fusion does not rescue a weak partner either: EASE+MostPopular loses as much recall either way.
+
+In short: merge generators when the ranker reorders a wide list (`N` of 100 or more) and the members
+are comparably strong but disagree, and check the merge against the best single generator at the
+same `N`. For a narrow list, spend the whole budget on the best single generator. Candidate
+recall is the ceiling, not the result. Whether a ranker turns a higher ceiling into better top-10
+lists is what the [reranking benchmark](#reranking-benchmark) measures. A merge can also be
+worth its cost for a reason this benchmark does not measure: one `Cascade` whose list includes
+`MostPopularRecommender` also serves cold users (see [composing recommenders](#several-generators)).

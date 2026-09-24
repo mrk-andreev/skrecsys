@@ -1,10 +1,8 @@
 """Hierarchical navigable small-world graphs, as a vector index."""
 
-from typing import Any
-
 import numpy as np
 import scipy.sparse as sp
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
@@ -13,9 +11,9 @@ from skrecsys.indexing._base import (
     SparseSpace,
     VectorIndex,
     VectorSpace,
-    check_positive_int,
     register_index,
 )
+from skrecsys.utils._param_validation import check_int
 
 __all__ = ["HNSW"]
 
@@ -95,7 +93,7 @@ class HNSW(VectorIndex):
     def _check_params(self) -> None:
         """Validate parameters, as the estimators do, rather than by constraint table."""
         for name in ("m", "ef_construction", "ef_search", "min_index_size"):
-            check_positive_int(getattr(self, name), name)
+            check_int(getattr(self, name), name, min_value=1)
 
     @override
     def fit(self, space: VectorSpace, *, n_threads: int = 0, seed: int = 0) -> "HNSW":
@@ -199,7 +197,7 @@ class HNSW(VectorIndex):
         return int(self.node_level_.nbytes + self.links_indptr_.nbytes + self.links_indices_.nbytes)
 
 
-def _as_int64(values: Any) -> NDArray[np.int64]:
+def _as_int64(values: ArrayLike) -> NDArray[np.int64]:
     """The int64 layout the kernels borrow, copying only a narrower array."""
     return np.ascontiguousarray(values, dtype=np.int64)
 

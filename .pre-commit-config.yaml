@@ -52,6 +52,11 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: marimo-check
+        name: marimo check
+        entry: uv run --group notebooks marimo check --fix --strict
+        language: system
+        files: ^notebooks/.*\.py$
       - id: pytest
         name: pytest
         entry: uv run pytest -x -q --no-cov

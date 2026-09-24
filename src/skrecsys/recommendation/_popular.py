@@ -1,7 +1,5 @@
 """Popularity baseline."""
 
-from typing import Any
-
 import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
@@ -9,6 +7,7 @@ from numpy.typing import NDArray
 from skrecsys._typing import override
 from skrecsys.recommendation._base import BaseRecommender
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.utils.validation import lookup_ids
 
 
 class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
@@ -32,6 +31,11 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
     ``partial_fit`` adds the batch to the counts and is exact: the scores are what
     ``fit`` on every batch concatenated would have produced.
 
+    Cold start: ``recommend`` serves users that were not seen during ``fit`` -- the
+    ranking does not depend on the user, and such a user has seen nothing -- which makes
+    this the natural fallback of a :class:`skrecsys.compose.Switch`. ``predict`` still
+    raises for unknown identifiers.
+
     Examples
     --------
     >>> from skrecsys.recommendation import MostPopularRecommender
@@ -46,6 +50,9 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
         self.weighting = weighting
 
     _incremental_state_ = (("item_popularity_", "item"),)
+
+    #: Read by :func:`skrecsys.base.serves_unknown_users`: see the cold-start note above.
+    _serves_unknown_users = True
 
     def _check_params(self) -> None:
         """Validate parameters."""
@@ -88,6 +95,25 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
         self.item_popularity_[touched_item_indices] = counts[touched_item_indices]
 
     @override
+    def _query_rows(self, queries: NDArray[np.generic]) -> tuple[sp.csr_array, NDArray[np.intp]]:
+        """Unknown users read the one row appended past the fitted ones, which is empty.
+
+        The row is appended whether or not a query needs it, so the matrix handed to the
+        kernel always has ``n_users_ + 1`` rows and the zero-width user factors can match
+        it. Appending shares ``data`` and ``indices``; only ``indptr`` is copied, which is
+        per user rather than per interaction.
+        """
+        rows, known = lookup_ids(queries, self.user_ids_, name="user")
+        rows = np.where(known, rows, self.n_users_)
+        interactions = self.interactions_
+        indptr = np.append(interactions.indptr, interactions.indptr[-1])
+        padded = sp.csr_array(
+            (interactions.data, interactions.indices, indptr),
+            shape=(self.n_users_ + 1, self.n_items_),
+        )
+        return padded, rows
+
+    @override
     def _score_users(
         self, user_indices: NDArray[np.intp], item_indices: NDArray[np.intp]
     ) -> NDArray[np.floating]:
@@ -108,7 +134,7 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
     @override
     def _rank_queries_exact(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -125,7 +151,7 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
             exclude_seen=exclude_seen,
             excluded=excluded,
             first_query=first_query,
-            user_factors=np.empty((self.n_users_, 0)),
+            user_factors=np.empty((self.n_users_ + 1, 0)),
             item_factors=np.empty((self.n_items_, 0)),
             item_bias=self.item_popularity_,
         )

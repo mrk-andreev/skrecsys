@@ -1,8 +1,6 @@
 """Embarrassingly shallow autoencoder: a closed-form linear item-item model."""
 
-import math
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -10,7 +8,7 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import DenseSpace
+from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import (
     BaseRecommender,
     kernel_candidates,
@@ -21,6 +19,8 @@ from skrecsys.recommendation._base import (
     score_pairs_from_similarity,
 )
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.tune._space import Float
+from skrecsys.utils._param_validation import check_real, resolve_n_jobs
 from skrecsys.utils.validation import check_ids, encode_ids
 
 
@@ -100,9 +100,9 @@ class EASE(IncrementalRecommenderMixin, BaseRecommender):
 
     def __init__(
         self,
-        l2_reg: float = 500.0,
+        l2_reg: Annotated[float, Float(1.0, 1e5, log=True)] = 500.0,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.l2_reg = l2_reg
         self.n_jobs = n_jobs
@@ -255,7 +255,7 @@ class EASE(IncrementalRecommenderMixin, BaseRecommender):
     @override
     def _rank_queries_exact(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -294,14 +294,5 @@ class EASE(IncrementalRecommenderMixin, BaseRecommender):
 
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
-        if (
-            not isinstance(self.l2_reg, numbers.Real)
-            or not math.isfinite(float(self.l2_reg))
-            or self.l2_reg <= 0
-        ):
-            raise ValueError(f"l2_reg must be a finite real number > 0, got {self.l2_reg!r}.")
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        check_real(self.l2_reg, "l2_reg", min_value=0, min_inclusive=False)
+        return resolve_n_jobs(self.n_jobs)

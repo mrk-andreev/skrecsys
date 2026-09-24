@@ -1,0 +1,94 @@
+{#- Included by README.md.j2 after "Sequential benchmark", so headings start at level two. -#}
+## Vector indexes
+
+Every recommender here scores a query against the whole catalog, which is exact and
+linear in the catalog. An index trades one of those properties away, and there are two
+of them, which give up different things.
+
+`index="hnsw"` gives up *linear*: the model builds a navigable graph over its item
+vectors at fit time, and `recommend` walks it instead of scoring everything, so a query
+touches a few hundred items rather than all of them. What it gives up in return is
+exactness — the answer is the best items the walk found.
+
+`index="quantized-flat"` gives up *exact*, but only just, and keeps linear. It stores
+the item vectors a second time as narrow codes, scans every candidate with those, and
+then rescores the best `oversample * k` of them with the original vectors. The scores it
+returns are therefore always exact, at any code width; the only thing quantization can
+cost is a true top-k item that never made the shortlist.
+
+```python
+from skrecsys.indexing import HNSW, QuantizedFlatIndex
+from skrecsys.recommendation import AlternatingLeastSquares
+
+rec = AlternatingLeastSquares(index=None).fit(X, y)  # exact scoring (the default)
+rec = AlternatingLeastSquares(index="hnsw").fit(X, y)  # always index
+rec = AlternatingLeastSquares(index=HNSW(m=32, ef_search=128)).fit(X, y)
+rec = AlternatingLeastSquares(index=QuantizedFlatIndex(bits=4, oversample=8)).fit(X, y)
+```
+
+**Choosing an index.** On the catalogs benchmarked below, the quantized index keeps
+near-exact recall with exact scores, but it is slower than the exact path for every
+model. Use the exact path (the default) or HNSW when latency matters; see
+[what the quantized scan costs](#what-the-quantized-scan-costs) for the numbers.
+
+`QuantizedFlatIndex` takes four parameters:
+
+- **`bits`** (default `8`), one of `1`, `2`, `4`, `8`. Codes are bit-packed, so four
+  bits really is half the memory of eight. Widths that are not powers of two are refused
+  rather than rounded: a code that straddled a byte would cost a two-byte read and a pair
+  of shifts per value.
+- **`quantile`** (default `0.0`), the share of each tail clipped when the code range is
+  chosen. A single outlier in a dimension otherwise spends the whole range on itself and
+  leaves the bulk two levels to share; trimming puts it outside the range, where it clips
+  — losing its magnitude but not its rank.
+- **`oversample`** (default `4`), the shortlist in multiples of `k`. The
+  recall-for-latency dial, and like `ef_search` the only one that can be turned on a
+  model that is already fitted. Narrow codes need a wider shortlist: measured on the test
+  fixture, eight and four bits keep the exact top ten at `oversample=4` for most models,
+  while one bit needs thirty-two and still reaches only 0.36 on
+  `AlternatingLeastSquares`. `SimpleX` needs more than the rest at every width; see
+  [what the quantized scan costs](#what-the-quantized-scan-costs).
+- **`min_index_size`** (default `4096`), as on `HNSW`.
+
+Quantization is affine — `value ≈ code * scale + offset` — with a scale and an offset per
+dimension for a dense space, and one pair over all the stored values for a sparse one,
+where a catalog-sized column dimension has no per-column statistics worth keeping. The
+scan never decodes: the scale is folded into the query once, so the inner loop multiplies
+a query value by a code and nothing else. It also skips the norm-equalizing dimension
+`HNSW` needs, since a scan reaches every candidate whatever its norm.
+
+One thing it does **not** do is shrink a fitted model: the original vectors are kept for
+the rerank, so the codes are an addition to the footprint. The `index MB` and
+`vectors MB` columns below are printed side by side for that reason.
+
+Choose an index explicitly after measuring it for your model and data. With the default `index=None`, recommendations score candidates exactly and build no index. `index="hnsw"` is honoured at any size and density, subject to the index's own query-time floor.
+
+Everything `recommend` promised it still promises. It returns exactly the number of
+items asked for, excludes what the user has seen, breaks ties by fitted item order, and
+raises rather than padding when too few items are eligible; a fitted model still holds
+nothing but numpy arrays, so it still pickles and scores anywhere. What changes is that
+the items are the best ones the walk **found**, which is usually and not always the best
+ones there are.
+
+Two further details of the graph index. An index is skipped at *query*
+time too, for
+candidate sets below `min_index_size` (4096 by default), because a graph walked with few
+eligible nodes needs proportionally more walking while an exact scan over a short list is
+already cheap — so `candidates=` filters quietly stay exact and identical. And scores are
+inner products, which are not a metric, so the index spends one extra
+dimension equalizing the item norms; without it a model with a bias term loses about a
+fifth of its recall. A build on more than one thread is not reproducible, because
+concurrent insertions see different partial graphs, so a model with `random_state` set
+builds on one thread unless `n_jobs` says otherwise.
+
+Whether an index pays off depends on the model and the catalog. The benchmark harness
+measures both on your own data:
+
+```sh
+uv run python benchmarks/run.py run indexes --dataset movielens-100k     # re-measure what changed
+uv run python benchmarks/run.py run indexes --dataset amazon-books --only BM25 ALS BPR
+uv run python benchmarks/run.py run indexes --index hnsw --kind sweep --no-store   # look, keep nothing
+```
+
+{% include "docs/indexes_results.md.j2" %}
+{% include "docs/quantized_scan_cost.md.j2" -%}

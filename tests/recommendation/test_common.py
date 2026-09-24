@@ -252,6 +252,28 @@ def _dense_reference(est, users, item_indices, k, *, exclude_seen):
     return est.item_ids_[item_indices[order]], np.take_along_axis(scores, order, axis=1)
 
 
+def _assert_ranked_like_dense(est, users, got, want, item_indices, *, exclude_seen):
+    """``got`` must be the dense ranking ``want``, scores and items.
+
+    A model that ranks tied scores as implicit does picks among them in accumulation
+    order, which no dense ranking replays; its items must instead be distinct, eligible,
+    and score exactly the ranked scores -- a top-k of the same scores.
+    """
+    (items, scores), (want_items, want_scores) = got, want
+    np.testing.assert_allclose(scores, want_scores, rtol=0, atol=1e-12)
+    if not getattr(est, "_implicit_ties", False):
+        np.testing.assert_array_equal(items, want_items)
+        return
+    assert all(len(set(row)) == len(row) for row in items)
+    assert np.isin(items, est.item_ids_[item_indices]).all()
+    user_idx = np.repeat(np.searchsorted(est.user_ids_, users), items.shape[1])
+    item_idx = np.searchsorted(est.item_ids_, items.ravel())
+    if exclude_seen:
+        assert not est.interactions_[user_idx, item_idx].any()
+    rescored = est.predict(np.column_stack([est.user_ids_[user_idx], items.ravel()]))
+    np.testing.assert_allclose(rescored.reshape(scores.shape), scores, rtol=0, atol=1e-12)
+
+
 @pytest.mark.parametrize("estimator", IMPLEMENTED, ids=repr)
 @pytest.mark.parametrize("exclude_seen", [True, False])
 def test_recommend_matches_dense_scoring(estimator, exclude_seen):
@@ -261,12 +283,10 @@ def test_recommend_matches_dense_scoring(estimator, exclude_seen):
     users = est.user_ids_
     k = 5
 
-    items, scores = est.recommend(users, n_recommendations=k, exclude_seen=exclude_seen)
-    want_items, want_scores = _dense_reference(
-        est, users, np.arange(est.n_items_), k, exclude_seen=exclude_seen
-    )
-    np.testing.assert_array_equal(items, want_items)
-    np.testing.assert_allclose(scores, want_scores, rtol=0, atol=1e-12)
+    got = est.recommend(users, n_recommendations=k, exclude_seen=exclude_seen)
+    all_items = np.arange(est.n_items_)
+    want = _dense_reference(est, users, all_items, k, exclude_seen=exclude_seen)
+    _assert_ranked_like_dense(est, users, got, want, all_items, exclude_seen=exclude_seen)
 
 
 @pytest.mark.parametrize("estimator", IMPLEMENTED, ids=repr)
@@ -278,10 +298,9 @@ def test_recommend_with_candidates_matches_dense_scoring(estimator):
     users = est.user_ids_[:10]
     k = 2
 
-    items, scores = est.recommend(users, n_recommendations=k, candidates=candidates)
-    want_items, want_scores = _dense_reference(est, users, item_indices, k, exclude_seen=True)
-    np.testing.assert_array_equal(items, want_items)
-    np.testing.assert_allclose(scores, want_scores, rtol=0, atol=1e-12)
+    got = est.recommend(users, n_recommendations=k, candidates=candidates)
+    want = _dense_reference(est, users, item_indices, k, exclude_seen=True)
+    _assert_ranked_like_dense(est, users, got, want, item_indices, exclude_seen=True)
 
 
 @pytest.mark.parametrize("size", [1, 3, 7])
@@ -333,13 +352,11 @@ def test_recommend_falls_back_to_unreached_items(estimator):
     est = clone(estimator).fit(X)
     k = 3
 
-    items, scores = est.recommend(est.user_ids_, n_recommendations=k)
-    want_items, want_scores = _dense_reference(
-        est, est.user_ids_, np.arange(est.n_items_), k, exclude_seen=True
-    )
-    assert (scores == 0.0).any(), "the fallback to unreached items was not exercised"
-    np.testing.assert_array_equal(items, want_items)
-    np.testing.assert_allclose(scores, want_scores, rtol=0, atol=1e-12)
+    got = est.recommend(est.user_ids_, n_recommendations=k)
+    all_items = np.arange(est.n_items_)
+    want = _dense_reference(est, est.user_ids_, all_items, k, exclude_seen=True)
+    assert (got[1] == 0.0).any(), "the fallback to unreached items was not exercised"
+    _assert_ranked_like_dense(est, est.user_ids_, got, want, all_items, exclude_seen=True)
 
 
 def test_kernel_indices_copies_only_when_it_has_to():

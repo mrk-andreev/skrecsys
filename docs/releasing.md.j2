@@ -1,0 +1,6 @@
+{#- Included by README.md.j2 after "Development", so headings start at level two. -#}
+## Releasing
+
+1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
+2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
+3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.

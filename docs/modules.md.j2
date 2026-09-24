@@ -1,0 +1,19 @@
+{#- Included by README.md.j2 after "Incremental fitting", so headings start at level two. -#}
+## Modules
+
+| Module | Contents |
+| --- | --- |
+| `skrecsys` | `RecommenderMixin`, `is_recommender`, `supports_partial_fit` |
+| `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
+| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker` |
+| `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
+| `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
+| `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
+| `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
+| `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
+| `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
+| `skrecsys.model_selection` | `WarmStartKFold`, `ColdStartSplit` |
+| `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
+| `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
+| `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
+| `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |

@@ -1,0 +1,73 @@
+{
+  "key": "0415bb3be5825889",
+  "unit": "candidates/movielens-1m/EASE+MostPopular",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T07:45:07+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "candidates",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "n_retrieved": [
+        10,
+        20,
+        50,
+        100,
+        200
+      ],
+      "latency_repeat": 300,
+      "budget": 2.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "candidates",
+      "cls": "generators",
+      "params": {
+        "members": [
+          "EASE",
+          "MostPopularRecommender"
+        ]
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "recall": {
+      "Generators": "EASE+MostPopular",
+      "candidate recall@10": "0.063 (-0.026)",
+      "candidate recall@20": "0.114 (-0.030)",
+      "candidate recall@50": "0.213 (-0.039)",
+      "candidate recall@100": "0.328 (-0.040)",
+      "candidate recall@200": "0.472 (-0.020)"
+    },
+    "latency": {
+      "Generators": "EASE+MostPopular",
+      "median latency@10": "402 us",
+      "median latency@20": "423 us",
+      "median latency@50": "420 us",
+      "median latency@100": "458 us",
+      "median latency@200": "548 us"
+    }
+  }
+}

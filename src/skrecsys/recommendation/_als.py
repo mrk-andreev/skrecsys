@@ -1,7 +1,6 @@
 """Factorization machine fitted by alternating least squares, ported from libFM."""
 
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -10,9 +9,11 @@ from sklearn.utils import check_random_state
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import DenseSpace
+from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import BaseRecommender, kernel_indices
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_int, check_real
 
 
 class AlternatingLeastSquares(IncrementalRecommenderMixin, BaseRecommender):
@@ -103,15 +104,15 @@ class AlternatingLeastSquares(IncrementalRecommenderMixin, BaseRecommender):
 
     def __init__(
         self,
-        n_factors: int = 8,
+        n_factors: Annotated[int, Int(4, 256, log=True)] = 8,
         n_iter: int = 100,
         n_iter_partial: int | None = None,
         init_stdev: float = 0.1,
         reg_global: float = 0.0,
-        reg_bias: float = 1.0,
-        reg_factors: float = 10.0,
+        reg_bias: Annotated[float, Float(1e-2, 1e3, log=True)] = 1.0,
+        reg_factors: Annotated[float, Float(1e-2, 1e3, log=True)] = 10.0,
         random_state: int | np.random.RandomState | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_factors = n_factors
         self.n_iter = n_iter
@@ -205,11 +206,7 @@ class AlternatingLeastSquares(IncrementalRecommenderMixin, BaseRecommender):
         """Sweeps a ``partial_fit`` runs."""
         if self.n_iter_partial is None:
             return int(self.n_iter)
-        if not isinstance(self.n_iter_partial, numbers.Integral) or self.n_iter_partial < 0:
-            raise ValueError(
-                f"n_iter_partial must be None or an integer >= 0, got {self.n_iter_partial!r}."
-            )
-        return int(self.n_iter_partial)
+        return check_int(self.n_iter_partial, "n_iter_partial", min_value=0)
 
     def _sweep(
         self,
@@ -291,7 +288,7 @@ class AlternatingLeastSquares(IncrementalRecommenderMixin, BaseRecommender):
     @override
     def _rank_queries_exact(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -342,10 +339,6 @@ class AlternatingLeastSquares(IncrementalRecommenderMixin, BaseRecommender):
 
     def _check_params(self) -> None:
         for name in ("n_factors", "n_iter"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Integral) or value < 0:
-                raise ValueError(f"{name} must be an integer >= 0, got {value!r}.")
+            check_int(getattr(self, name), name, min_value=0)
         for name in ("init_stdev", "reg_global", "reg_bias", "reg_factors"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Real) or not value >= 0:
-                raise ValueError(f"{name} must be a real number >= 0, got {value!r}.")
+            check_real(getattr(self, name), name, min_value=0)

@@ -16,17 +16,18 @@ import os
 import platform
 import subprocess
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, NotRequired, TypedDict, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
-from sklearn.base import clone
 
 import skrecsys
 from skrecsys import _core
+from skrecsys._typing import FittedRecommender, RankingMetric, Recommender
+from skrecsys.base import fit_clone
 from skrecsys.metrics import (
     average_precision_at_k,
     catalog_coverage_at_k,
@@ -41,13 +42,16 @@ from skrecsys.metrics import (
     user_coverage_at_k,
 )
 
+if TYPE_CHECKING:
+    from spec import Split, Warmup
+
 
 @dataclass(frozen=True)
 class Column:
     """One leaderboard column: how to compute a value and how to print it."""
 
     header: str
-    metric: Callable[..., Any]
+    metric: RankingMetric
     fmt: str = "{:.4f}"
     kwargs_from: str = "none"
 
@@ -84,7 +88,7 @@ STATISTICS: dict[str, tuple[tuple[str, str | float], ...]] = {
 #: Untimed calls made before sampling starts, to pay for cold caches, first-touch page
 #: faults and any lazily built state. Without one the first sample is reliably the
 #: slowest, which drags a short run's mean well above the steady state.
-WARMUP = {"fit": 1, "rank": 10}
+WARMUP: Warmup = {"fit": 1, "rank": 10}
 
 #: Samples taken even when the time budget is already spent, so that every row has a
 #: median rather than a single observation. A cap below this wins, which is what lets a
@@ -140,7 +144,7 @@ def timing_columns() -> list[str]:
 _T = TypeVar("_T")
 
 
-def sample(call: Callable[[], Any], cap: int, budget: float) -> list[float]:
+def sample(call: Callable[[], _T], cap: int, budget: float) -> list[float]:
     """Time ``call`` until the sample cap or the time budget, whichever comes first.
 
     A cheap operation reaches the cap and is described by many samples; an expensive one
@@ -174,17 +178,19 @@ def timed(call: Callable[[], _T], cap: int, budget: float) -> tuple[list[float],
 class Evaluation:
     """Everything the metrics need about one fitted model's recommendations."""
 
-    y_true: list[set[Any]]
-    y_pred: NDArray[Any]
-    catalog: NDArray[Any]
-    popularity: Mapping[Any, float]
+    y_true: list[set[Hashable]]
+    y_pred: NDArray[np.generic]
+    catalog: NDArray[np.generic]
+    popularity: Mapping[Hashable, float]
     fit: Timing
     rank: Timing
 
 
 def _held_out_by_user(
-    X_test: NDArray[Any], y_test: NDArray[np.float64] | None, known_users: NDArray[Any]
-) -> tuple[NDArray[Any], list[set[Any]]]:
+    X_test: NDArray[np.generic],
+    y_test: NDArray[np.float64] | None,
+    known_users: NDArray[np.generic],
+) -> tuple[NDArray[np.generic], list[set[Hashable]]]:
     """Group positive held-out interactions of known users into relevant item sets."""
     users, items = X_test[:, 0], X_test[:, 1]
     keep = np.isin(users, known_users)
@@ -201,14 +207,14 @@ def _held_out_by_user(
 
 
 def evaluate(
-    estimator: Any,
-    dataset: Any,
+    estimator: Recommender,
+    dataset: Split,
     k: int,
     repeat: int,
     rank_repeat: int,
     budget: float = float("inf"),
     max_eval_users: int | None = None,
-    warmup: Mapping[str, int] = WARMUP,
+    warmup: Warmup = WARMUP,
 ) -> Evaluation:
     """Fit ``estimator`` on the training split and recommend for held-out users.
 
@@ -225,8 +231,8 @@ def evaluate(
     X_train, y_train = dataset.data[train], dataset.target[train]
     X_test, y_test = dataset.data[test], dataset.target[test]
 
-    def fit_once() -> Any:
-        return clone(estimator).fit(X_train, y_train)
+    def fit_once() -> FittedRecommender:
+        return fit_clone(estimator, X_train, y_train)
 
     for _ in range(warmup["fit"]):
         fit_once()
@@ -237,7 +243,7 @@ def evaluate(
 
     # Ranking the whole catalog for every held-out user at once, the way a batch job
     # would; per-request latency of a single user is a different measurement.
-    def rank_once() -> NDArray[Any]:
+    def rank_once() -> NDArray[np.generic]:
         items, _ = model.recommend(query_users, n_recommendations=k, exclude_seen=True)
         return items
 
@@ -255,13 +261,13 @@ def evaluate(
         catalog,
         popularity,
         Timing(np.asarray(fit_seconds), f"{len(X_train)}", "fit"),
-        Timing(np.asarray(rank_seconds), f"{len(query_users)} x {model.n_items_}", "rank"),
+        Timing(np.asarray(rank_seconds), f"{len(query_users)} x {len(model.item_ids_)}", "rank"),
     )
 
 
 def _sample_users(
-    query_users: NDArray[Any], y_true: list[set[Any]], max_eval_users: int | None
-) -> tuple[NDArray[Any], list[set[Any]]]:
+    query_users: NDArray[np.generic], y_true: list[_T], max_eval_users: int | None
+) -> tuple[NDArray[np.generic], list[_T]]:
     """Keep a fixed random sample of the held-out users, in their original order."""
     if max_eval_users is None or len(query_users) <= max_eval_users:
         return query_users, y_true
@@ -272,16 +278,27 @@ def _sample_users(
 
 def score(evaluation: Evaluation, k: int) -> dict[str, str]:
     """Format every column of one row."""
+    return score_lists(
+        evaluation.y_true, evaluation.y_pred, k, evaluation.catalog, evaluation.popularity
+    )
+
+
+def score_lists(
+    y_true: list[set[Hashable]],
+    y_pred: NDArray[np.generic],
+    k: int,
+    catalog: NDArray[np.generic],
+    popularity: Mapping[Hashable, float],
+) -> dict[str, str]:
+    """Every column of one row, for recommendation lists however they were produced."""
     extra = {
         "none": {},
-        "catalog": {"catalog": evaluation.catalog},
-        "popularity": {"item_popularity": evaluation.popularity},
+        "catalog": {"catalog": catalog},
+        "popularity": {"item_popularity": popularity},
     }
     row = {}
     for column in columns(k):
-        value = column.metric(
-            evaluation.y_true, evaluation.y_pred, k=k, **extra[column.kwargs_from]
-        )
+        value = column.metric(y_true, y_pred, k=k, **extra[column.kwargs_from])
         row[column.header] = column.fmt.format(float(value))
     return row
 
@@ -303,14 +320,14 @@ def _format_duration(seconds: float) -> str:
 
 
 def build_rows(
-    models: Mapping[str, Any],
-    dataset: Any,
+    models: Mapping[str, Recommender],
+    dataset: Split,
     k: int,
     repeat: int,
     rank_repeat: int,
     budget: float = float("inf"),
     max_eval_users: int | None = None,
-    warmup: Mapping[str, int] = WARMUP,
+    warmup: Warmup = WARMUP,
     score_row: Callable[[Evaluation, int], dict[str, str]] | None = None,
     sort_by: str | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -430,7 +447,21 @@ def usable_cpus() -> int | None:
     return os.cpu_count()
 
 
-def host_facts() -> dict[str, Any]:
+class HostFacts(TypedDict):
+    """The machine and build a result was timed on."""
+
+    cpu: str
+    cores: int | None
+    platform: str
+    python: str
+    numpy: str
+    skrecsys: str
+    build: str
+    #: Only the sequential report sets it; see ``sequential.device_facts``.
+    device: NotRequired[dict[str, str] | None]
+
+
+def host_facts() -> HostFacts:
     """The machine and build a timing was taken on, as facts rather than a sentence.
 
     Quality metrics are deterministic, but every timing is specific to its host and its

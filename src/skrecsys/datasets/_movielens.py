@@ -9,7 +9,7 @@ import os
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, overload
+from typing import Literal, TypeAlias, TypedDict, cast, overload
 
 import joblib
 import numpy as np
@@ -18,6 +18,9 @@ from sklearn.datasets._base import RemoteFileMetadata, _fetch_remote
 from sklearn.utils import Bunch
 
 from skrecsys.datasets._base import (
+    ArraysXY,
+    Columns,
+    FramesXY,
     get_data_home,
     import_pandas,
     leave_one_out,
@@ -55,6 +58,29 @@ _MONTHS = {
 }  # parsed explicitly since strptime's %b depends on the locale
 _N_ITEM_FIELDS = 5  # item_id, title, release_date, video_release_date, imdb_url
 
+
+class _Ratings(TypedDict):
+    user_id: NDArray[np.int64]
+    item_id: NDArray[np.int64]
+    rating: NDArray[np.int64]
+    timestamp: NDArray[np.int64]
+
+
+class _Cache100K(TypedDict):
+    ratings: _Ratings
+    users: Columns
+    items: Columns
+    genre_names: list[str]
+    splits: dict[str, tuple[NDArray[np.intp], ...]]
+
+
+class _Cache1M(TypedDict):
+    ratings: _Ratings
+    users: Columns
+    items: Columns
+    genre_names: list[str]
+
+
 Subset: TypeAlias = Literal["all", "u1", "u2", "u3", "u4", "u5", "ua", "ub"]
 
 
@@ -78,10 +104,36 @@ def fetch_movielens_100k(
     subset: Literal["all"] = ...,
     download_if_missing: bool = ...,
     return_X_y: Literal[True],
-    as_frame: bool = ...,
+    as_frame: Literal[False] = ...,
     n_retries: int = ...,
     delay: float = ...,
-) -> tuple[Any, Any]: ...
+) -> ArraysXY: ...
+
+
+@overload
+def fetch_movielens_100k(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: Literal[True],
+    n_retries: int = ...,
+    delay: float = ...,
+) -> FramesXY: ...
+
+
+@overload
+def fetch_movielens_100k(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: bool,
+    n_retries: int = ...,
+    delay: float = ...,
+) -> ArraysXY | FramesXY: ...
 
 
 def fetch_movielens_100k(
@@ -93,7 +145,7 @@ def fetch_movielens_100k(
     as_frame: bool = False,
     n_retries: int = 3,
     delay: float = 1.0,
-) -> Bunch | tuple[Any, Any]:
+) -> Bunch | ArraysXY | FramesXY:
     """Load the MovieLens 100K ratings dataset, downloading it if necessary.
 
     =================   ==============
@@ -192,7 +244,7 @@ def fetch_movielens_100k(
         parsed = _parse_archive(Path(archive_path))
         joblib.dump(parsed, cache_path, compress=6)
         Path(archive_path).unlink()
-    cached = joblib.load(cache_path)
+    cached = cast(_Cache100K, joblib.load(cache_path))
 
     ratings = cached["ratings"]
     data = np.column_stack([ratings["user_id"], ratings["item_id"]])
@@ -229,13 +281,13 @@ def fetch_movielens_100k(
     return bunch
 
 
-def _parse_archive(path: Path) -> dict[str, Any]:
+def _parse_archive(path: Path) -> _Cache100K:
     """Parse the MovieLens 100K zip archive into NumPy arrays."""
     with zipfile.ZipFile(path) as archive:
         raw = _load_ratings(archive, "u.data")
         order = np.lexsort((raw[:, 1], raw[:, 3], raw[:, 0]))
         raw = raw[order]
-        ratings = {
+        ratings: _Ratings = {
             "user_id": raw[:, 0],
             "item_id": raw[:, 1],
             "rating": raw[:, 2],
@@ -294,7 +346,7 @@ def _locate(
     return np.sort(key_order[pos]).astype(np.intp)
 
 
-def _parse_users(rows: Iterator[list[str]]) -> dict[str, NDArray[Any]]:
+def _parse_users(rows: Iterator[list[str]]) -> Columns:
     user_id, age, gender, occupation, zip_code = zip(*(row for row in rows if row), strict=True)
     return {
         "user_id": np.array(user_id, dtype=np.int64),
@@ -305,7 +357,7 @@ def _parse_users(rows: Iterator[list[str]]) -> dict[str, NDArray[Any]]:
     }
 
 
-def _parse_items(rows: Iterator[list[str]], *, n_genres: int) -> dict[str, NDArray[Any]]:
+def _parse_items(rows: Iterator[list[str]], *, n_genres: int) -> Columns:
     records = [row for row in rows if row]
     for row in records:
         if len(row) != _N_ITEM_FIELDS + n_genres:
@@ -351,10 +403,38 @@ def fetch_movielens_1m(
     max_sequence_length: int | None = ...,
     download_if_missing: bool = ...,
     return_X_y: Literal[True],
-    as_frame: bool = ...,
+    as_frame: Literal[False] = ...,
     n_retries: int = ...,
     delay: float = ...,
-) -> tuple[Any, Any]: ...
+) -> ArraysXY: ...
+
+
+@overload
+def fetch_movielens_1m(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    max_sequence_length: int | None = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: Literal[True],
+    n_retries: int = ...,
+    delay: float = ...,
+) -> FramesXY: ...
+
+
+@overload
+def fetch_movielens_1m(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    max_sequence_length: int | None = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: bool,
+    n_retries: int = ...,
+    delay: float = ...,
+) -> ArraysXY | FramesXY: ...
 
 
 def fetch_movielens_1m(
@@ -367,7 +447,7 @@ def fetch_movielens_1m(
     as_frame: bool = False,
     n_retries: int = 3,
     delay: float = 1.0,
-) -> Bunch | tuple[Any, Any]:
+) -> Bunch | ArraysXY | FramesXY:
     """Load the MovieLens 1M ratings dataset, downloading it if necessary.
 
     =================   ==============
@@ -479,7 +559,7 @@ def fetch_movielens_1m(
         archive_path = _fetch_remote(ARCHIVE_1M, dirname=home, n_retries=n_retries, delay=delay)
         joblib.dump(_parse_archive_1m(Path(archive_path)), cache_path, compress=6)
         Path(archive_path).unlink()
-    cached = joblib.load(cache_path)
+    cached = cast(_Cache1M, joblib.load(cache_path))
 
     ratings = cached["ratings"]
     held_out = subset == "leave-one-out"
@@ -519,7 +599,7 @@ def fetch_movielens_1m(
     return bunch
 
 
-def _parse_archive_1m(path: Path) -> dict[str, Any]:
+def _parse_archive_1m(path: Path) -> _Cache1M:
     """Parse the MovieLens 1M zip archive into NumPy arrays."""
     with zipfile.ZipFile(path) as archive:
         raw = _read_dat(archive, "ratings.dat")
@@ -528,7 +608,7 @@ def _parse_archive_1m(path: Path) -> dict[str, Any]:
             raise ValueError("Malformed ratings.dat row: expected user::item::rating::timestamp.")
         order = np.lexsort((values[:, 1], values[:, 3], values[:, 0]))
         values = values[order]
-        ratings = {
+        ratings: _Ratings = {
             "user_id": values[:, 0],
             "item_id": values[:, 1],
             "rating": values[:, 2],
@@ -546,7 +626,7 @@ def _read_dat(archive: zipfile.ZipFile, name: str) -> list[str]:
     return [line for line in text.split("\n") if line]
 
 
-def _parse_users_1m(rows: list[str]) -> dict[str, NDArray[Any]]:
+def _parse_users_1m(rows: list[str]) -> Columns:
     user_id, gender, age, occupation, zip_code = zip(
         *(row.split(_SEPARATOR_1M) for row in rows), strict=True
     )
@@ -559,7 +639,7 @@ def _parse_users_1m(rows: list[str]) -> dict[str, NDArray[Any]]:
     }
 
 
-def _parse_items_1m(rows: list[str]) -> tuple[dict[str, NDArray[Any]], list[str]]:
+def _parse_items_1m(rows: list[str]) -> tuple[Columns, list[str]]:
     """Parse ``movies.dat``; the year is the parenthesized suffix of the title."""
     records = [row.split(_SEPARATOR_1M, 2) for row in rows]
     if any(len(record) != _N_MOVIE_FIELDS_1M for record in records):

@@ -1,6 +1,7 @@
 """Render ``README.md`` from ``README.md.j2`` and the stored benchmark results.
 
-The README is an output. Its prose lives in the template, its tables come from
+The README is an output. Its prose lives in the template and the ``docs/*.md.j2``
+fragments it includes, its tables come from
 ``benchmarks/results``, and the sentences around the tables -- which dataset, which
 settings, which host, what was left out -- are the macros of
 ``benchmarks/templates/report.md.j2``, written from the facts each result stores.
@@ -37,7 +38,8 @@ def environment() -> jinja2.Environment:
         loader=jinja2.FileSystemLoader([REPO, TEMPLATES]),
         undefined=jinja2.StrictUndefined,
         keep_trailing_newline=True,
-        autoescape=False,  # noqa: S701 - the output is Markdown, not HTML
+        # Escapes html, htm and xml templates only: README.md.j2 renders as it is written.
+        autoescape=jinja2.select_autoescape(default_for_string=False),
     )
     env.filters["table"] = leaderboard.render_markdown
     return env

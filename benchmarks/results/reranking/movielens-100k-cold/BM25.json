@@ -1,0 +1,135 @@
+{
+  "key": "6056d7901879ca47",
+  "unit": "reranking/movielens-100k-cold/BM25",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-25T22:00:00+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "reranking",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 1000,
+      "budget": 10.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "pipelines",
+      "cls": "switch_bm25",
+      "params": {},
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": [
+      {
+        "Pipeline": "BM25",
+        "users": "all",
+        "n users": "943",
+        "NDCG@10": "0.2057",
+        "P@10": "0.1832",
+        "R@10": "0.1004",
+        "hit rate": "0.6914",
+        "MAP": "0.1154",
+        "MRR": "0.3642",
+        "cat cov": "0.1039",
+        "mean pop": "270.9265",
+        "novelty": "8.18"
+      },
+      {
+        "Pipeline": "BM25",
+        "users": "warm",
+        "n users": "849",
+        "NDCG@10": "0.1701",
+        "P@10": "0.1468",
+        "R@10": "0.1010",
+        "hit rate": "0.6596",
+        "MAP": "0.0872",
+        "MRR": "0.3242",
+        "cat cov": "0.1039",
+        "mean pop": "256.4918",
+        "novelty": "8.26"
+      },
+      {
+        "Pipeline": "BM25",
+        "users": "cold",
+        "n users": "94",
+        "NDCG@10": "0.5273",
+        "P@10": "0.5128",
+        "R@10": "0.0945",
+        "hit rate": "0.9787",
+        "MAP": "0.3695",
+        "MRR": "0.7252",
+        "cat cov": "0.0063",
+        "mean pop": "401.3000",
+        "novelty": "7.54"
+      }
+    ],
+    "latency": [
+      {
+        "Pipeline": "BM25",
+        "users": "warm",
+        "requests": "1,000",
+        "median": "21 us",
+        "q95": "27 us",
+        "q99": "34 us"
+      },
+      {
+        "Pipeline": "BM25",
+        "users": "cold",
+        "requests": "1,000",
+        "median": "24 us",
+        "q95": "26 us",
+        "q99": "35 us"
+      }
+    ],
+    "examples": [
+      {
+        "user": "9",
+        "profile": "29, M, student",
+        "held out": "22",
+        "top": "**Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)**"
+      },
+      {
+        "user": "15",
+        "profile": "49, F, educator",
+        "held out": "104",
+        "top": "**Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997)"
+      },
+      {
+        "user": "32",
+        "profile": "28, F, student",
+        "held out": "41",
+        "top": "**Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)**"
+      }
+    ]
+  }
+}

@@ -207,7 +207,7 @@ def test_single_interaction_users_are_harmless():
         ({"max_sequence_length": 0}, "max_sequence_length must be an integer >= 1"),
         ({"n_negatives": 0}, "n_negatives must be an integer >= 1"),
         ({"head_dim": 0}, "head_dim must be None or an integer >= 1"),
-        ({"temperature": 0.0}, "temperature must be a real number > 0"),
+        ({"temperature": 0.0}, "temperature must be a finite real number > 0"),
         ({"dropout": 1.0}, "dropout must be a real number in"),
         ({"n_factors": 0}, "n_factors must be an integer >= 1"),
         ({"max_iter": -1}, "max_iter must be an integer >= 0"),

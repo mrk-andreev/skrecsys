@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.4.0"
+version = "0.5.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,7 @@ authors = [
 requires-python = ">=3.11"
 keywords = ["recommender-systems", "recsys", "machine-learning", "scikit-learn"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
@@ -31,8 +31,8 @@ dependencies = [
     "numpy>=2.4.6",
     "scikit-learn>=1.9.1",
     "scipy>=1.17.1",
-    # typing.override is 3.12+; see skrecsys._typing.
-    'typing-extensions>=4.12; python_version < "3.12"',
+    # typing.override is 3.12+ and typing.TypeIs 3.13+; see skrecsys._typing.
+    'typing-extensions>=4.12; python_version < "3.13"',
 ]
 
 [project.optional-dependencies]
@@ -40,6 +40,17 @@ pandas = ["pandas>=3.0.5"]
 # Neural recommenders live in skrecsys.nn and are trained with PyTorch. The extra is
 # opt-in: torch dwarfs every other dependency, and nothing outside skrecsys.nn needs it.
 nn = ["torch>=2.6"]
+# Third-party integrations, one extra per library: rankers for skrecsys.compose.Cascade in
+# skrecsys.integrations.<extra>. Opt-in like `nn`: nothing else in the package imports them.
+catboost = ["catboost>=1.2"]
+# The CPU-only build, which skips the CUDA libraries (NCCL) the Linux `xgboost` wheel pulls
+# in. It ships no macOS wheel; the macOS `xgboost` wheel is CPU-only anyway. Both provide
+# the same `xgboost` module, so do not install `xgboost` alongside on Linux or Windows.
+xgboost = [
+    'xgboost-cpu>=2.1; sys_platform != "darwin"',
+    'xgboost>=2.1; sys_platform == "darwin"',
+]
+lightgbm = ["lightgbm>=4.5"]
 
 [project.urls]
 Homepage = "https://github.com/mrk-andreev/skrecsys"
@@ -82,10 +93,19 @@ dev = [
 reference = [
     "implicit>=0.7.3",
 ]
+# Example notebooks in notebooks/; see notebooks/AI.md.
+notebooks = [
+    "altair>=5.5",
+    "marimo>=0.24.2",
+    "pandas>=3.0.5",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.format]
+exclude = ["notebooks/**"]  # marimo owns notebook formatting
 
 [tool.ruff.lint]
 select = [
@@ -121,7 +141,12 @@ select = [
     "PLW", # Warning
     "FURB", # refurb
     "RUF", # Ruff-specific rules
+    "TID251", # banned-api: see flake8-tidy-imports below
 ]
+
+# `override` is re-exported from here, so ruff must know it is typing's own: an
+# override is exempt from rules that its base class's signature decided (FBT001).
+typing-modules = ["skrecsys._typing"]
 
 ignore = [
     "N803", # scikit-learn convention: X is an uppercase argument name
@@ -131,11 +156,25 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # assert and literal expectations are idiomatic in pytest; the pickles a test loads are
 # the ones it just dumped, and the commands it runs are the reference tools it compares to.
-"tests/**" = ["S101", "PLR2004", "S301", "S603"]
+"tests/**" = ["S101", "PLR2004", "S301", "S603", "TID251"]
 # Command-line entry points: printing is their interface, and the build script's whole
 # job is running the toolchain.
 "benchmarks/run.py" = ["T201"]
 "scripts/**" = ["T201", "S603"]
+"notebooks/**" = [
+    "B018",     # a marimo cell displays its last expression, such as a bare UI element
+    "E501",     # prose in mo.md cells: markdown tables cannot wrap
+    "RUF001",   # prose in mo.md cells uses typographic dashes and the multiplication sign
+    "PLC0415",  # marimo cells import inside their cell functions
+    "PLR1711",  # marimo's file format ends every cell with `return`
+]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# `Any` switches type checking off for everything it touches. State what an argument must
+# provide instead: a protocol from skrecsys._typing, a concrete type, or `object` for a
+# value that is validated at runtime. Tests may still use it for fixtures and fakes.
+"typing.Any".msg = "Use a Protocol from skrecsys._typing, a concrete type, or object."
+"typing_extensions.Any".msg = "Use a Protocol from skrecsys._typing, a concrete type, or object."
 
 [tool.ruff.lint.pep8-naming]
 # `from torch.nn import functional as F` is how PyTorch itself spells it.
@@ -166,10 +205,20 @@ exclude = [
     # ty.nn.toml checks these with it installed. See the `nn` job in tests.yml.
     "src/skrecsys/nn",
     "tests/nn",
+    # Likewise the third-party libraries of the integrations; ty.integrations.toml checks
+    # these in the `integrations` job.
+    "src/skrecsys/integrations",
+    "tests/integrations",
 ]
 
 [tool.ty.rules]
 all = "error"
+
+[tool.marimo.ai]
+enabled = false  # hide AI actions and panels
+
+[tool.marimo.snippets]
+include_default_snippets = false  # hide marimo's built-in snippets
 
 [tool.pytest.ini_options]
 addopts = "--cov=skrecsys --cov-report=term-missing -m 'not benchmark'"

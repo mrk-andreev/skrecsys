@@ -1,0 +1,40 @@
+{#- Included by README.md.j2 after "Sequential recommendation", so headings start at level two. -#}
+{%- import "report.md.j2" as r -%}
+## Leaderboard
+
+### MovieLens 100K
+
+{{ r.leaderboard(report.leaderboard["movielens-100k"]) }}
+
+Every model uses its default hyper-parameters, so this ranks the library's baselines,
+not the best each method can do. The one exception is `BM25+AutoTune`, which is
+[tuned](#hyperparameter-tuning) on the training split. It shows how much of that gap a
+search closes: 0.2661 to 0.2759 NDCG for BM25, at the cost of a 2.6 s fit. `R@10` equals `P@10` because the `ua` split holds out
+exactly 10 items per user, and `user cov` is 1 by construction: `recommend` raises
+rather than return a short list. The beyond-accuracy columns are the interesting ones —
+`MostPopular` has the highest `mean pop` and the lowest `novelty`, and `BM25` buys its
+ranking score by covering a tenth of the catalog where `EASE` covers a third. `SLIM`
+leads on every ranking metric while keeping a fifth of the catalog reachable, at a
+similarity matrix a quarter as dense as `RP3Beta`'s. `BPR` is the only model here
+trained on pairwise preferences rather than fitted in closed form, and it buys the
+second-best ranking with the widest catalog coverage of all; it is also the slowest to
+fit, and the entry is seeded, which pins it to a single thread.
+
+The second table times the same runs. Both operations are batched — one fit over the
+whole training split, one `recommend` call scoring all 943 held-out users against all
+1680 items the model saw — so these are throughput numbers, and the per-request latency
+of a single user is a different measurement. Ranking separates the models by what they
+have to touch rather than by how good they are. Every model goes through a kernel that
+scores a query, drops what the user has seen and keeps the best ten before moving on, so
+no score matrix is ever built: the neighbourhood models accumulate only the items a
+query reaches, the factor models scan the catalog a tile of users at a time, and both
+finish in about 1 ms. `EASE` is the slowest at 3 ms because its similarity matrix is
+dense, so every item a user has seen adds a full catalog-wide row to their scores. The
+`max` column is where a run's variance shows — `RP3Beta` fits in 8 ms at the median but
+18 ms at its slowest sample. How many samples a row gets is the budget's doing, which is
+why `BPR` at 1.3 s a fit gets sixteen and `MostPopular` gets its full thousand;
+`--budget` and `--repeat` buy more.
+
+### Amazon Books
+
+{{ r.leaderboard(report.leaderboard["amazon-books"]) }}

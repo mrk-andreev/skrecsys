@@ -1,0 +1,32 @@
+{#- Included by README.md.j2 after the introduction, so headings start at level two. -#}
+## Installation
+
+```sh
+pip install skrecsys
+```
+
+or with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv add skrecsys
+```
+
+Requires Python 3.11+, on Linux, macOS or Windows. The wheels carry the compiled
+extension, so installing needs no Rust toolchain; they are built against the stable ABI,
+which means one wheel per platform covers every supported interpreter. Building from a
+source checkout needs a Rust toolchain and [maturin](https://www.maturin.rs/).
+
+Five optional extras add dependencies the core does not need:
+
+```sh
+pip install skrecsys[pandas]     # `as_frame=True` on the dataset loaders
+pip install skrecsys[nn]         # PyTorch, for the recommenders in `skrecsys.nn`
+pip install skrecsys[catboost]   # CatBoost, for `skrecsys.integrations.catboost.CatBoostRanker`
+pip install skrecsys[xgboost]    # XGBoost, for `skrecsys.integrations.xgboost.XGBRanker`
+pip install skrecsys[lightgbm]   # LightGBM, for `skrecsys.integrations.lightgbm.LGBMRanker`
+```
+
+`skrecsys.nn` raises an `ImportError` naming the extra when torch is missing; everything
+else works without it. Torch is needed to *fit* a neural recommender, not to use one: a
+fitted model holds nothing but numpy arrays, so it scores, pickles and unpickles in an
+environment that has no torch installed.

@@ -1,0 +1,82 @@
+{
+  "key": "e8313abea34af6f4",
+  "unit": "candidates/movielens-100k-cold/BM25+EASE+ItemKNN RRF",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T08:14:59+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "candidates",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "n_retrieved": [
+        10,
+        20,
+        50,
+        100,
+        200
+      ],
+      "latency_repeat": 300,
+      "budget": 2.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "candidates",
+      "cls": "fused",
+      "params": {
+        "members": [
+          "BM25Recommender",
+          "EASE",
+          "ItemKNNRecommender"
+        ],
+        "k": 60
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "recall": {
+      "Generators": "BM25+EASE+ItemKNN RRF",
+      "candidate recall@10": "0.109 (+0.000)",
+      "candidate recall@20": "0.189 (+0.005)",
+      "candidate recall@50": "0.346 (+0.005)",
+      "candidate recall@100": "0.502 (-0.004)",
+      "candidate recall@200": "0.673 (-0.010)"
+    },
+    "latency": {
+      "Generators": "BM25+EASE+ItemKNN RRF",
+      "median latency@10": "446 us",
+      "median latency@20": "447 us",
+      "median latency@50": "467 us",
+      "median latency@100": "477 us",
+      "median latency@200": "513 us"
+    }
+  }
+}

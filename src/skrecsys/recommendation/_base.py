@@ -1,7 +1,7 @@
 """Shared implementation for user-item collaborative-filtering recommenders."""
 
 import numbers
-from typing import Any, Self
+from typing import Self
 
 import numpy as np
 import scipy.sparse as sp
@@ -37,8 +37,15 @@ class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
     n_items_ : int
     interactions_ : scipy.sparse.csr_array of shape (n_users_, n_items_)
         Interaction values; duplicate user-item pairs are summed.
+    feature_names_in_ : ndarray of shape (2,)
+        Column names of ``X``, only when ``fit`` was given a DataFrame.
     """
 
+    #: Set by scikit-learn's feature-name check, and only for a DataFrame. Annotation
+    #: only, like the other fitted attributes the mixins declare.
+    feature_names_in_: NDArray[np.object_]
+
+    @override
     def fit(self, X: ArrayLike, y: ArrayLike | None = None) -> Self:
         """Fit the recommender from user-item interactions.
 
@@ -101,13 +108,31 @@ class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
     def _score_queries(
         self, X: ArrayLike, item_indices: NDArray[np.intp], *, exclude_seen: bool
     ) -> tuple[NDArray[np.floating], sp.csr_array]:
-        user_idx = encode_ids(check_ids(X), self.user_ids_, name="user")
+        interactions, user_idx = self._query_rows(check_ids(X))
         scores = self._score_users(user_idx, item_indices)
         shape = (len(user_idx), len(item_indices))
         if not exclude_seen:
             return scores, sp.csr_array(shape, dtype=bool)
-        return scores, seen_among(self.interactions_, user_idx, item_indices)
+        return scores, seen_among(interactions, user_idx, item_indices)
 
+    @override
+    def _excluded_by_seen(
+        self, queries: NDArray[np.generic], item_indices: NDArray[np.intp], *, exclude_seen: bool
+    ) -> sp.csr_array:
+        interactions, user_idx = self._query_rows(check_ids(queries))
+        if not exclude_seen:
+            return sp.csr_array((len(user_idx), len(item_indices)), dtype=bool)
+        return seen_among(interactions, user_idx, item_indices)
+
+    def _query_rows(self, queries: NDArray[np.generic]) -> tuple[sp.csr_array, NDArray[np.intp]]:
+        """The interaction matrix to read the queries' history from, and their rows in it.
+
+        Every query must be a fitted user. An estimator with a cold-start policy
+        overrides this to give unknown users a row of their own with no history.
+        """
+        return self.interactions_, encode_ids(queries, self.user_ids_, name="user")
+
+    @override
     def _build_threads(self) -> int:
         """Threads for the kernels that run before the estimator sees its matrix.
 
@@ -121,7 +146,7 @@ class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
 
     def _rank_by_factors(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -141,8 +166,8 @@ class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
         the bias-broadcast temporaries around it are built; the fitted arrays go over
         whole, with the rows being asked for.
         """
-        user_idx = encode_ids(check_ids(queries), self.user_ids_, name="user")
-        seen = self.interactions_ if exclude_seen else None
+        interactions, user_idx = self._query_rows(check_ids(queries))
+        seen = interactions if exclude_seen else None
         return _core.recommend_from_factors(
             kernel_matrix(user_factors),
             kernel_matrix(item_factors),
@@ -194,6 +219,9 @@ class SimilarityRecommender(BaseRecommender):
     """
 
     _neighbors_by_row: bool = False
+    #: Rank exactly tied scores as implicit's item-item recommenders do, rather than to
+    #: the lower item index.
+    _implicit_ties: bool = False
     similarity_: sp.csr_array
 
     def _check_params(self) -> int:
@@ -249,7 +277,7 @@ class SimilarityRecommender(BaseRecommender):
     @override
     def _rank_queries_exact(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -271,12 +299,13 @@ class SimilarityRecommender(BaseRecommender):
             self._check_params(),
             first_query,
             **kernel_excluded(excluded),
+            implicit_ties=self._implicit_ties,
         )
 
 
 def score_pairs_from_similarity(
     interactions: sp.csr_array,
-    similarity: Any,
+    similarity: sp.csr_array | NDArray[np.floating],
     user_indices: NDArray[np.intp],
     item_indices: NDArray[np.intp],
     *,
@@ -301,7 +330,7 @@ def score_pairs_from_similarity(
     return np.bincount(owners, weights=rows.data * weights, minlength=len(item_indices))
 
 
-def kernel_indices(values: Any) -> NDArray[np.int64]:
+def kernel_indices(values: ArrayLike) -> NDArray[np.int64]:
     """An index array in the layout the kernels borrow, copied only when it must be.
 
     The kernels read `int64` indices straight out of the buffer numpy hands over, so an
@@ -312,12 +341,12 @@ def kernel_indices(values: Any) -> NDArray[np.int64]:
     return np.ascontiguousarray(values, dtype=np.int64)
 
 
-def kernel_data(values: Any) -> NDArray[np.float64]:
+def kernel_data(values: ArrayLike) -> NDArray[np.float64]:
     """A value array in the layout the kernels borrow, copied only when it must be."""
     return np.ascontiguousarray(values, dtype=np.float64)
 
 
-def kernel_matrix(values: Any) -> NDArray[np.float64]:
+def kernel_matrix(values: ArrayLike) -> NDArray[np.float64]:
     """A dense matrix in the C-contiguous `float64` layout the kernels borrow."""
     return np.ascontiguousarray(values, dtype=np.float64)
 
@@ -347,7 +376,9 @@ def kernel_excluded(excluded: sp.csr_array | None) -> dict[str, NDArray[np.int64
     }
 
 
-def kernel_csr(matrix: sp.csr_array) -> tuple[Any, Any, Any]:
+def kernel_csr(
+    matrix: sp.csr_array,
+) -> tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.float64]]:
     """A sparse matrix as the ``(indptr, indices, data)`` triple the kernels take."""
     return (
         kernel_indices(matrix.indptr),

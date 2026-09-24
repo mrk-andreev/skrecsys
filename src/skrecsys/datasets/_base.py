@@ -5,15 +5,26 @@ import os
 import shutil
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
 
+if TYPE_CHECKING:
+    from pandas import DataFrame, Series
+
 __all__ = ["clear_data_home", "get_data_home"]
 
+#: ``(data, target)`` of a loader called with ``return_X_y=True``.
+ArraysXY: TypeAlias = tuple[NDArray[np.int64], NDArray[np.float64]]
+#: The same with ``as_frame=True``.
+FramesXY: TypeAlias = tuple["DataFrame", "Series"]
+#: Named columns of a users or items table, each of its own dtype.
+Columns: TypeAlias = dict[str, NDArray[np.generic]]
 
-def import_pandas() -> Any:
+
+def import_pandas() -> ModuleType:
     """pandas, which ``as_frame=True`` needs and the rest of the package does not."""
     try:
         return importlib.import_module("pandas")
@@ -61,7 +72,7 @@ def load_descr(name: str) -> str:
     return files("skrecsys.datasets.descr").joinpath(name).read_text(encoding="utf-8")
 
 
-def group_bounds(user_ids: NDArray[Any]) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+def group_bounds(user_ids: NDArray[np.generic]) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
     """Start and end row of each user's block, for rows already grouped by user.
 
     Every sequential loader sorts its rows by user and then by time, so a user's
@@ -77,7 +88,7 @@ def group_bounds(user_ids: NDArray[Any]) -> tuple[NDArray[np.intp], NDArray[np.i
 
 
 def tail_rows(
-    user_ids: NDArray[Any], max_sequence_length: int | None, *, held_out: bool
+    user_ids: NDArray[np.generic], max_sequence_length: int | None, *, held_out: bool
 ) -> NDArray[np.intp]:
     """Rows of the last interactions of each user, oldest first.
 
@@ -94,7 +105,7 @@ def tail_rows(
     return np.flatnonzero(keep).astype(np.intp)
 
 
-def leave_one_out(user_ids: NDArray[Any]) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+def leave_one_out(user_ids: NDArray[np.generic]) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
     """Hold out the last interaction of every user; train on everything before it.
 
     This is the protocol the sequential-recommendation literature evaluates with. It is

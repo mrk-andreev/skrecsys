@@ -1,0 +1,113 @@
+{#- Included by README.md.j2 after "Installation", so headings start at level two. -#}
+## Usage
+
+Training data `X` has exactly two columns: user identifiers in column 0 and item
+identifiers in column 1. Each row is one interaction. For ordinary recommenders the rows
+are an unordered set of interactions, so their order does not matter. An optional `y`
+array carries the interaction value (such as a rating or confidence) for each row; it is
+separate from `X` and must have the same number of rows. This layout also applies when
+`X` is a pandas DataFrame: the first two columns are used in order, regardless of their
+column names.
+
+Every recommender in `skrecsys.recommendation` and `skrecsys.nn` has the same four
+methods:
+
+```python
+import numpy as np
+
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = np.array(
+    [
+        ["alice", "matrix"],
+        ["alice", "alien"],
+        ["bob", "matrix"],
+        ["bob", "blade runner"],
+        ["carol", "alien"],
+        ["carol", "blade runner"],
+        ["carol", "heat"],
+    ]
+)
+
+# fit: learn from interactions
+rec = ItemKNNRecommender().fit(X)
+
+# recommend: top-k items per user, best first; items a user already has are left out
+items, scores = rec.recommend(["alice", "bob"], n_recommendations=2)
+# items  -> [["blade runner", "heat"], ["alien", "heat"]]
+# scores -> [[1.0, 0.707], [1.0, 0.707]]
+
+# predict: the score of given user-item pairs
+rec.predict([["alice", "blade runner"], ["bob", "heat"]])  # -> [1.0, 0.707]
+
+# partial_fit: add a new batch without refitting; new users and items are fine
+rec.partial_fit([["dave", "heat"], ["dave", "alien"], ["alice", "blade runner"]])
+rec.recommend(["alice", "dave"], n_recommendations=1)[0]  # -> [["heat"], ["blade runner"]]
+
+# also skip pairs the model hasn't been updated with yet, such as items just shown
+rec.recommend(["dave"], n_recommendations=1, exclude_interactions=[["dave", "blade runner"]])[0]
+# -> [["matrix"]]
+```
+
+- `fit(X, y=None)` learns from scratch. `y` is optional: one rating or weight per row.
+- `recommend(users, n_recommendations=k)` returns two `(n_users, k)` arrays: item IDs
+  and their scores. Only users seen by `fit` or `partial_fit` can be queried.
+  `candidates=` limits the ranking to some items, `exclude_seen=False` keeps a user's own
+  items, and `exclude_interactions=` removes further user-item pairs.
+- `predict(pairs)` scores given `(user, item)` pairs, both of which the model has seen.
+- `partial_fit(X, y=None)` adds a batch to what the model knows. See
+  [incremental fitting](#incremental-fitting) for which models reproduce `fit` exactly
+  and which continue from where they stopped.
+
+How these calls divide between training jobs and a serving process is covered under
+[production lifecycle](#production-lifecycle).
+
+### Model selection
+
+Recommenders are scikit-learn estimators, so `GridSearchCV` and `cross_validate` work on
+them. `WarmStartKFold` splits interactions so that every user and item in a test fold also
+appears in its training fold, and `make_recommender_scorer` turns a top-k metric into a
+scorer:
+
+```python
+from sklearn.model_selection import GridSearchCV
+
+from skrecsys.datasets import fetch_movielens_100k
+from skrecsys.metrics import make_recommender_scorer, ndcg_at_k
+from skrecsys.model_selection import WarmStartKFold
+
+X, y = fetch_movielens_100k(return_X_y=True)
+search = GridSearchCV(
+    ItemKNNRecommender(),
+    {"n_neighbors": [10, 50, 200], "shrink": [0.0, 10.0]},
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer(ndcg_at_k, k=10),
+).fit(X)
+```
+
+A quality report usually needs several metrics at several cutoffs. `evaluate_recommender` asks
+for one ranking of `max(k)` items per user and computes every metric at every cutoff from it.
+Given lists, `make_recommender_scorer` does the same inside scikit-learn: it becomes a
+multi-metric scorer.
+
+```python
+from sklearn.model_selection import cross_validate
+
+from skrecsys.metrics import evaluate_recommender, hit_rate_at_k, recall_at_k
+
+train, test = next(WarmStartKFold(n_splits=5, shuffle=True, random_state=0).split(X))
+rec = ItemKNNRecommender().fit(X[train])
+evaluate_recommender(
+    rec, X[test], metrics=[ndcg_at_k, recall_at_k, hit_rate_at_k], k=[10, 50, 100]
+)  # {"ndcg@10": ..., "ndcg@50": ..., ..., "hit_rate@100": ...}
+
+scores = cross_validate(
+    ItemKNNRecommender(),
+    X,
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer([ndcg_at_k, recall_at_k], k=[10, 100]),
+)  # scores["test_ndcg@10"], scores["test_recall@100"], ...
+```
+
+With a multi-metric scorer, `GridSearchCV` must be told which score to select by, for instance
+`refit="ndcg@10"`.

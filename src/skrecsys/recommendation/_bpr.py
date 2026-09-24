@@ -1,7 +1,6 @@
 """BPR matrix factorization, ported from Cornac's ``BPR``."""
 
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -10,9 +9,11 @@ from sklearn.utils import check_random_state
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import DenseSpace
+from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import BaseRecommender, kernel_indices
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin, entry_offsets
+from skrecsys.tune._space import Categorical, Float, Int
+from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 
 class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
@@ -32,12 +33,21 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
     :class:`~skrecsys.recommendation.AlternatingLeastSquares`, whose squared loss
     covers observed ratings only.
 
-    This is a port of ``BPR`` from Cornac [2]_, which follows implicit's: one epoch
-    draws as many triplets as there are interactions, the positive is a uniformly drawn
-    interaction — so active users are drawn more often — the negative a uniformly drawn
-    item, and a triplet whose negative turns out to be one of the user's own items is
-    skipped rather than redrawn. The defaults here are not Cornac's, which trains 100
-    epochs at ``learning_rate=0.001`` and barely moves off its initialization.
+    This is a port of ``BPR`` from Cornac [2]_: one epoch draws as many triplets as
+    there are interactions, the positive is a uniformly drawn interaction — so active
+    users are drawn more often — the negative a uniformly drawn item, and a triplet
+    whose negative turns out to be one of the user's own items is skipped rather than
+    redrawn. The defaults here are not Cornac's, which trains 100 epochs at
+    ``learning_rate=0.001`` and barely moves off its initialization.
+
+    implicit [3]_ samples the same way except for the negative, which it draws as the
+    item of another uniformly drawn interaction, so in proportion to popularity;
+    ``negative_sampling="popularity"`` does the same. Which is better depends on the
+    data. On a large long-tailed catalog a uniform negative is nearly always an obscure
+    item, the model learns little beyond popularity, and popularity negatives do much
+    better: NDCG@10 0.0068 against 0.0118 with ``regularization=0.001`` on
+    ``amzn-books-l50``. Where the held-out items are popular ones, as on MovieLens, they
+    push the model away from exactly those items and do much worse.
 
     Threads update the factors without locking, as the reference does, so a fit on more
     than one thread is reproducible only up to the updates that races drop; see
@@ -57,6 +67,11 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
     use_bias : bool, default=True
         Fit a per-item bias, as the reference does by default. It lets the model express
         item popularity without spending a factor on it.
+    negative_sampling : {"uniform", "popularity"}, default="uniform"
+        How the negative item of a triplet is drawn: uniformly over the catalog, as
+        Cornac does, or as the item of a uniformly drawn interaction, so in proportion to
+        its popularity, as implicit does. See above for when each wins; popularity
+        negatives also favour a lower ``regularization``.
     random_state : int, RandomState instance or None, default=None
         Seed of the factor initialization and of the triplet sampling.
     index : None, str or VectorIndex, default=None
@@ -100,6 +115,8 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
     .. [2] A. Salah, Q.-T. Truong, and H. W. Lauw, "Cornac: A Comparative Framework for
        Multimodal Recommender Systems", JMLR 2020.
        https://github.com/PreferredAI/cornac
+    .. [3] B. Frederickson, "implicit: Fast Python Collaborative Filtering for Implicit
+       Datasets". https://github.com/benfred/implicit
 
     Examples
     --------
@@ -112,16 +129,17 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
 
     def __init__(
         self,
-        n_factors: int = 64,
-        learning_rate: float = 0.05,
-        regularization: float = 0.01,
+        n_factors: Annotated[int, Int(8, 256, log=True)] = 64,
+        learning_rate: Annotated[float, Float(1e-3, 0.5, log=True)] = 0.05,
+        regularization: Annotated[float, Float(1e-5, 1.0, log=True)] = 0.01,
         max_iter: int = 100,
         max_iter_partial: int | None = None,
         *,
         use_bias: bool = True,
+        negative_sampling: Annotated[str, Categorical(("uniform", "popularity"))] = "uniform",
         random_state: int | np.random.RandomState | None = None,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_factors = n_factors
         self.learning_rate = learning_rate
@@ -129,6 +147,7 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
         self.max_iter = max_iter
         self.max_iter_partial = max_iter_partial
         self.use_bias = use_bias
+        self.negative_sampling = negative_sampling
         self.random_state = random_state
         self.n_jobs = n_jobs
         self.index = index
@@ -192,11 +211,7 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
         """Epochs a ``partial_fit`` runs."""
         if self.max_iter_partial is None:
             return int(self.max_iter)
-        if not isinstance(self.max_iter_partial, numbers.Integral) or self.max_iter_partial < 0:
-            raise ValueError(
-                f"max_iter_partial must be None or an integer >= 0, got {self.max_iter_partial!r}."
-            )
-        return int(self.max_iter_partial)
+        return check_int(self.max_iter_partial, "max_iter_partial", min_value=0)
 
     def _epochs(
         self,
@@ -227,6 +242,7 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
                 int(rng.randint(2**31)),
                 n_threads,
                 drawn,
+                popularity_negatives=self.negative_sampling == "popularity",
             )
         )
 
@@ -260,7 +276,7 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
     @override
     def _rank_queries_exact(
         self,
-        queries: NDArray[Any],
+        queries: NDArray[np.generic],
         item_indices: NDArray[np.intp],
         k: int,
         *,
@@ -299,21 +315,17 @@ class BayesianPersonalizedRanking(IncrementalRecommenderMixin, BaseRecommender):
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
         for name in ("n_factors", "max_iter"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Integral) or value < 0:
-                raise ValueError(f"{name} must be an integer >= 0, got {value!r}.")
+            check_int(getattr(self, name), name, min_value=0)
         for name in ("learning_rate", "regularization"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Real) or not value >= 0:
-                raise ValueError(f"{name} must be a real number >= 0, got {value!r}.")
-        if not isinstance(self.use_bias, bool):
-            raise ValueError(f"use_bias must be a bool, got {self.use_bias!r}.")
-        if self.n_jobs == -1:
-            return 0
+            check_real(getattr(self, name), name, min_value=0)
+        check_bool(self.use_bias, "use_bias")
+        if self.negative_sampling not in ("uniform", "popularity"):
+            raise ValueError(
+                "negative_sampling must be 'uniform' or 'popularity', "
+                f"got {self.negative_sampling!r}."
+            )
         if self.n_jobs is None:
             # Racing updates would make a seeded fit irreproducible; the reference makes
             # the same trade.
             return 1 if self.random_state is not None else 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        return resolve_n_jobs(self.n_jobs)

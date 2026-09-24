@@ -1,0 +1,26 @@
+{#- Included by README.md.j2 after the badges; no heading of its own. -#}
+Recommender systems in the scikit-learn style, built on NumPy, SciPy and scikit-learn.
+
+Every model has the same `fit`, `partial_fit`, `recommend` and `predict` interface, and
+works with scikit-learn's model selection tools. Around the models, skrecsys provides
+top-k ranking and beyond-accuracy metrics, a cross-validation splitter that keeps every
+test user and item in training, dataset loaders, and approximate nearest-neighbour
+indexes for large catalogs. The models are classical collaborative filtering (item kNN,
+BM25, RP3beta, EASE, SLIM, ALS, BPR) plus graph-based and sequential neural recommenders
+(SimpleX, XSimGCL, HSTU, Mamba4Rec).
+
+The estimators are Python; the inner loops are not. The similarity kernels, the
+elastic-net and least-squares solvers, the BPR sampler, identifier encoding, sparse
+matrix assembly and top-k selection are all written in Rust and exposed through PyO3 as
+`skrecsys._core`. They parallelize with [rayon](https://github.com/rayon-rs/rayon) and
+release the GIL while they run, and every recommender in `skrecsys.recommendation`
+scores and ranks a batch of queries inside one kernel, without ever materializing a dense
+score matrix in NumPy. The hot loops are written for the auto-vectorizer and use fused
+multiply-add where the hardware has it — NEON on Apple silicon and other aarch64, AVX2
+and FMA on x86-64 through runtime dispatch. Nothing in the crate uses `unsafe`, and both
+crates `#![forbid(unsafe_code)]` so it stays that way.
+
+The installed library is small: four runtime dependencies, all of them ones a
+scikit-learn user already has — NumPy, SciPy, scikit-learn and joblib, plus
+`typing-extensions` on Python 3.11 only. pandas is optional, and only needed for the
+dataset loaders' `as_frame=True`.

@@ -1,0 +1,143 @@
+{#- Included by README.md.j2 after "Sequential benchmark", so headings start at level two. -#}
+{%- import "report.md.j2" as r -%}
+## Reranking benchmark
+
+What does a second stage buy a production pipeline, and does blending several of them buy
+more? This compares the `Switch` pipelines of [composing recommenders](#composing-recommenders)
+on the users a service really has: ones it knows, and ones arriving with no history.
+
+- **`BM25`** is `Switch(KnownUser(), BM25Recommender(), MostPopularRecommender())`: BM25 for
+  known users, the most popular items for everyone else.
+- **`BM25+CatBoost`** is the same switch with a `CatBoostRanker` behind each branch. Known
+  users get BM25's top 100, reordered on who the user is (age, gender, occupation), what the
+  movie is (genres), the BM25 score, how many interactions the user and the movie have
+  (`InteractionCounts`), EASE's score for the pair (`RecommenderScores`) and how popular the
+  movie is among users of the same gender, age band and occupation (`SegmentPopularity`).
+  Cold users get the 100 most popular movies, reordered on popularity and segment popularity,
+  which is all there is to know about someone with no history. That ranker is fitted on users
+  that `ColdStartSplit` holds out whole inside `Cascade.fit`, so it learns from candidates
+  exactly as a cold user is served them.
+- **`BM25+XGBoost`** and **`BM25+LightGBM`** are the same pipeline with `XGBRanker` or
+  `LGBMRanker` in place of CatBoost, on exactly the same features. Both are regularized,
+  with a lower learning rate and larger minimum leaves. At their defaults (300 trees at a
+  learning rate of 0.1), both overfit the few hundred users a ranker learns from. That
+  reached 0.166 and 0.178 NDCG@10 on warm users, and fell *below* the popularity baseline
+  on cold users (0.469 and 0.451).
+- **`BM25+Blend`** puts a `BlendRanker` over all three boosters behind each branch, at its
+  defaults. Each booster is fitted three times on two thirds of the users and scores the
+  third it did not see. A logistic regression then learns how to weigh their rank-normalized
+  scores, and the three are refitted on every user for serving.
+- **`EASE`** is the baseline switch with `EASE` in place of BM25, the second member of the
+  fusions below, shown on its own so a fusion can be compared with each of its members.
+- **`BM25+EASE RRF`** serves known users with `ReciprocalRankFusion` of BM25 and EASE: each
+  retrieves its top 100, and an item scores `1/(60 + rank)` summed over the two lists. There is
+  no ranker and nothing is learned. Cold users get the most popular movies, as in the baseline.
+- **`BM25+RRF`** is the `BM25+CatBoost` switch with a training-free `ReciprocalRankRanker` in
+  place of CatBoost. Known users get BM25's top 100, reordered by the fused ranks of their BM25
+  and EASE scores. Cold users get the 100 most popular movies, reordered by the fused ranks of
+  popularity and segment popularity.
+- **`BM25+RRF boosters`** is the `BM25+Blend` switch with the three boosters fused by
+  `ReciprocalRankRanker` instead of stacked by `BlendRanker`. Each booster is fitted once on
+  every user. There are no out-of-fold refits and no blender to learn: three booster fits per
+  branch, against the blend's twelve.
+
+The split is `ColdStartSplit`, so the held-out set asks both questions at once, and every
+quality row is reported three times: for all held-out users, for the warm ones and for the
+cold ones. Time is reported one way only, as what one user's request costs, since that is
+what a reranker adds.
+
+```sh
+uv sync --extra catboost --extra xgboost --extra lightgbm
+uv run python benchmarks/run.py run reranking   # measure it, re-render the tables below
+```
+
+### MovieLens 100K
+
+{{ r.reranking(report.reranking["movielens-100k-cold"]) }}
+
+### MovieLens 1M
+
+The same pipelines and settings on MovieLens 1M, split the same way: 5,436 warm users and 604
+cold ones, six times as many as MovieLens 100K has, so differences that are noise there can be
+told apart here.
+
+{{ r.reranking(report.reranking["movielens-1m-cold"]) }}
+
+### What the rankers buy
+
+On MovieLens 100K, every trained reranker beats the baseline on every segment, and MovieLens 1M
+agrees. The paragraphs below follow CatBoost on MovieLens 100K,
+the strongest of them. For the 849 warm users, NDCG@10 rises from 0.170 to
+0.205, a fifth better, and every other ranking metric moves with it: hit rate from 0.66 to
+0.74, MAP from 0.087 to 0.107. It also recommends less of the head. Catalog coverage goes from
+a tenth to a quarter and `mean pop` drops from 256 to 210, because BM25's top 100 holds
+plenty of less popular films that the ranker's other signals can lift into the top 10. The
+largest single gain in tuning came from `RecommenderScores(EASE())`. A second model with a
+different inductive bias gives the ranker something to weigh BM25's score against. The
+demographic columns on their own added little.
+
+The 94 cold users are a harder case. Their baseline is already strong, because MovieLens
+users rate the popular films, and a cold user's whole history is held out. NDCG@10 still
+rises from 0.527 to 0.549, MAP from 0.370 to 0.405 and MRR from 0.725 to 0.748. Recall@10
+falls slightly, from 0.094 to 0.087, so the reranker puts the hits it finds higher rather
+than finding more of them. The examples show the mechanism: the popularity baseline serves
+every cold user the same five films, while the reranker gives the 49-year-old educator *The
+English Patient* and *Air Force One* and the 28-year-old student *Scream*. The segment
+features only work because of how the ranker is trained. Trained on warm users, whose
+candidates have their own history removed, the same features scored *below* the popularity
+baseline during development: the ranker learned from candidate lists that no cold user ever
+gets.
+
+The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.203
+on warm users against CatBoost's 0.205, and 0.542 on cold users against 0.549. It clearly
+beats XGBoost (0.200, 0.538) and LightGBM (0.199, 0.535). The spread between the three
+boosters is small, and they learn from identical features, so they mostly agree and there is
+little for a blender to combine. Other variants did no better during tuning. Z-score
+normalization, five folds and a plain average (`blender=None`) came within 0.003 of CatBoost
+on warm users and 0.003–0.011 under it on cold users. Passing the original features to the
+logistic blender, or using a gradient-boosted blender, did worse. None of them beat CatBoost
+alone. What the blend buys
+here is not having to know in advance which booster wins, and it charges for that. Its
+request runs all three boosters, so it costs 1.6 ms on a warm user against CatBoost's
+0.67 ms. Blending pays when its members disagree, for example when they are trained on
+different features or different candidate sources, and this setup does not give them that.
+
+The price of any reranker is latency. With CatBoost, a warm user's request goes from about
+20 µs to about 0.67 ms at the median and 1 ms at `q99`, and a cold user's to about 0.4 ms. BM25 alone answers in 21 µs, so
+at least 95% of the reranked request is the second stage: featurizing 100 candidates and
+running the tree ensemble over them. That fits comfortably in a request budget, but a service
+ranking per request should know where its time goes.
+
+### Reciprocal rank fusion
+
+**Fusing two recommenders gets the better of them without having to know which one it is.**
+Which of BM25 and EASE is stronger depends on the dataset: EASE on MovieLens 100K (0.187 NDCG@10
+on warm users against 0.170), BM25 on MovieLens 1M (0.138 against 0.132). `BM25+EASE RRF`, which
+learns nothing, is never measurably worse than the stronger one, and on MovieLens 1M it beats
+both, at 0.142. A paired bootstrap over users (2,000 resamples) puts the gains at:
+
+| Warm users | RRF − BM25 (95% CI) | RRF − EASE (95% CI) |
+| --- | --- | --- |
+| MovieLens 100K, 849 users | +0.016 [+0.009, +0.022] | −0.001 [−0.007, +0.005] |
+| MovieLens 1M, 5,436 users | +0.004 [+0.002, +0.007] | +0.010 [+0.008, +0.013] |
+
+The fusion also recalls more and covers more of the catalog than BM25 (0.18 of it against 0.11 on
+MovieLens 1M). A request costs about 0.25–0.3 ms, because both members retrieve 100 items. It is
+still a third of what a booster costs, and there is no training run to schedule. The trained
+rankers gain more on warm users, 0.157 against 0.142 on MovieLens 1M, because they also learn from
+the demographics, genres and counts. Fusion is the step before a ranker, or the choice when there
+is nothing to train one on.
+
+**Fusing the three boosters by rank matches stacking them, at a quarter of the fits.** On MovieLens
+1M, `BM25+RRF boosters` and `BM25+Blend` both reach 0.192 NDCG@10 over all users. The fusion is
+slightly ahead on warm users (0.158, the best warm row) and behind on cold ones (0.497 against
+0.501). MovieLens 100K agrees, within 0.001 in each segment. The blend fits every booster once per
+fold and once more for serving, twelve fits per branch, while the fusion fits each booster once.
+Neither beats CatBoost alone by a margin that matters, for the reason given above. A request costs
+the same either way, because both run all three boosters.
+
+**As a cold-start ranker, fusion helps but a trained ranker helps more.** Fusing popularity with
+segment popularity (`BM25+RRF`) lifts cold users' NDCG@10 over the popularity baseline on both
+datasets, from 0.527 to 0.544 and from 0.483 to 0.486. On MovieLens 100K it even had the best cold
+MAP of any row, but that rested on 94 users. On MovieLens 1M's 604, CatBoost's 0.501 is clearly
+ahead.

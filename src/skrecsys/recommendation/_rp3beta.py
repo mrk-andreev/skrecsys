@@ -1,8 +1,6 @@
 """RP3beta: random-walk item-item similarity, ported from Ferrari Dacrema's framework."""
 
-import math
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -10,7 +8,7 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import SparseSpace
+from skrecsys.indexing import IndexSpec, SparseSpace
 from skrecsys.recommendation._base import (
     SimilarityRecommender,
     keep_top_k_per_row,
@@ -23,6 +21,8 @@ from skrecsys.recommendation._incremental import (
     remap_sparse,
     replace_rows,
 )
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 
 class RP3Beta(IncrementalRecommenderMixin, SimilarityRecommender):
@@ -113,13 +113,13 @@ class RP3Beta(IncrementalRecommenderMixin, SimilarityRecommender):
 
     def __init__(
         self,
-        n_neighbors: int = 100,
-        alpha: float = 1.0,
-        beta: float = 0.6,
+        n_neighbors: Annotated[int, Int(5, 1000, log=True)] = 100,
+        alpha: Annotated[float, Float(0.1, 2.0)] = 1.0,
+        beta: Annotated[float, Float(0.0, 1.0)] = 0.6,
         *,
         normalize_similarity: bool = True,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.alpha = alpha
@@ -251,21 +251,11 @@ class RP3Beta(IncrementalRecommenderMixin, SimilarityRecommender):
     @override
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
-        if not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1:
-            raise ValueError(f"n_neighbors must be an integer >= 1, got {self.n_neighbors!r}.")
+        check_int(self.n_neighbors, "n_neighbors", min_value=1)
         for name in ("alpha", "beta"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Real) or not math.isfinite(float(value)) or value < 0:
-                raise ValueError(f"{name} must be a finite real number >= 0, got {value!r}.")
-        if not isinstance(self.normalize_similarity, bool):
-            raise ValueError(
-                f"normalize_similarity must be a bool, got {self.normalize_similarity!r}."
-            )
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+            check_real(getattr(self, name), name, min_value=0)
+        check_bool(self.normalize_similarity, "normalize_similarity")
+        return resolve_n_jobs(self.n_jobs)
 
 
 def _reciprocal(values: NDArray[np.floating]) -> NDArray[np.float64]:

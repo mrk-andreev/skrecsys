@@ -5,7 +5,7 @@ https://jmcauley.ucsd.edu/data/amazon/
 
 import os
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, overload
+from typing import Literal, TypeAlias, TypedDict, cast, overload
 
 import joblib
 import numpy as np
@@ -14,6 +14,8 @@ from sklearn.datasets._base import RemoteFileMetadata, _fetch_remote
 from sklearn.utils import Bunch
 
 from skrecsys.datasets._base import (
+    ArraysXY,
+    FramesXY,
     get_data_home,
     import_pandas,
     leave_one_out,
@@ -37,12 +39,26 @@ _MIN_INTERACTIONS = 5
 _CHUNK_BYTES = 8 << 20
 #: The CSV columns, in file order, and the dtype each is stored as; the identifier
 #: columns stay raw bytes until they are encoded.
-_FIELDS: dict[str, Any] = {
+_FIELDS: dict[str, type[np.generic] | None] = {
     "user": None,
     "item": None,
     "rating": np.float64,
     "timestamp": np.int64,
 }
+
+
+class _Interactions(TypedDict):
+    user_id: NDArray[np.int32]
+    item_id: NDArray[np.int32]
+    rating: NDArray[np.float64]
+    timestamp: NDArray[np.int64]
+
+
+class _Cache(TypedDict):
+    interactions: _Interactions
+    reviewer_ids: NDArray[np.str_]
+    asins: NDArray[np.str_]
+
 
 Subset: TypeAlias = Literal["all", "leave-one-out"]
 
@@ -69,10 +85,38 @@ def fetch_amazon_books(
     max_sequence_length: int | None = ...,
     download_if_missing: bool = ...,
     return_X_y: Literal[True],
-    as_frame: bool = ...,
+    as_frame: Literal[False] = ...,
     n_retries: int = ...,
     delay: float = ...,
-) -> tuple[Any, Any]: ...
+) -> ArraysXY: ...
+
+
+@overload
+def fetch_amazon_books(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    max_sequence_length: int | None = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: Literal[True],
+    n_retries: int = ...,
+    delay: float = ...,
+) -> FramesXY: ...
+
+
+@overload
+def fetch_amazon_books(
+    *,
+    data_home: str | os.PathLike[str] | None = ...,
+    subset: Literal["all"] = ...,
+    max_sequence_length: int | None = ...,
+    download_if_missing: bool = ...,
+    return_X_y: Literal[True],
+    as_frame: bool,
+    n_retries: int = ...,
+    delay: float = ...,
+) -> ArraysXY | FramesXY: ...
 
 
 def fetch_amazon_books(
@@ -85,7 +129,7 @@ def fetch_amazon_books(
     as_frame: bool = False,
     n_retries: int = 3,
     delay: float = 1.0,
-) -> Bunch | tuple[Any, Any]:
+) -> Bunch | ArraysXY | FramesXY:
     """Load the Amazon Books ratings, downloading and preprocessing them if necessary.
 
     The 2014 Amazon product review dump, reduced to its 5-core and cut to the last
@@ -243,7 +287,7 @@ def _load_cache(
     download_if_missing: bool,
     n_retries: int,
     delay: float,
-) -> dict[str, Any]:
+) -> _Cache:
     """Return the parsed 5-core dataset, downloading and parsing it on a cache miss."""
     home = get_data_home(data_home)
     cache_path = home / _CACHE_NAME
@@ -254,10 +298,10 @@ def _load_cache(
         parsed = _parse_ratings(Path(ratings_path))
         joblib.dump(parsed, cache_path, compress=3)
         Path(ratings_path).unlink()
-    return joblib.load(cache_path)
+    return cast(_Cache, joblib.load(cache_path))
 
 
-def _parse_ratings(path: Path) -> dict[str, Any]:
+def _parse_ratings(path: Path) -> _Cache:
     """Parse the ratings CSV into the 5-core dataset, as contiguous integer codes."""
     columns = _read_columns(path)
     reviewer_ids, user_codes = _encode(columns.pop("user"))
@@ -284,15 +328,16 @@ def _parse_ratings(path: Path) -> dict[str, Any]:
         "interactions": {
             "user_id": user_ids[order].astype(np.int32),
             "item_id": item_ids[order].astype(np.int32),
-            "rating": ratings[order],
-            "timestamp": timestamps[order],
+            # Already these dtypes, as parsed by `_FIELDS`; astype only restates it.
+            "rating": ratings[order].astype(np.float64, copy=False),
+            "timestamp": timestamps[order].astype(np.int64, copy=False),
         },
         "reviewer_ids": reviewer_ids.astype("U"),
         "asins": asins.astype("U"),
     }
 
 
-def _encode(values: NDArray[np.bytes_]) -> tuple[NDArray[np.bytes_], NDArray[np.int64]]:
+def _encode(values: NDArray[np.generic]) -> tuple[NDArray[np.generic], NDArray[np.intp]]:
     """Return the distinct values, sorted, and each row's index into them."""
     distinct, codes = np.unique(values, return_inverse=True)
     return distinct, codes
@@ -312,9 +357,9 @@ def _k_core(user_codes: NDArray[np.int64], item_codes: NDArray[np.int64]) -> NDA
     return keep
 
 
-def _read_columns(path: Path) -> dict[str, NDArray[Any]]:
+def _read_columns(path: Path) -> dict[str, NDArray[np.generic]]:
     """Read the ``user,item,rating,timestamp`` CSV into one array per column."""
-    chunks: dict[str, list[NDArray[Any]]] = {name: [] for name in _FIELDS}
+    chunks: dict[str, list[NDArray[np.generic]]] = {name: [] for name in _FIELDS}
     with path.open("rb") as stream:
         pending = b""
         while chunk := stream.read(_CHUNK_BYTES):
@@ -332,13 +377,13 @@ def _read_columns(path: Path) -> dict[str, NDArray[Any]]:
     return {name: _consume(pieces) for name, pieces in chunks.items()}
 
 
-def _consume(pieces: list[NDArray[Any]]) -> NDArray[Any]:
+def _consume(pieces: list[NDArray[np.generic]]) -> NDArray[np.generic]:
     joined = np.concatenate(pieces)
     pieces.clear()
     return joined
 
 
-def _append_block(chunks: dict[str, list[NDArray[Any]]], block: bytes) -> None:
+def _append_block(chunks: dict[str, list[NDArray[np.generic]]], block: bytes) -> None:
     """Split one block of whole lines into its four fields."""
     rest = np.array(block.splitlines())
     if not len(rest):
