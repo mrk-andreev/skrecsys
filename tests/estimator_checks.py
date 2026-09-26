@@ -153,6 +153,16 @@ def check_recommend_exclude_interactions(name: str, estimator: Any) -> None:
         )
         np.testing.assert_allclose(scores[1], other_scores[0], rtol=1e-9, atol=_TOLERANCE)
 
+    # A request with nothing to exclude -- no events since the fit -- is served as without.
+    items, scores = est.recommend(
+        queries, n_recommendations=2, exclude_interactions=np.empty((0, 2), dtype=object)
+    )
+    plain_items, plain_scores = est.recommend(queries, n_recommendations=2)
+    np.testing.assert_array_equal(
+        items, plain_items, err_msg=f"{name} changed its lists for an empty exclusion."
+    )
+    np.testing.assert_allclose(scores, plain_scores, rtol=1e-9, atol=_TOLERANCE)
+
     everything_unseen = np.array([["u0", i] for i in ("i2", "i3", "i4", "i5")], dtype=object)
     try:
         est.recommend(
@@ -167,8 +177,16 @@ def check_recommend_exclude_interactions(name: str, estimator: Any) -> None:
 
 def check_recommend_errors(name: str, estimator: Any) -> None:
     est = clone(estimator).fit(_interactions())
+    # An unknown user either raises or, under a documented cold-start policy, is served
+    # like a user who has seen nothing. Answering anything else is the failure.
+    try:
+        items, _ = est.recommend(np.array(["unknown-user"], dtype=object), n_recommendations=2)
+    except ValueError:
+        pass
+    else:
+        assert items.shape == (1, 2), f"{name} served an unknown user {items.shape} items."
+        assert np.all(np.isin(items, est.item_ids_))
     for kwargs, query in (
-        ({"n_recommendations": 1}, ["unknown-user"]),
         ({"n_recommendations": est.n_items_}, ["u0"]),
         ({"n_recommendations": 1, "candidates": ["unknown-item"]}, ["u0"]),
     ):

@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "settings": {
+    "k": 10,
+    "latency_repeat": 1000,
+    "budget": 10.0,
+    "warmup": {
+      "fit": 0,
+      "rank": 10
+    }
+  },
+  "datasets": {
+    "movielens-100k-cold": {},
+    "movielens-1m-cold": {}
+  },
+  "models": [
+    {
+      "name": "BM25",
+      "package": "pipelines",
+      "cls": "switch_bm25",
+      "params": {},
+      "version": "v1",
+      "comment": "Switch(KnownUser(), BM25Recommender(), MostPopularRecommender())"
+    },
+    {
+      "name": "BM25+CatBoost",
+      "package": "pipelines",
+      "cls": "switch_bm25_catboost",
+      "params": {
+        "n_retrieved": 100,
+        "iterations": 300,
+        "cold_users": 0.2,
+        "random_state": 0
+      },
+      "version": "v1",
+      "comment": "The same Switch with a CatBoost ranker behind each branch: BM25 candidates for known users, most-popular candidates reranked on segment popularity for cold ones"
+    },
+    {
+      "name": "BM25+XGBoost",
+      "package": "pipelines",
+      "cls": "switch_bm25_xgboost",
+      "params": {
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "random_state": 0,
+        "n_estimators": 300,
+        "learning_rate": 0.05,
+        "max_depth": 4,
+        "min_child_weight": 5
+      },
+      "version": "v1",
+      "comment": "The BM25+CatBoost switch with XGBoost rank:ndcg rankers, regularized: at the defaults (300 trees, learning rate 0.1) it overfits the ranker's few hundred groups"
+    },
+    {
+      "name": "BM25+LightGBM",
+      "package": "pipelines",
+      "cls": "switch_bm25_lightgbm",
+      "params": {
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "random_state": 0,
+        "n_estimators": 200,
+        "learning_rate": 0.03,
+        "min_child_samples": 100,
+        "reg_lambda": 10
+      },
+      "version": "v1",
+      "comment": "The BM25+CatBoost switch with LightGBM lambdarank rankers, regularized for the same reason as XGBoost"
+    },
+    {
+      "name": "BM25+Blend",
+      "package": "pipelines",
+      "cls": "switch_bm25_blend",
+      "params": {
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "normalize": "rank",
+        "cv": 3,
+        "random_state": 0,
+        "catboost": {
+          "iterations": 300
+        },
+        "xgboost": {
+          "n_estimators": 300,
+          "learning_rate": 0.05,
+          "max_depth": 4,
+          "min_child_weight": 5
+        },
+        "lightgbm": {
+          "n_estimators": 200,
+          "learning_rate": 0.03,
+          "min_child_samples": 100,
+          "reg_lambda": 10
+        }
+      },
+      "version": "v1",
+      "comment": "BlendRanker at its defaults (logistic stacking on out-of-fold, rank-normalized scores) over the three boosters of the rows above"
+    },
+    {
+      "name": "EASE",
+      "package": "pipelines",
+      "cls": "switch_ease",
+      "params": {},
+      "version": "v1",
+      "comment": "Switch(KnownUser(), EASE(), MostPopularRecommender()): the other member of the fusions, on its own"
+    },
+    {
+      "name": "BM25+EASE RRF",
+      "package": "pipelines",
+      "cls": "switch_bm25_ease_rrf",
+      "params": {
+        "k": 60,
+        "n_retrieved": 100
+      },
+      "version": "v1",
+      "comment": "ReciprocalRankFusion of BM25 and EASE for known users, most popular for the rest: no ranker, nothing learned"
+    },
+    {
+      "name": "BM25+RRF",
+      "package": "pipelines",
+      "cls": "switch_bm25_rrf",
+      "params": {
+        "k": 60,
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "random_state": 0
+      },
+      "version": "v1",
+      "comment": "The CatBoost switch with a training-free ReciprocalRankRanker: BM25 and EASE scores for known users, popularity and segment popularity for cold ones"
+    },
+    {
+      "name": "BM25+RRF boosters",
+      "package": "pipelines",
+      "cls": "switch_bm25_rrf_boosters",
+      "params": {
+        "k": 60,
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "random_state": 0,
+        "catboost": {
+          "iterations": 300
+        },
+        "xgboost": {
+          "n_estimators": 300,
+          "learning_rate": 0.05,
+          "max_depth": 4,
+          "min_child_weight": 5
+        },
+        "lightgbm": {
+          "n_estimators": 200,
+          "learning_rate": 0.03,
+          "min_child_samples": 100,
+          "reg_lambda": 10
+        }
+      },
+      "version": "v1",
+      "comment": "ReciprocalRankRanker over the three boosters of the Blend row: their ranks fused, with no out-of-fold refits or blender"
+    }
+  ]
+}

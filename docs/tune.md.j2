@@ -1,0 +1,90 @@
+{#- Included by README.md.j2 after "Composing recommenders", so headings start at level two. -#}
+## Hyperparameter tuning
+
+`skrecsys.tune` is a small Optuna-style tuner whose sampler, a Tree-structured Parzen Estimator
+(TPE), runs in Rust. Each estimator declares the range worth searching as an annotation on its
+`__init__` parameters, so the search space lives next to the default it belongs to:
+
+```python
+from typing import Annotated
+from skrecsys.tune import Float, Int
+
+class BM25Recommender(...):
+    def __init__(
+        self,
+        n_neighbors: Annotated[int, Int(5, 1000, log=True)] = 20,
+        k1: Annotated[float, Float(0.05, 5.0, log=True)] = 1.2,
+        b: Annotated[float, Float(0.0, 1.0)] = 0.75,
+        ...
+    ): ...
+```
+
+`Annotated` leaves the parameter's type unchanged, and `get_params`, `clone` and type checkers
+never notice. `search_space(estimator)` reads the annotations back, following nested estimators
+as `name__param`. Every model in `skrecsys.recommendation` and `skrecsys.nn` declares its main
+parameters, except `MostPopularRecommender`, which has nothing to tune. For the neural models the
+space covers the architecture and optimizer (factors, blocks, dropout, learning rate, loss
+temperatures and weights), and training length stays fixed. A trial there costs a full training
+run, so start with a small `n_trials` or a tighter `search_space`.
+
+`AutoTune` wraps a recommender so that `fit` tunes it first. It scores each configuration by
+cross-validation on the training interactions alone, with 3-fold `WarmStartKFold` and NDCG@10 by
+default. Then it refits the best configuration on all of them. The first trial is always the
+estimator as given, so the tuned model cannot score below it in cross-validation:
+
+```python
+from skrecsys.recommendation import BM25Recommender
+from skrecsys.tune import AutoTune, Float
+
+tuned = AutoTune(BM25Recommender(), n_trials=50, random_state=0).fit(X_train)
+tuned.best_params_  # {'n_neighbors': 584, 'k1': 1.755..., 'b': 0.775...}
+tuned.recommend(users, n_recommendations=10)
+
+# Override or extend the declared space; nested parameters use their set_params names.
+AutoTune(BM25Recommender(), search_space={"b": Float(0.5, 1.0)})
+
+# Hold parameters at the instance's value and search the rest.
+AutoTune(BM25Recommender(k1=0.5), freeze=["k1"])
+```
+
+On MovieLens 100K, `AutoTune(BM25Recommender())` improves on the defaults on the held-out `ua`
+test split, which tuning never sees:
+
+| Model | NDCG@10 | MAP | MRR | fit |
+| --- | --- | --- | --- | --- |
+| `BM25Recommender()` | 0.2661 | 0.1370 | 0.5788 | 7 ms |
+| `AutoTune(BM25Recommender())` | **0.2759** | **0.1443** | **0.6049** | 2.6 s |
+
+The full row is in the [leaderboard](#leaderboard), and
+`tests/benchmarks/test_movielens_100k.py` guards the improvement. The gain carries over to
+MovieLens 1M's leave-one-out split at the cutoff it was tuned for (HR@10 0.0684 against 0.0642)
+but not at 200, a reminder that the tuner optimizes the metric and split you give it.
+
+For any other objective, `Study` is the ask-and-tell loop underneath. It is define-by-run like
+Optuna's: which parameters a trial asks for may depend on earlier answers.
+
+```python
+from skrecsys.tune import Study
+
+
+def objective(trial):
+    x = trial.suggest_float("x", -10, 10)
+    kind = trial.suggest_categorical("kind", ["a", "b"])
+    return -((x - 2) ** 2) + (kind == "b")
+
+
+study = Study(direction="maximize", random_state=0)  # sampler="random" for random search
+study.optimize(objective, n_trials=60)
+study.best_params  # {'x': 2.0..., 'kind': 'b'}
+
+trial = study.ask()  # or drive it by hand
+study.tell(trial, objective(trial))
+```
+
+The sampler follows Optuna's univariate TPE defaults:
+
+- The first 10 trials are random.
+- After that, the best `min(ceil(n / 10), 25)` trials form the "good" group.
+- Each group is modelled with a truncated-Gaussian Parzen estimator plus a prior. Log-scaled
+  parameters are modelled in log space.
+- Out of 24 candidates drawn from the good model, the one maximizing `l(x) / g(x)` wins.

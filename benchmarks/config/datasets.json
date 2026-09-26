@@ -12,6 +12,26 @@
       "caption": "Amazon Books (`amzn-books-l50`), `{subset}` split",
       "max_eval_users": 10000
     },
+    "movielens-100k-cold": {
+      "loader": "skrecsys.datasets.fetch_movielens_100k",
+      "subset": "all",
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {"cold_users": 0.1, "test_size": 0.2, "random_state": 0}
+      },
+      "caption": "MovieLens 100K, `ColdStartSplit`: 10% of users held out whole, the latest 20% of every other user's ratings held out"
+    },
+    "movielens-1m-cold": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "all",
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {"cold_users": 0.1, "test_size": 0.2, "random_state": 0}
+      },
+      "caption": "MovieLens 1M, `ColdStartSplit`: 10% of users held out whole, the latest 20% of every other user's ratings held out"
+    },
     "movielens-1m": {
       "loader": "skrecsys.datasets.fetch_movielens_1m",
       "subset": "leave-one-out",

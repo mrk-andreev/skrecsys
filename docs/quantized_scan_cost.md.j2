@@ -1,0 +1,47 @@
+{#- Included by README.md.j2 at the end of "Vector indexes", so the heading starts at level three. -#}
+### What the quantized scan costs
+
+**On both datasets `QuantizedFlatIndex` is slower than the exact path for every model, at
+every setting measured.** On MovieLens the speedups run from `0.12x` (`ALS`, `bits=8`, `ov=1`)
+down to `0.01x` (`RP3Beta`, `bits=4`); on Amazon Books the best is `0.09x` (`BPR`,
+`bits=8`) and the neighbourhood models round to `0.00x`. The scan visits every
+candidate on one thread, while the exact neighbourhood path only touches the items a user's
+history reaches, and the exact factor path is a tiled, multi-threaded kernel.
+
+What it does deliver is the other three columns:
+
+- **Accuracy, essentially free.** At `bits=8, ov=2` it reproduces the exact answer —
+  `recall@10` of `1.0000` — on `ALS`, `BPR`, `ItemKNN`, `BM25`, `RP3Beta`, `SLIM`, `EASE`
+  and `XSimGCL` on MovieLens, and on Amazon Books it holds `1.0000` for `ALS` and `BPR`
+  and at least `0.999` for the neighbourhood models, where the graph retrieves under
+  `0.03`. Compare the graph on `EASE`, which needs `ef=256` to reach the same place.
+- **Exact scores, and a `score gap@1` that says something different from the graph's.**
+  81 of the 90 MovieLens quantized rows show `+0.0000`, and the nine that do not are all
+  `bits=4`, all under `+0.0006`; on Amazon Books the thirteen that do not are `bits=4`
+  too, all under `+0.02`. Those rows are not dequantized numbers leaking into the output
+  — they cannot be, because the shortlist is rescored with the original vectors before
+  anything is returned. They are rows where the shortlist missed the true best item, so
+  first place went to a genuinely lower-scoring one, and the gap is the real difference
+  between two real scores. The graph's gaps reach `+0.16` on MovieLens and `+0.99` on
+  Amazon Books for the same reason.
+- **A build that rounds to nothing.** `0` to `17 ms` on MovieLens, against `88 ms` for
+  the graph on `ALS` and `402 ms` on `EASE`; `17` to `254 ms` on Amazon Books, against
+  graph builds of 14 s (`BM25`) to 14 minutes (`RP3Beta`).
+
+**`SimpleX` is the model that does not fit the summary**, and is worth reading before
+choosing `bits`. At `bits=8` it needs `ov=8` to pass `0.99`; at `bits=4` it reaches only
+`0.84` even at `ov=16`. Its factors evidently carry more in their fine structure than the
+other models' do, and four bits throws that away. The graph has no such trouble with it
+(`0.992` at `ef=16`). Narrow codes are a per-model decision, not a global one.
+
+{% include "docs/quantized_integer_arithmetic.md.j2" %}
+The Amazon Books block is a long run to reproduce: the quantized rows alone take hours
+over a 660,940-item catalog, because the scan is sequential by design, and the `ItemKNN`
+and `RP3Beta` graph builds are `686 s` and `869 s`.
+`python benchmarks/run.py run indexes --dataset amazon-books` re-measures only the rows
+whose config has changed.
+
+Use `index=None` for the exact path, which is the default. The tables show where an explicit approximate index helps and where it costs time or quality; measure the model and catalog before choosing one.
+
+`MostPopularRecommender` has no `index` parameter and appears in neither table: its score
+does not depend on the query, so there is nothing for a neighbour index to narrow.

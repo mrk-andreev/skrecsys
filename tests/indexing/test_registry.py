@@ -63,6 +63,7 @@ def test_index_parameters_are_reachable_for_model_selection():
     estimator = AlternatingLeastSquares(index=HNSW(ef_search=32))
     assert estimator.get_params(deep=True)["index__ef_search"] == 32
     estimator.set_params(index__ef_search=128)
+    assert isinstance(estimator.index, HNSW)
     assert estimator.index.ef_search == 128
 
 
@@ -103,7 +104,7 @@ def test_only_the_byte_aligned_code_widths_are_accepted(bits):
 def test_the_clipping_quantile_is_a_share_of_one_tail(quantile):
     # Taken off *each* end, so half of one is the whole distribution and there is
     # nothing left to quantize.
-    with pytest.raises(ValueError, match=r"quantile must be a float in \[0, 0.5\)"):
+    with pytest.raises(ValueError, match=r"quantile must be a real number in \[0, 0.5\)"):
         QuantizedFlatIndex(quantile=quantile)._check_params()
 
 
@@ -111,6 +112,7 @@ def test_quantized_parameters_are_reachable_for_model_selection():
     estimator = AlternatingLeastSquares(index=QuantizedFlatIndex(bits=4))
     assert estimator.get_params(deep=True)["index__bits"] == 4
     estimator.set_params(index__oversample=16)
+    assert isinstance(estimator.index, QuantizedFlatIndex)
     assert estimator.index.oversample == 16
 
 

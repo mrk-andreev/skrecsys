@@ -11,8 +11,8 @@ the subject of :func:`user_coverage_at_k`, so rows may be shorter than ``k`` or 
 """
 
 import math
-from collections.abc import Collection, Mapping, Sequence
-from typing import Any, TypeAlias
+from collections.abc import Collection, Hashable, Mapping, Sequence
+from typing import TypeAlias, TypeVar
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -20,7 +20,10 @@ from numpy.typing import ArrayLike, NDArray
 from skrecsys.metrics._ranking import _average, _check_two_dimensional
 from skrecsys.utils.validation import check_interactions
 
-RankedItems: TypeAlias = NDArray[Any] | Sequence[Sequence[Any]]
+#: An item identifier; ties the items of ``y_pred`` to the keys of a popularity mapping.
+ItemT = TypeVar("ItemT", bound=Hashable)
+
+RankedItems: TypeAlias = NDArray[np.generic] | Sequence[Sequence[ItemT | None]]
 """Ranked items per query: a 2-D array, or rows that may be short or padded."""
 
 __all__ = [
@@ -32,7 +35,8 @@ __all__ = [
 ]
 
 
-def _is_missing(value: Any, fill_value: Any) -> bool:
+def _is_missing(value: ItemT | None, fill_value: ItemT | None) -> bool:
+    """Padding rather than an item: ``None``, ``fill_value`` or NaN."""
     if value is None:
         return True
     if fill_value is not None and value == fill_value:
@@ -41,8 +45,8 @@ def _is_missing(value: Any, fill_value: Any) -> bool:
 
 
 def _ranked_rows(
-    y_pred: RankedItems, k: int | None, fill_value: Any
-) -> tuple[list[list[Any]], int]:
+    y_pred: RankedItems[ItemT], k: int | None, fill_value: ItemT | None
+) -> tuple[list[list[ItemT]], int]:
     """Return the top-k valid items of each query and the effective cutoff.
 
     Unlike the ranking metrics, rows may be short or padded, so the returned lists have
@@ -66,7 +70,9 @@ def _ranked_rows(
 
     trimmed = []
     for q, row in enumerate(rows):
-        top = [item for item in row[:cutoff] if not _is_missing(item, fill_value)]
+        top = [
+            item for item in row[:cutoff] if not _is_missing(item, fill_value) and item is not None
+        ]
         if len(set(top)) != len(top):
             raise ValueError(f"y_pred contains duplicate items for query {q}.")
         trimmed.append(top)
@@ -74,7 +80,7 @@ def _ranked_rows(
 
 
 def _popularity_vector(
-    rows: Sequence[Sequence[Any]], popularity: Mapping[Any, float], default: float
+    rows: Sequence[Sequence[ItemT]], popularity: Mapping[ItemT, float], default: float
 ) -> NDArray[np.float64]:
     """Mean popularity of each query's items; NaN for a query with no items."""
     values = np.full(len(rows), np.nan, dtype=np.float64)
@@ -90,7 +96,7 @@ def item_popularity(
     *,
     weighting: str = "count",
     normalize: bool = False,
-) -> dict[Any, float]:
+) -> dict[Hashable, float]:
     """Popularity of every item in a training set of interactions.
 
     Parameters
@@ -131,17 +137,17 @@ def item_popularity(
         if grand_total <= 0:
             raise ValueError("Cannot normalize popularity: the total weight is not positive.")
         totals = totals / grand_total
-    return dict(zip(unique.tolist(), totals.tolist(), strict=True))
+    return dict[Hashable, float](zip(unique.tolist(), totals.tolist(), strict=True))
 
 
 def catalog_coverage_at_k(
-    y_true: Sequence[Collection[Any]] | None,
-    y_pred: RankedItems,
+    y_true: Sequence[Collection[Hashable]] | None,
+    y_pred: RankedItems[ItemT],
     *,
     k: int | None = None,
     catalog: ArrayLike | None = None,
     n_catalog_items: int | None = None,
-    fill_value: Any = None,
+    fill_value: ItemT | None = None,
 ) -> float:
     """Fraction of the catalog that appears in at least one top-k list.
 
@@ -161,7 +167,7 @@ def catalog_coverage_at_k(
     n_catalog_items : int, default=None
         Catalog size, when the identifiers themselves are not at hand. Exactly one of
         ``catalog`` and ``n_catalog_items`` must be given.
-    fill_value : object, default=None
+    fill_value : item identifier, default=None
         Padding marker in ``y_pred``; ``None`` and NaN always count as padding.
 
     Returns
@@ -171,37 +177,38 @@ def catalog_coverage_at_k(
         ranking metrics it has no per-query form.
     """
     del y_true
-    if (catalog is None) == (n_catalog_items is None):
+    if catalog is not None and n_catalog_items is None:
+        known: set[Hashable] | None = set(np.asarray(catalog).ravel().tolist())
+        size = len(known)
+    elif catalog is None and n_catalog_items is not None:
+        known = None
+        size = int(n_catalog_items)
+        if size < 1:
+            raise ValueError(f"n_catalog_items must be >= 1, got {n_catalog_items}.")
+    else:
         raise ValueError("Give exactly one of catalog and n_catalog_items.")
     rows, _ = _ranked_rows(y_pred, k, fill_value)
     recommended = {item for row in rows for item in row}
 
-    if catalog is not None:
-        known = set(np.asarray(catalog).ravel().tolist())
-        size = len(known)
+    if known is not None:
         unknown = recommended - known
         if unknown:
             raise ValueError(f"y_pred contains items outside the catalog: {sorted(unknown)[:5]}.")
-    else:
-        size = int(n_catalog_items)  # ty: ignore[invalid-argument-type]
-        if size < 1:
-            raise ValueError(f"n_catalog_items must be >= 1, got {n_catalog_items}.")
-        if len(recommended) > size:
-            raise ValueError(
-                f"y_pred contains {len(recommended)} distinct items, more than the "
-                f"catalog size {size}."
-            )
+    elif len(recommended) > size:
+        raise ValueError(
+            f"y_pred contains {len(recommended)} distinct items, more than the catalog size {size}."
+        )
     return len(recommended) / size
 
 
 def user_coverage_at_k(
-    y_true: Sequence[Collection[Any]] | None,
-    y_pred: RankedItems,
+    y_true: Sequence[Collection[Hashable]] | None,
+    y_pred: RankedItems[ItemT],
     *,
     k: int | None = None,
     average: str | None = "macro",
     sample_weight: ArrayLike | None = None,
-    fill_value: Any = None,
+    fill_value: ItemT | None = None,
 ) -> float | NDArray[np.float64]:
     """1 if the query received ``k`` valid recommendations, else 0.
 
@@ -221,7 +228,7 @@ def user_coverage_at_k(
         ``None`` returns per-query values; ``"macro"`` their (weighted) mean.
     sample_weight : array-like of shape (n_queries,), default=None
         Query weights for ``average="macro"``.
-    fill_value : object, default=None
+    fill_value : item identifier, default=None
         Padding marker in ``y_pred``; ``None`` and NaN always count as padding.
 
     Returns
@@ -235,15 +242,15 @@ def user_coverage_at_k(
 
 
 def mean_popularity_at_k(
-    y_true: Sequence[Collection[Any]] | None,
-    y_pred: RankedItems,
+    y_true: Sequence[Collection[Hashable]] | None,
+    y_pred: RankedItems[ItemT],
     *,
     k: int | None = None,
-    item_popularity: Mapping[Any, float],
+    item_popularity: Mapping[ItemT, float],
     average: str | None = "macro",
     sample_weight: ArrayLike | None = None,
     default: float = 0.0,
-    fill_value: Any = None,
+    fill_value: ItemT | None = None,
 ) -> float | NDArray[np.float64]:
     """Mean training popularity of the recommended items.
 
@@ -266,7 +273,7 @@ def mean_popularity_at_k(
         Query weights for ``average="macro"``.
     default : float, default=0.0
         Popularity of items missing from ``item_popularity``.
-    fill_value : object, default=None
+    fill_value : item identifier, default=None
         Padding marker in ``y_pred``; ``None`` and NaN always count as padding.
 
     Returns
@@ -280,15 +287,15 @@ def mean_popularity_at_k(
 
 
 def novelty_at_k(
-    y_true: Sequence[Collection[Any]] | None,
-    y_pred: RankedItems,
+    y_true: Sequence[Collection[Hashable]] | None,
+    y_pred: RankedItems[ItemT],
     *,
     k: int | None = None,
-    item_popularity: Mapping[Any, float],
+    item_popularity: Mapping[ItemT, float],
     average: str | None = "macro",
     sample_weight: ArrayLike | None = None,
     smoothing: float = 1.0,
-    fill_value: Any = None,
+    fill_value: ItemT | None = None,
 ) -> float | NDArray[np.float64]:
     """Mean self-information ``-log2 p(i)`` of the recommended items.
 
@@ -315,7 +322,7 @@ def novelty_at_k(
         Added to every popularity before normalizing, which keeps ``-log2 p(i)`` finite
         for items that were never interacted with. ``0.0`` gives the textbook
         definition and rejects such items.
-    fill_value : object, default=None
+    fill_value : item identifier, default=None
         Padding marker in ``y_pred``; ``None`` and NaN always count as padding.
 
     Returns
@@ -336,7 +343,7 @@ def novelty_at_k(
         raise ValueError("item_popularity is all zeros; pass smoothing > 0.")
 
     rows, _ = _ranked_rows(y_pred, k, fill_value)
-    information: dict[Any, float] = {}
+    information: dict[ItemT, float] = {}
     for row in rows:
         for item in row:
             if item in information:

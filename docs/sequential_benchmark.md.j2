@@ -1,0 +1,67 @@
+{#- Included by README.md.j2 after "Leaderboard", so headings start at level two. -#}
+{%- import "report.md.j2" as r -%}
+## Sequential benchmark
+
+A different question, and so a different table: each user's last interaction is held out,
+the model reads the 200 before it, and the held-out item is ranked against the whole
+catalog. This is the leave-one-out protocol the sequential-recommendation literature
+reports on, which is what `skrecsys.nn.HSTU` is built for and what the numbers in the
+HSTU and SASRec papers can be read against. It is **not** comparable with the leaderboard
+above, which splits interactions rather than predicting the next one.
+
+```sh
+uv run python benchmarks/run.py run sequential --dry-run   # say what is out of date
+uv run python benchmarks/run.py run sequential             # measure it, re-render the table below
+```
+
+{{ r.sequential(report.sequential["movielens-1m"]) }}
+
+HSTU wins by a factor of three over the best non-sequential model here, which is the
+point of the table: on this split the answer depends on what a user watched *most
+recently*, and a model that reads their history as an unordered bag cannot use that. The
+ordering underneath is worth reading too — `EASE` and `SLIM`, the two models that solve
+for an item-item matrix in closed form, beat the neighbourhood models, and `ALS` at eight
+factors comes last, below even `MostPopular`.
+
+For scale, the HSTU authors report HR@10 0.3097 / NDCG@10 0.1720 for HSTU on this dataset
+and 0.2853 / 0.1603 for SASRec. This implementation lands at 0.2871 / 0.1665: between the
+two, about 7% under published HSTU on HR@10 and 3% under on NDCG@10. That gap is the
+expected size and direction, because the relative attention bias here carries positions
+only — the published model also buckets the *time* gaps between interactions, which `fit`
+never sees. The result confirms that the block, the causal masking and the sampled softmax behave as
+published.
+
+The cost is the other half of the story. One HSTU fit is 22 minutes against 33 ms for
+`ItemKNN` — some 40,000 times more compute for three times the hit rate, on a CPU and
+without the fused kernels the paper uses. Scoring, on the other hand, is a dot product
+against a precomputed state, so a fitted HSTU ranks the catalog for all 6,040 users in
+42 ms, in the same range as the classical models (16–32 ms, and 83 ms for `EASE`).
+
+Every score is an order of magnitude below the MovieLens table, and that is the dataset
+rather than the models: one held-out interaction per user over a 661k-item catalog,
+where MovieLens holds out ten out of 1682. `R@10` equals the hit rate for the same
+reason — a single relevant item is either in the list or not — and `P@10` is that hit
+rate over ten. For scale, the HSTU authors report HR@10 0.0416 / NDCG@10 0.0227 for HSTU
+and 0.0306 / 0.0164 for SASRec on this dataset. Those are close enough in protocol to be
+worth quoting — leave-one-out, full-corpus ranking, seen items filtered — but they were
+not produced by this harness, so compare them with the rows above with care: the candidate set here is the 660,940 items seen in
+training rather than the full 695,762-item space, and the rows are scored on a 10,000-user
+sample.
+
+Ranking order changes completely. `BM25` leads, the neighbourhood models take the top
+three places, and the two models fitted by gradient descent collapse: `BPR` scores a
+fifth of `BM25` while recommending the head of the catalog (`mean pop` 754 against 53),
+and `ALS` at its default eight factors is indistinguishable from noise. Both defaults
+were chosen against a 1.7k-item catalog and neither has the capacity for this one; they
+are not evidence about the methods, only about the defaults. `MostPopular` is the reference
+baseline of a long-tailed catalog — its catalog coverage rounds to zero, because ten
+items out of 660,940 is what a global ranking can reach.
+
+The timing table shows where sparsity pays. A catalog 400 times larger costs the
+neighbourhood models about a hundred times their MovieLens fit (0.6 s for `BM25`) because
+the item-item work follows co-occurrences rather than catalog size, and ranking 10,000
+users against all 660,940 items takes 22–46 ms. The models that score every item for
+every user pay for the catalog instead: `MostPopular` inverts the usual order at 0.6 s
+per call, with nothing to fit and no structure to exploit, and the factor models rank in
+1 s (`ALS`, eight factors) and 3.9 s (`BPR`, sixty-four). `BPR` is also the slowest to
+fit at 5 minutes, single-threaded because the entry is seeded.

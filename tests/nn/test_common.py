@@ -237,7 +237,7 @@ def test_the_adaptive_schedule_spends_the_step_size_before_stopping(estimator):
     [
         ({"learning_rate_schedule": "cosine"}, "learning_rate_schedule must be one of"),
         ({"learning_rate_schedule": None}, "learning_rate_schedule must be one of"),
-        ({"early_stopping": 1}, "early_stopping must be a boolean"),
+        ({"early_stopping": 1}, "early_stopping must be a bool"),
         ({"tol": -1e-4}, "tol must be a finite real number >= 0"),
         ({"tol": float("nan")}, "tol must be a finite real number >= 0"),
         ({"tol": True}, "tol must be a finite real number >= 0"),

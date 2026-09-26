@@ -35,5 +35,17 @@ def test_invalid_weighting():
 def test_dataframe_feature_names():
     df = pd.DataFrame(X, columns=["user", "item"])
     rec = MostPopularRecommender().fit(df)
-    assert rec.feature_names_in_.tolist()  # ty: ignore[unresolved-attribute] == ["user", "item"]
+    assert rec.feature_names_in_.tolist() == ["user", "item"]
     assert rec.predict(df).shape == (len(df),)
+
+
+def test_unknown_users_get_the_most_popular_items():
+    """The cold-start policy: an unknown user has seen nothing, and asking is not an error."""
+    rec = MostPopularRecommender().fit(X)  # popularity: a=1, b=2, c=1
+    items, scores = rec.recommend(["new", "u1", "other"], n_recommendations=1)
+    assert items.tolist() == [["b"], ["c"], ["b"]]
+    np.testing.assert_array_equal(scores, [[2.0], [1.0], [2.0]])
+    assert rec.recommend(["new"], n_recommendations=3)[0].tolist() == [["b", "a", "c"]]
+    assert rec._count_eligible(["new", "u1"]).tolist() == [3, 1]
+    with pytest.raises(ValueError, match="Unknown user"):
+        rec.predict([["new", "a"]])

@@ -6,7 +6,7 @@ brought up to date from the batch rather than refitted from the accumulated hist
 which is the whole point, and which every ``_partial_fit`` below is held to.
 """
 
-from typing import Any, ClassVar, Self
+from typing import ClassVar, Self, TypeVar, cast
 
 import numpy as np
 import scipy.sparse as sp
@@ -17,6 +17,7 @@ from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys import _core
 from skrecsys.base import supports_partial_fit
+from skrecsys.indexing import VectorIndexMixin
 from skrecsys.recommendation._base import kernel_data, kernel_indices
 from skrecsys.utils.validation import check_interactions, factorize
 
@@ -38,9 +39,13 @@ __all__ = [
 _AXIS_KINDS = ("user", "item", "item_item", "item_item_dense")
 
 
+#: The element type a dense remap keeps.
+ScalarT = TypeVar("ScalarT", bound=np.generic)
+
+
 def grow_vocabulary(
-    fitted_ids: NDArray[Any], values: NDArray[Any], *, name: str
-) -> tuple[NDArray[Any], NDArray[np.intp], NDArray[np.intp], NDArray[np.intp]]:
+    fitted_ids: NDArray[np.generic], values: NDArray[np.generic], *, name: str
+) -> tuple[NDArray[np.generic], NDArray[np.intp], NDArray[np.intp], NDArray[np.intp]]:
     """Merge ``values`` into the sorted identifier array ``fitted_ids``.
 
     ``encode_ids`` finds a code by binary search, so the identifiers must stay sorted --
@@ -96,14 +101,16 @@ def is_identity(perm: NDArray[np.intp]) -> bool:
     return bool(np.array_equal(perm, np.arange(len(perm))))
 
 
-def remap_dense(values: NDArray[Any], perm: NDArray[np.intp], n_new: int) -> NDArray[Any]:
+def remap_dense(values: NDArray[ScalarT], perm: NDArray[np.intp], n_new: int) -> NDArray[ScalarT]:
     """Relabel axis 0 of ``values`` through ``perm``, zero-filling the new rows."""
     out = np.zeros((n_new, *values.shape[1:]), dtype=values.dtype)
     out[perm] = values
     return out
 
 
-def remap_dense_square(values: NDArray[Any], perm: NDArray[np.intp], n_new: int) -> NDArray[Any]:
+def remap_dense_square(
+    values: NDArray[ScalarT], perm: NDArray[np.intp], n_new: int
+) -> NDArray[ScalarT]:
     """Relabel both axes of a square item-item matrix, zero-filling the new band."""
     out = np.zeros((n_new, n_new), dtype=values.dtype)
     out[np.ix_(perm, perm)] = values
@@ -174,7 +181,7 @@ def affected_item_rows(
     return np.union1d(touched_items, reachable).astype(np.intp)
 
 
-def _row_positions(starts: NDArray[Any], lengths: NDArray[Any]) -> NDArray[np.int64]:
+def _row_positions(starts: NDArray[np.integer], lengths: NDArray[np.integer]) -> NDArray[np.int64]:
     """Where each stored entry of a run of rows lands, given each row's start."""
     total = int(lengths.sum())
     if total == 0:
@@ -212,9 +219,9 @@ def replace_rows(matrix: sp.csr_array, rows: NDArray[np.intp], block: sp.csr_arr
 
 
 def _csr_from_coo(
-    rows: NDArray[Any],
-    cols: NDArray[Any],
-    data: NDArray[Any],
+    rows: NDArray[np.integer],
+    cols: NDArray[np.integer],
+    data: NDArray[np.number],
     n_rows: int,
     n_cols: int,
     n_threads: int,
@@ -242,7 +249,7 @@ def _reshaped(matrix: sp.csr_array, n_rows: int, n_cols: int) -> sp.csr_array:
     return sp.csr_array((matrix.data, matrix.indices, indptr), shape=(n_rows, n_cols))
 
 
-class IncrementalRecommenderMixin:
+class IncrementalRecommenderMixin(VectorIndexMixin):
     """Mixin giving a recommender ``partial_fit``.
 
     Subclasses declare which fitted arrays live in which code space through
@@ -260,14 +267,12 @@ class IncrementalRecommenderMixin:
     #: true only of a model whose every parameter is rebuilt by ``_partial_fit``.
     _incremental_state_: ClassVar[tuple[tuple[str, str], ...]] = ()
 
-    #: Fitted by ``BaseRecommender``, which every estimator mixing this in derives from.
-    #: Annotations only: a class attribute would be a value the estimator does not have
-    #: until it is fitted, which is what ``check_is_fitted`` reads.
-    user_ids_: NDArray[Any]
-    item_ids_: NDArray[Any]
+    #: Fitted by ``BaseRecommender``, which every estimator mixing this in derives from;
+    #: ``user_ids_``, ``item_ids_`` and ``interactions_`` are declared on the mixins it
+    #: extends. Annotations only: a class attribute would be a value the estimator does
+    #: not have until it is fitted, which is what ``check_is_fitted`` reads.
     n_users_: int
     n_items_: int
-    interactions_: sp.csr_array
 
     def partial_fit(self, X: ArrayLike, y: ArrayLike | None = None) -> Self:
         """Update the recommender from one batch of user-item interactions.
@@ -303,8 +308,11 @@ class IncrementalRecommenderMixin:
         An ``index`` is rebuilt from scratch at the end of every call, so on a model
         whose own update is cheap the graph build dominates.
         """
-        if _is_unfitted(self):
-            return self.fit(X, y)  # ty: ignore[unresolved-attribute, unsound-return-statement]
+        try:
+            check_is_fitted(self)
+        except NotFittedError:
+            # Nothing fitted yet, so this call is `fit`.
+            return self.fit(X, y)
 
         # Each estimator validates in `_fit`, which this path does not reach.
         check_params = getattr(self, "_check_params", None)
@@ -324,7 +332,7 @@ class IncrementalRecommenderMixin:
         self.n_users_ = n_users = len(self.user_ids_)
         self.n_items_ = n_items = len(self.item_ids_)
 
-        n_threads = self._build_threads()  # ty: ignore[unresolved-attribute]
+        n_threads = self._build_threads()
         delta = _csr_from_coo(user_codes, item_codes, weights, n_users, n_items, n_threads)
 
         relabelled = not (is_identity(user_perm) and is_identity(item_perm))
@@ -353,7 +361,7 @@ class IncrementalRecommenderMixin:
             touched_user_indices=np.flatnonzero(np.diff(delta.indptr)).astype(np.intp),
             touched_item_indices=np.unique(delta.indices).astype(np.intp),
         )
-        self._fit_index()  # ty: ignore[unresolved-attribute]
+        self._fit_index()
         self.n_batches_seen_ = getattr(self, "n_batches_seen_", 1) + 1
         return self
 
@@ -375,7 +383,7 @@ class IncrementalRecommenderMixin:
         for name, kind in self._incremental_state_:
             value = getattr(self, name)
             if kind == "user":
-                grown: Any = remap_dense(value, user_perm, n_users)
+                grown: NDArray[np.generic] | sp.csr_array = remap_dense(value, user_perm, n_users)
             elif kind == "item":
                 grown = remap_dense(value, item_perm, n_items)
             elif kind == "item_item":
@@ -427,17 +435,9 @@ class IncrementalRecommenderMixin:
         same factors as the last one.
         """
         rng = getattr(self, "_rng", None)
-        if rng is None:
-            rng = check_random_state(getattr(self, "random_state", None))
-            self._rng = rng
-        # `check_random_state` is untyped, so what it hands back is only known by name.
-        return rng  # ty: ignore[unsound-return-statement]
-
-
-def _is_unfitted(estimator: object) -> bool:
-    """Whether nothing has been fitted yet, so ``partial_fit`` must behave as ``fit``."""
-    try:
-        check_is_fitted(estimator)
-    except NotFittedError:
-        return True
-    return False
+        if isinstance(rng, np.random.RandomState):
+            return rng
+        # `check_random_state` is untyped; it always returns a RandomState.
+        rng = cast(np.random.RandomState, check_random_state(getattr(self, "random_state", None)))
+        self._rng = rng
+        return rng

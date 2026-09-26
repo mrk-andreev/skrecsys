@@ -1,8 +1,7 @@
 """XSimGCL: a LightGCN backbone whose contrastive views are two of its own layers."""
 
-import numbers
 from collections.abc import Iterator
-from typing import Any, ClassVar
+from typing import Annotated, ClassVar
 
 import numpy as np
 import scipy.sparse as sp
@@ -11,7 +10,10 @@ from numpy.typing import NDArray
 from torch import nn
 
 from skrecsys._typing import override
-from skrecsys.nn._base import TorchRecommender, TorchRecommenderModule, seeded_normal_
+from skrecsys.indexing import IndexSpec
+from skrecsys.nn._base import Batch, TorchRecommender, TorchRecommenderModule, seeded_normal_
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_int, check_real
 
 #: Redraw rounds for a negative that turned out to be one of the user's own items. The
 #: reference redraws until the draw is valid, which cannot terminate for a user who has
@@ -163,9 +165,7 @@ class _XSimGCLModule(TorchRecommenderModule):
         self.pair_items = pair_items.to(device)
 
     @override
-    def iter_batches(
-        self, batch_size: int, generator: torch.Generator
-    ) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Batch]:
         device = self.pair_users.device
         order = torch.randperm(len(self.pair_users), generator=generator)
         for start in range(0, len(order), batch_size):
@@ -202,7 +202,7 @@ class _XSimGCLModule(TorchRecommenderModule):
         return negatives, ~clash
 
     @override
-    def batch_loss(self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    def batch_loss(self, batch: Batch) -> torch.Tensor:
         users, items, negatives = batch
         ranking, contrastive = self.propagate(perturbed=True)
         user_view, item_view = self._split(ranking)
@@ -346,14 +346,14 @@ class XSimGCL(TorchRecommender[_XSimGCLModule]):
 
     def __init__(
         self,
-        n_factors: int = 64,
-        n_layers: int = 3,
-        contrastive_weight: float = 0.2,
+        n_factors: Annotated[int, Int(16, 256, log=True)] = 64,
+        n_layers: Annotated[int, Int(1, 4)] = 3,
+        contrastive_weight: Annotated[float, Float(1e-3, 1.0, log=True)] = 0.2,
         contrastive_layer: int = 1,
-        temperature: float = 0.2,
-        eps: float = 0.2,
-        learning_rate: float = 1e-3,
-        regularization: float = 1e-4,
+        temperature: Annotated[float, Float(0.05, 1.0, log=True)] = 0.2,
+        eps: Annotated[float, Float(0.01, 0.5, log=True)] = 0.2,
+        learning_rate: Annotated[float, Float(1e-4, 1e-2, log=True)] = 1e-3,
+        regularization: Annotated[float, Float(1e-6, 1e-2, log=True)] = 1e-4,
         max_iter: int = 100,
         batch_size: int = 2048,
         *,
@@ -364,7 +364,7 @@ class XSimGCL(TorchRecommender[_XSimGCLModule]):
         early_stopping: bool = True,
         tol: float = 1e-4,
         n_iter_no_change: int = 5,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_factors = n_factors
         self.n_layers = n_layers
@@ -438,23 +438,9 @@ class XSimGCL(TorchRecommender[_XSimGCLModule]):
     @override
     def _check_params(self) -> int:
         n_threads = self._check_torch_params()
-        if not isinstance(self.n_layers, numbers.Integral) or isinstance(self.n_layers, bool):
-            raise ValueError(f"n_layers must be an integer >= 1, got {self.n_layers!r}.")
-        if self.n_layers < 1:
-            raise ValueError(f"n_layers must be an integer >= 1, got {self.n_layers!r}.")
-        if (
-            not isinstance(self.contrastive_layer, numbers.Integral)
-            or isinstance(self.contrastive_layer, bool)
-            or not 0 <= self.contrastive_layer <= self.n_layers
-        ):
-            raise ValueError(
-                f"contrastive_layer must be an integer in [0, n_layers], "
-                f"got {self.contrastive_layer!r}."
-            )
+        n_layers = check_int(self.n_layers, "n_layers", min_value=1)
+        check_int(self.contrastive_layer, "contrastive_layer", min_value=0, max_value=n_layers)
         for name in ("contrastive_weight", "eps"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Real) or not value >= 0:
-                raise ValueError(f"{name} must be a real number >= 0, got {value!r}.")
-        if not isinstance(self.temperature, numbers.Real) or not self.temperature > 0:
-            raise ValueError(f"temperature must be a real number > 0, got {self.temperature!r}.")
+            check_real(getattr(self, name), name, min_value=0)
+        check_real(self.temperature, "temperature", min_value=0, min_inclusive=False)
         return n_threads

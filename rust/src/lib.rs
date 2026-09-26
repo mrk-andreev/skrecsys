@@ -10,7 +10,7 @@
 
 use skrecsys_kernels::{
     bpr, ease, encode, fm_als, hnsw, knn, prune, quantized, ranking, recommend, rp3beta, slim,
-    sparse, vectors,
+    sparse, tune, vectors,
 };
 
 use numpy::ndarray::Array2;
@@ -193,7 +193,8 @@ fn fm_als_fit<'py>(
 /// `positives`, when given, holds offsets into `indices` and restricts an epoch to
 /// drawing its positive from those entries. Negatives are still rejected against the
 /// user's whole row, so this trains on a subset of the interactions while knowing all
-/// of them.
+/// of them. Negatives are drawn uniformly over the items, or with `popularity_negatives`
+/// as the item of a uniformly drawn stored entry, as implicit does.
 #[pyfunction]
 #[pyo3(signature = (
     indptr,
@@ -209,6 +210,7 @@ fn fm_als_fit<'py>(
     seed,
     n_threads,
     positives = None,
+    popularity_negatives = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn bpr_fit<'py>(
@@ -226,6 +228,7 @@ fn bpr_fit<'py>(
     seed: u64,
     n_threads: usize,
     positives: Option<PyReadonlyArray1<'py, i64>>,
+    popularity_negatives: bool,
 ) -> PyResult<Vec<f64>> {
     let n_factors = user_factors.shape()[1];
     if item_factors.shape()[1] != n_factors {
@@ -286,6 +289,11 @@ fn bpr_fit<'py>(
             use_bias,
             n_iter,
             seed,
+            negatives: if popularity_negatives {
+                bpr::Negatives::Popularity
+            } else {
+                bpr::Negatives::Uniform
+            },
         };
         pool.install(|| bpr::fit(&r, positives.as_deref(), &mut model, &hyper))
     }))
@@ -1055,13 +1063,14 @@ fn recommend_call<'py>(
 /// matrix is ever built. `candidates` holds the item index of each candidate position,
 /// ascending, or is `None` for every item; a candidate the product never reaches scores
 /// zero, exactly as it did when the dense matrix was ranked. Returns candidate
-/// positions. `n_threads == 0` uses all cores.
+/// positions. `n_threads == 0` uses all cores. Exactly tied scores rank to the lower
+/// position, or as implicit's item-item recommenders rank them with `implicit_ties`.
 #[pyfunction]
 #[pyo3(signature = (
     users_indptr, users_indices, users_data, rows,
     similarity_indptr, similarity_indices, similarity_data,
     candidates, exclude_seen, k, n_threads, first_query=0,
-    excluded_indptr=None, excluded_indices=None,
+    excluded_indptr=None, excluded_indices=None, implicit_ties=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn recommend_from_similarity<'py>(
@@ -1080,6 +1089,7 @@ fn recommend_from_similarity<'py>(
     first_query: usize,
     excluded_indptr: Option<PyReadonlyArray1<'py, i64>>,
     excluded_indices: Option<PyReadonlyArray1<'py, i64>>,
+    implicit_ties: bool,
 ) -> PyResult<Ranked<'py>> {
     let similarity = fitted_csr(
         "similarity",
@@ -1120,9 +1130,22 @@ fn recommend_from_similarity<'py>(
         exclude_seen.then_some((users.indptr, users.indices)),
         extra_indptr.as_deref().zip(extra_indices),
     );
+    let ties = if implicit_ties {
+        recommend::Ties::Implicit
+    } else {
+        recommend::Ties::LowerPosition
+    };
     let parallel = rows.len() > recommend::SERIAL_QUERIES;
     recommend_call(py, rows.len(), parallel, k, n_threads, first_query, || {
-        recommend::top_k_from_similarity(&users, &rows, &similarity, candidates, &exclusions, k)
+        recommend::top_k_from_similarity(
+            &users,
+            &rows,
+            &similarity,
+            candidates,
+            &exclusions,
+            k,
+            ties,
+        )
     })
 }
 
@@ -2070,6 +2093,82 @@ fn quantized_search_sparse<'py>(
     )
 }
 
+/// Propose a value of one hyperparameter by TPE, from the history of that parameter.
+///
+/// `kind` is `"float"`, `"int"` or `"categorical"`; a categorical is proposed as the
+/// index of its choice among `n_choices`, and `low`, `high` and `log` are ignored for
+/// it. `observed[t]` is the value trial `t` used and `scores[t]` what it scored, higher
+/// being better. Below `n_startup_trials` observations the value is drawn at random.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn tune_suggest<'py>(
+    py: Python<'py>,
+    kind: &str,
+    low: f64,
+    high: f64,
+    log: bool,
+    n_choices: usize,
+    observed: PyReadonlyArray1<'py, f64>,
+    scores: PyReadonlyArray1<'py, f64>,
+    n_startup_trials: usize,
+    n_ei_candidates: usize,
+    seed: u64,
+) -> PyResult<f64> {
+    let dist = match kind {
+        "float" | "int" => {
+            if !low.is_finite() || !high.is_finite() || low > high {
+                return Err(PyValueError::new_err(format!(
+                    "bounds must be finite with low <= high, got [{low}, {high}]."
+                )));
+            }
+            let min_low = if kind == "int" {
+                1.0
+            } else {
+                f64::MIN_POSITIVE
+            };
+            if log && low < min_low {
+                return Err(PyValueError::new_err(format!(
+                    "a log-scaled {kind} needs low >= {min_low}, got {low}."
+                )));
+            }
+            if kind == "int" {
+                if low.fract() != 0.0 || high.fract() != 0.0 {
+                    return Err(PyValueError::new_err("int bounds must be integers."));
+                }
+                tune::Distribution::Int { low, high, log }
+            } else {
+                tune::Distribution::Float { low, high, log }
+            }
+        }
+        "categorical" => {
+            if n_choices == 0 {
+                return Err(PyValueError::new_err("n_choices must be at least 1."));
+            }
+            tune::Distribution::Categorical { n_choices }
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "kind must be 'float', 'int' or 'categorical', got {kind:?}."
+            )));
+        }
+    };
+    let (observed, scores) = (observed.as_slice()?, scores.as_slice()?);
+    if observed.len() != scores.len() {
+        return Err(PyValueError::new_err(
+            "observed and scores must have the same length.",
+        ));
+    }
+    if observed.iter().chain(scores).any(|v| !v.is_finite()) {
+        return Err(PyValueError::new_err("observed and scores must be finite."));
+    }
+    let config = tune::TpeConfig {
+        n_startup_trials,
+        n_ei_candidates,
+        ..tune::TpeConfig::default()
+    };
+    Ok(py.detach(|| tune::suggest(&dist, observed, scores, &config, seed)))
+}
+
 /// Whether this extension was compiled with optimizations, for benchmarks to report.
 ///
 /// Inferred from `debug_assertions`, which Cargo disables for `--release` and enables
@@ -2109,5 +2208,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rp3beta_similarity, m)?)?;
     m.add_function(wrap_pyfunction!(slim_elasticnet_weights, m)?)?;
     m.add_function(wrap_pyfunction!(slim_elasticnet_weights_from_gram, m)?)?;
+    m.add_function(wrap_pyfunction!(tune_suggest, m)?)?;
     m.add_function(wrap_pyfunction!(top_k_per_row, m)?)
 }

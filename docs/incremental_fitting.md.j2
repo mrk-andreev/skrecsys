@@ -1,0 +1,58 @@
+{#- Included by README.md.j2 after "Vector indexes", so headings start at level two. -#}
+## Incremental fitting
+
+Every recommender here also takes its interactions in batches. `partial_fit(X, y=None)` is
+`SGDClassifier`'s protocol with one deliberate difference: a batch may name users and items the
+model has never seen, and the fitted vocabularies grow to admit them. The first call is equivalent
+to `fit`.
+
+```python
+from skrecsys.recommendation import ItemKNNRecommender
+
+rec = ItemKNNRecommender().partial_fit(monday)
+rec.partial_fit(tuesday)  # new users, new items, new interactions
+rec.recommend(["u1"], n_recommendations=10)
+```
+
+What it saves is the *model* fit, not every pass over the data: accumulating `interactions_` costs
+one pass over everything stored so far whenever a new identifier renumbers the codes, and an
+`index` is rebuilt from scratch at the end of every call. What each estimator does with the batch
+differs, and its docstring says which of these it is.
+
+| Estimator | `partial_fit` reproduces `fit` on the concatenated batches | What it does |
+| --- | --- | --- |
+| `MostPopularRecommender` | yes | adds the batch to the counts |
+| `ItemKNNRecommender` | yes | recomputes the neighbour rows the batch reaches in two hops |
+| `BM25Recommender` | yes | the same, but its corpus-wide statistics usually widen that to the whole catalog |
+| `RP3Beta` | yes | the same, keeping `walk_` so the column-wise pruning pass can be redone |
+| `EASE` | yes | a Sherman-Morrison-Woodbury update of `inverse_gram_`, `O(n_items² · users touched)` instead of `O(n_items³)` |
+| `SLIMElasticNet` | no | warm-started coordinate descent on the reachable columns over an updated `gram_` |
+| `AlternatingLeastSquares` | no | resumes the ALS sweeps from the fitted parameters |
+| `BayesianPersonalizedRanking` | no | resumes the descent, drawing every positive from the batch |
+| `skrecsys.nn` models | no | resume training, rebuilding the module around the grown data and carrying the parameters and Adam's moments across |
+
+The four that say "no" are warm starts, and say so rather than hiding it: a model that resumes from
+where it stopped does not forget where that was. `EASE` and `SLIMElasticNet` keep a second matrix
+quadratic in the catalog once `partial_fit` is used.
+
+The neural models work the same way, and need no torch to be installed for any of it. A fit keeps
+its trained parameters and Adam's moments as numpy arrays rather than as a live module, so the
+usual sequence just works — including across a pickle, which is the point of streaming:
+
+```python
+import pickle
+
+from skrecsys.nn import SimpleX
+
+rec = SimpleX(n_factors=64, max_iter=20).fit(monday)
+rec.partial_fit(tuesday)  # resumes where the fit stopped
+rec = pickle.loads(pickle.dumps(rec))  # store it, reload it tomorrow
+rec.partial_fit(wednesday)  # and carry on
+```
+
+The module itself is rebuilt from the grown interaction matrix on every call, because the padded
+histories, normalized adjacency and windowed sequences it holds are functions of that matrix and
+change meaning the moment the catalog grows. A sequential model (`HSTU`, `Mamba4Rec`) additionally
+keeps `ordered_history_`, the identifiers in the order they arrived, because a CSR row is a set and
+the order within a user is the whole of what those models read — one identifier pair per stored
+interaction, roughly what `interactions_` already costs.

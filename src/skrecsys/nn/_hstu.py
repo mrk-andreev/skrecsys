@@ -9,9 +9,8 @@ of ``X`` within a user -- see :meth:`HSTU.fit`.
 """
 
 import math
-import numbers
 from collections.abc import Iterable, Iterator
-from typing import Any, ClassVar, cast
+from typing import Annotated, ClassVar, cast
 
 import numpy as np
 import torch
@@ -20,8 +19,11 @@ from torch import nn
 from torch.nn import functional as F
 
 from skrecsys._typing import override
-from skrecsys.nn._base import TorchRecommenderModule, seeded_dropout, seeded_normal_
+from skrecsys.indexing import IndexSpec
+from skrecsys.nn._base import Batch, TorchRecommenderModule, seeded_dropout, seeded_normal_
 from skrecsys.nn._sequential import PAD, SequentialRecommender
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_int, check_real
 
 __all__ = ["HSTU"]
 
@@ -214,14 +216,14 @@ class _HSTUModule(TorchRecommenderModule):
         return encoded[torch.arange(len(rows), device=encoded.device), last]
 
     @override
-    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Any]:
+    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Batch]:
         rows = self.training_rows(len(self.train_sequences))
         order = rows[torch.randperm(len(rows), generator=generator)]
         for start in range(0, len(order), batch_size):
             yield (order[start : start + batch_size],)
 
     @override
-    def batch_loss(self, batch: Any) -> torch.Tensor:
+    def batch_loss(self, batch: Batch) -> torch.Tensor:
         (rows,) = batch
         device = self.item_embedding.weight.device
         sequences = self.train_sequences[rows.to(device)].long()
@@ -376,15 +378,15 @@ class HSTU(SequentialRecommender[_HSTUModule]):
 
     def __init__(
         self,
-        n_factors: int = 50,
-        n_blocks: int = 2,
-        n_heads: int = 1,
+        n_factors: Annotated[int, Int(16, 256, log=True)] = 50,
+        n_blocks: Annotated[int, Int(1, 4)] = 2,
+        n_heads: Annotated[int, Int(1, 4)] = 1,
         head_dim: int | None = None,
         max_sequence_length: int = 200,
-        n_negatives: int = 128,
-        temperature: float = 0.05,
-        dropout: float = 0.2,
-        learning_rate: float = 1e-3,
+        n_negatives: Annotated[int, Int(16, 512, log=True)] = 128,
+        temperature: Annotated[float, Float(0.01, 1.0, log=True)] = 0.05,
+        dropout: Annotated[float, Float(0.0, 0.5)] = 0.2,
+        learning_rate: Annotated[float, Float(1e-4, 1e-2, log=True)] = 1e-3,
         regularization: float = 0.0,
         max_iter: int = 100,
         batch_size: int = 128,
@@ -396,7 +398,7 @@ class HSTU(SequentialRecommender[_HSTUModule]):
         early_stopping: bool = True,
         tol: float = 1e-4,
         n_iter_no_change: int = 5,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_factors = n_factors
         self.n_blocks = n_blocks
@@ -480,17 +482,8 @@ class HSTU(SequentialRecommender[_HSTUModule]):
     def _check_params(self) -> int:
         n_threads = self._check_torch_params()
         for name in ("n_blocks", "n_heads", "max_sequence_length", "n_negatives"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Integral) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be an integer >= 1, got {value!r}.")
-        if self.head_dim is not None and (
-            not isinstance(self.head_dim, numbers.Integral)
-            or isinstance(self.head_dim, bool)
-            or self.head_dim < 1
-        ):
-            raise ValueError(f"head_dim must be None or an integer >= 1, got {self.head_dim!r}.")
-        if not isinstance(self.temperature, numbers.Real) or not self.temperature > 0:
-            raise ValueError(f"temperature must be a real number > 0, got {self.temperature!r}.")
-        if not isinstance(self.dropout, numbers.Real) or not 0.0 <= self.dropout < 1.0:
-            raise ValueError(f"dropout must be a real number in [0, 1), got {self.dropout!r}.")
+            check_int(getattr(self, name), name, min_value=1)
+        check_int(self.head_dim, "head_dim", min_value=1, allow_none=True)
+        check_real(self.temperature, "temperature", min_value=0, min_inclusive=False)
+        check_real(self.dropout, "dropout", min_value=0, max_value=1, max_inclusive=False)
         return n_threads

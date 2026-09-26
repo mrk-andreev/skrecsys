@@ -1,17 +1,17 @@
 """Cross-validation splitters for interaction data."""
 
 from collections.abc import Iterator
-from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.model_selection import BaseCrossValidator
 from sklearn.utils import check_random_state
 
-from skrecsys._typing import override
-from skrecsys.utils.validation import check_interactions
+from skrecsys._typing import RandomStateLike, override
+from skrecsys.utils._param_validation import check_real
+from skrecsys.utils.validation import check_optionally_timed, factorize
 
-__all__ = ["WarmStartKFold"]
+__all__ = ["ColdStartSplit", "WarmStartKFold"]
 
 _MIN_SPLITS = 2
 
@@ -51,7 +51,7 @@ class WarmStartKFold(BaseCrossValidator):
     """
 
     def __init__(
-        self, n_splits: int = 5, *, shuffle: bool = False, random_state: Any = None
+        self, n_splits: int = 5, *, shuffle: bool = False, random_state: RandomStateLike = None
     ) -> None:
         if isinstance(n_splits, bool) or not isinstance(n_splits, int) or n_splits < _MIN_SPLITS:
             raise ValueError(f"n_splits must be an integer >= 2, got {n_splits!r}.")
@@ -70,7 +70,7 @@ class WarmStartKFold(BaseCrossValidator):
     ) -> Iterator[NDArray[np.intp]]:
         if X is None:
             raise ValueError("WarmStartKFold.split requires X.")
-        users, items, _ = check_interactions(X)
+        users, items, _, _ = check_optionally_timed(X)
         n_samples = len(users)
         order = np.arange(n_samples)
         if self.shuffle:
@@ -93,6 +93,104 @@ class WarmStartKFold(BaseCrossValidator):
             yield np.sort(free[folds == fold])
 
     @override
-    def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+    def get_n_splits(
+        self,
+        X: ArrayLike | None = None,
+        y: ArrayLike | None = None,
+        groups: ArrayLike | None = None,
+    ) -> int:
         """Return the number of splitting iterations."""
         return self.n_splits
+
+
+class ColdStartSplit(BaseCrossValidator):
+    """One train/test split holding out cold users and the latest rows of warm ones.
+
+    A random ``cold_users`` fraction of the users goes to the test set with every one of
+    their interactions, so a model fitted on the training set has never seen them. Every
+    other user keeps its first rows for training and gives its last ``test_size`` fraction,
+    rounded down, to the test set. Row order is read as time, as :class:`Cascade`'s
+    ``split`` reads it, so sort ``X`` by timestamp when you have one.
+
+    The test set therefore asks both questions a production recommender faces: what to
+    show a user it knows, and what to show one it has never seen.
+
+    Parameters
+    ----------
+    cold_users : float, default=0.1
+        Fraction of users held out entirely, in (0, 1), rounded down.
+    test_size : float, default=0.2
+        Fraction of every other user's interactions held out, in [0, 1). Zero keeps the
+        warm users wholly in training, so the test set is the cold users alone.
+    random_state : int, RandomState instance or None, default=None
+        Controls which users are cold.
+
+    Examples
+    --------
+    >>> from skrecsys.model_selection import ColdStartSplit
+    >>> X = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"], ["u3", "b"], ["u3", "c"]]
+    >>> train, test = next(ColdStartSplit(cold_users=0.34, test_size=0.5, random_state=0).split(X))
+    >>> test.tolist()
+    [1, 3, 4, 5]
+    """
+
+    def __init__(
+        self,
+        cold_users: float = 0.1,
+        test_size: float = 0.2,
+        *,
+        random_state: RandomStateLike = None,
+    ) -> None:
+        check_real(
+            cold_users,
+            "cold_users",
+            min_value=0,
+            max_value=1,
+            min_inclusive=False,
+            max_inclusive=False,
+        )
+        check_real(test_size, "test_size", min_value=0, max_value=1, max_inclusive=False)
+        self.cold_users = cold_users
+        self.test_size = test_size
+        self.random_state = random_state
+
+    @override
+    def _iter_test_indices(
+        self,
+        X: ArrayLike | None = None,
+        y: ArrayLike | None = None,
+        groups: ArrayLike | None = None,
+    ) -> Iterator[NDArray[np.intp]]:
+        if X is None:
+            raise ValueError("ColdStartSplit.split requires X.")
+        users, _, _, _ = check_optionally_timed(X)
+        distinct, codes = factorize(users)
+        n_cold = int(np.floor(self.cold_users * len(distinct)))
+        if n_cold == 0 or n_cold == len(distinct):
+            raise ValueError(
+                f"cold_users={self.cold_users} of {len(distinct)} users leaves "
+                f"{n_cold} cold and {len(distinct) - n_cold} warm; both must be non-empty."
+            )
+        rng = check_random_state(self.random_state)
+        cold = np.zeros(len(distinct), dtype=bool)
+        cold[rng.choice(len(distinct), size=n_cold, replace=False)] = True
+
+        order = np.argsort(codes, kind="stable")
+        counts = np.bincount(codes, minlength=len(distinct))
+        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        # A row's position among its user's rows, in the order they appear in X.
+        position = np.empty(len(codes), dtype=np.intp)
+        position[order] = np.arange(len(codes)) - np.repeat(starts, counts)
+        n_held = np.floor(self.test_size * counts).astype(np.intp)
+        latest = position >= (counts - n_held)[codes]
+        yield np.flatnonzero(cold[codes] | latest)
+
+    @override
+    def get_n_splits(
+        self,
+        X: ArrayLike | None = None,
+        y: ArrayLike | None = None,
+        groups: ArrayLike | None = None,
+    ) -> int:
+        """Return the number of splitting iterations, which is always one."""
+        return 1

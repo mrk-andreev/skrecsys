@@ -1,9 +1,7 @@
 """SLIM: one elastic-net regression per item, ported from Ferrari Dacrema's framework."""
 
-import math
-import numbers
 import warnings
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -12,7 +10,7 @@ from sklearn.exceptions import ConvergenceWarning
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import SparseSpace
+from skrecsys.indexing import IndexSpec, SparseSpace
 from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr, kernel_indices
 from skrecsys.recommendation._incremental import (
     IncrementalRecommenderMixin,
@@ -20,6 +18,8 @@ from skrecsys.recommendation._incremental import (
     remap_dense_square,
     replace_rows,
 )
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 
 class SLIMElasticNet(IncrementalRecommenderMixin, SimilarityRecommender):
@@ -120,15 +120,15 @@ class SLIMElasticNet(IncrementalRecommenderMixin, SimilarityRecommender):
 
     def __init__(
         self,
-        alpha: float = 1.0,
-        l1_ratio: float = 0.1,
-        n_neighbors: int = 100,
+        alpha: Annotated[float, Float(1e-4, 10.0, log=True)] = 1.0,
+        l1_ratio: Annotated[float, Float(1e-3, 1.0, log=True)] = 0.1,
+        n_neighbors: Annotated[int, Int(5, 1000, log=True)] = 100,
         *,
         positive: bool = True,
         max_iter: int = 100,
         tol: float = 1e-4,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.alpha = alpha
         self.l1_ratio = l1_ratio
@@ -276,28 +276,10 @@ class SLIMElasticNet(IncrementalRecommenderMixin, SimilarityRecommender):
     @override
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
-        if (
-            not isinstance(self.alpha, numbers.Real)
-            or not math.isfinite(float(self.alpha))
-            or self.alpha <= 0
-        ):
-            raise ValueError(f"alpha must be a finite real number > 0, got {self.alpha!r}.")
-        if not isinstance(self.l1_ratio, numbers.Real) or not 0 <= float(self.l1_ratio) <= 1:
-            raise ValueError(f"l1_ratio must be a real number in [0, 1], got {self.l1_ratio!r}.")
-        if not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1:
-            raise ValueError(f"n_neighbors must be an integer >= 1, got {self.n_neighbors!r}.")
-        if not isinstance(self.positive, bool):
-            raise ValueError(f"positive must be a bool, got {self.positive!r}.")
-        if not isinstance(self.max_iter, numbers.Integral) or self.max_iter < 1:
-            raise ValueError(f"max_iter must be an integer >= 1, got {self.max_iter!r}.")
-        if (
-            not isinstance(self.tol, numbers.Real)
-            or not math.isfinite(float(self.tol))
-            or self.tol <= 0
-        ):
-            raise ValueError(f"tol must be a finite real number > 0, got {self.tol!r}.")
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        check_real(self.alpha, "alpha", min_value=0, min_inclusive=False)
+        check_real(self.l1_ratio, "l1_ratio", min_value=0, max_value=1)
+        check_int(self.n_neighbors, "n_neighbors", min_value=1)
+        check_bool(self.positive, "positive")
+        check_int(self.max_iter, "max_iter", min_value=1)
+        check_real(self.tol, "tol", min_value=0, min_inclusive=False)
+        return resolve_n_jobs(self.n_jobs)

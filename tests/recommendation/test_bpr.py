@@ -32,7 +32,8 @@ def _reference_fit(est, interactions):
     """BPR as written in ``cornac/models/bpr/recom_bpr.pyx``, one triplet at a time.
 
     Initialization, triplet stream and update order all follow the kernel, so a
-    single-threaded fit must reproduce this elementwise.
+    single-threaded fit must reproduce this elementwise. Popularity negatives are drawn
+    as ``implicit/cpu/bpr.pyx`` draws them, as the item of a uniformly drawn entry.
     """
     rng = check_random_state(est.random_state)
     n_users, n_items = interactions.shape
@@ -52,7 +53,10 @@ def _reference_fit(est, interactions):
             first, second = _draw(seed, epoch * n_samples + sample)
             entry = first % n_samples
             user, item_i = user_of[entry], indices[entry]
-            item_j = second % n_items
+            if est.negative_sampling == "popularity":
+                item_j = indices[second % n_samples]
+            else:
+                item_j = second % n_items
             if item_j in indices[indptr[user] : indptr[user + 1]]:
                 continue
             used += 1
@@ -87,11 +91,17 @@ def _train_auc(est):
     return right / total if total else 0.0
 
 
+@pytest.mark.parametrize("negative_sampling", ["uniform", "popularity"])
 @pytest.mark.parametrize("use_bias", [True, False])
-def test_factors_match_the_reference_implementation(use_bias):
+def test_factors_match_the_reference_implementation(use_bias, negative_sampling):
     X, y = _counts()
     est = BayesianPersonalizedRanking(
-        n_factors=4, max_iter=5, use_bias=use_bias, random_state=0, n_jobs=1
+        n_factors=4,
+        max_iter=5,
+        use_bias=use_bias,
+        negative_sampling=negative_sampling,
+        random_state=0,
+        n_jobs=1,
     ).fit(X, y)
     factors, items, bias, curve = _reference_fit(est, est.interactions_)
     np.testing.assert_allclose(est.user_factors_, factors, rtol=1e-9)
@@ -184,7 +194,7 @@ def test_a_single_item_cannot_be_compared_with_anything():
     assert not est.auc_curve_.any()
 
 
-@pytest.mark.parametrize("n_factors", [-1, 1.5, "8", None])
+@pytest.mark.parametrize("n_factors", [-1, 1.5, "8", None, True])
 def test_invalid_n_factors_raises(n_factors):
     with pytest.raises(ValueError, match="n_factors"):
         BayesianPersonalizedRanking(n_factors=n_factors).fit(*_counts())
@@ -196,7 +206,7 @@ def test_invalid_max_iter_raises(max_iter):
         BayesianPersonalizedRanking(max_iter=max_iter).fit(*_counts())
 
 
-@pytest.mark.parametrize("learning_rate", [-0.1, "0.05", None, np.nan])
+@pytest.mark.parametrize("learning_rate", [-0.1, "0.05", None, np.nan, np.inf])
 def test_invalid_learning_rate_raises(learning_rate):
     with pytest.raises(ValueError, match="learning_rate"):
         BayesianPersonalizedRanking(learning_rate=learning_rate).fit(*_counts())
@@ -212,6 +222,26 @@ def test_invalid_regularization_raises(regularization):
 def test_invalid_use_bias_raises(use_bias):
     with pytest.raises(ValueError, match="use_bias"):
         BayesianPersonalizedRanking(use_bias=use_bias).fit(*_counts())
+
+
+def test_popularity_negatives_never_push_down_an_item_nobody_took():
+    X, y = _counts()
+    X = np.vstack([X, [[0, 99]]])  # one interaction, so item 99 is fitted but rare
+    y = np.append(y, 1.0)
+    uniform = BayesianPersonalizedRanking(max_iter=20, random_state=0).fit(X, y)
+    popular = BayesianPersonalizedRanking(
+        max_iter=20, negative_sampling="popularity", random_state=0
+    ).fit(X, y)
+    rare = np.searchsorted(popular.item_ids_, 99)
+    # Drawn as a negative about once an epoch by popularity, against nnz / n_items times
+    # uniformly, so it keeps far more of the push it gets as a positive.
+    assert popular.item_bias_[rare] > uniform.item_bias_[rare]
+
+
+@pytest.mark.parametrize("negative_sampling", ["Uniform", "popular", None, 1])
+def test_invalid_negative_sampling_raises(negative_sampling):
+    with pytest.raises(ValueError, match="negative_sampling"):
+        BayesianPersonalizedRanking(negative_sampling=negative_sampling).fit(*_counts())
 
 
 @pytest.mark.parametrize("n_jobs", [0, -2, 1.5, "all"])

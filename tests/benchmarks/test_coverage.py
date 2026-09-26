@@ -4,8 +4,10 @@ import importlib
 
 import pytest
 import spec
+from sklearn.base import BaseEstimator
 
 from skrecsys import indexing, recommendation
+from skrecsys.indexing import VectorIndex
 
 from .test_movielens_1m import SEQUENTIAL_BENCHMARKS
 from .test_movielens_100k import BENCHMARKS
@@ -77,7 +79,7 @@ def test_neural_recommender_is_in_a_readme_report(name):
 
 def _takes_an_index(entry):
     try:
-        return "index" in entry.build().get_params()
+        return "index" in entry.build(BaseEstimator).get_params()
     except ImportError:
         return None
 
@@ -106,7 +108,7 @@ def test_every_registered_index_is_in_the_report():
     It needs a decision about which dial to sweep before any of its rows mean anything,
     so registering one without adding an entry to ``indexes.json`` fails here.
     """
-    reported = {entry.build().__class__ for entry in spec.load("indexes").indexes}
+    reported = {entry.build(VectorIndex).__class__ for entry in spec.load("indexes").indexes}
     registered = {indexing.make_index(name).__class__ for name in indexing.available_indexes()}
     assert registered <= reported, (
         f"{sorted(cls.__name__ for cls in registered - reported)} is registered but has no "
@@ -121,4 +123,4 @@ def test_every_index_dial_is_a_parameter_its_index_really_has(entry):
     The measurement turns it through ``set_params``, and sklearn raises on an unknown
     parameter -- but only minutes into a real run. This catches a rename in milliseconds.
     """
-    assert entry.dial.param in entry.build().get_params()
+    assert entry.dial.param in entry.build(BaseEstimator).get_params()

@@ -15,11 +15,12 @@ from skrecsys.metrics._ranking import (
     recall_at_k,
     reciprocal_rank_at_k,
 )
-from skrecsys.metrics._scorer import make_recommender_scorer
+from skrecsys.metrics._scorer import evaluate_recommender, make_recommender_scorer
 
 __all__ = [
     "average_precision_at_k",
     "catalog_coverage_at_k",
+    "evaluate_recommender",
     "hit_rate_at_k",
     "item_popularity",
     "make_recommender_scorer",

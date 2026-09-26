@@ -24,15 +24,90 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import spec
 
 from skrecsys._typing import override
 
+if TYPE_CHECKING:
+    from leaderboard import HostFacts
+
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 FRESH, STALE, MISSING = "fresh", "stale", "missing"
+
+#: One table row as printed: column header to cell.
+Cells: TypeAlias = dict[str, str]
+
+
+class RowPayload(TypedDict):
+    """A leaderboard or sequential result: one model's quality and timing rows."""
+
+    quality: Cells
+    timing: Cells
+
+
+class SweepRow(TypedDict):
+    """One configuration of the index sweep: what it answered and what it cost."""
+
+    quality: Cells
+    cost: Cells
+
+
+class SweepPayload(TypedDict):
+    """An index sweep result, carrying the exact baseline it was measured against."""
+
+    n_items: int
+    exact: SweepRow
+    rows: list[SweepRow]
+
+
+class SeriesPayload(TypedDict):
+    """A latency or scaling result: one point per request size or catalog size."""
+
+    points: list[Cells]
+
+
+class RerankingPayload(TypedDict):
+    """A reranking result: one pipeline's quality per segment, its per-request latency,
+    and its lists for a few cold users."""
+
+    quality: list[Cells]
+    latency: list[Cells]
+    examples: list[Cells]
+
+
+class CandidatesPayload(TypedDict):
+    """A candidate generation result: one generator set's ceiling and request time, one
+    cell per budget."""
+
+    recall: Cells
+    latency: Cells
+
+
+#: What a result stores, by kind of unit.
+Payload: TypeAlias = (
+    RowPayload | SweepPayload | SeriesPayload | RerankingPayload | CandidatesPayload
+)
+
+
+class Provenance(TypedDict):
+    """Where a stored result came from: measured here, or imported from elsewhere."""
+
+    source: str
+    at: str
+
+
+class Result(TypedDict):
+    """A stored result, as :func:`write` lays it out."""
+
+    key: str
+    unit: str
+    provenance: dict[str, spec.JSON]
+    host: dict[str, spec.JSON]
+    inputs: dict[str, spec.JSON]
+    payload: dict[str, spec.JSON]
 
 
 @dataclass(frozen=True)
@@ -44,7 +119,7 @@ class Unit:
     model: str
     #: What the result depends on. Not part of the unit's identity: a unit is where its
     #: result lives, and the inputs are what that result is currently checked against.
-    inputs: Mapping[str, Any] = field(compare=False, hash=False)
+    inputs: Mapping[str, spec.JSON] = field(compare=False, hash=False)
 
     @property
     def key(self) -> str:
@@ -80,12 +155,40 @@ class IndexUnit(Unit):
         return f"{super().label}/{self.index}/{self.kind}"
 
 
-def read(unit: Unit) -> dict[str, Any] | None:
+def read(unit: Unit) -> Result | None:
     """The stored result of ``unit``, or ``None`` when it has never been measured."""
     try:
-        return json.loads(unit.path.read_text(encoding="utf-8"))
+        text = unit.path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    # Written by `write` alone, so its layout is known; which payload it holds is for
+    # the reader below that matches the unit's kind to say.
+    return cast(Result, spec.parse_json(text))
+
+
+def row_payload(result: Result) -> RowPayload:
+    """The payload of a leaderboard or sequential result."""
+    return cast(RowPayload, result["payload"])
+
+
+def reranking_payload(result: Result) -> RerankingPayload:
+    """The payload of a reranking result."""
+    return cast(RerankingPayload, result["payload"])
+
+
+def candidates_payload(result: Result) -> CandidatesPayload:
+    """The payload of a candidate generation result."""
+    return cast(CandidatesPayload, result["payload"])
+
+
+def sweep_payload(result: Result) -> SweepPayload:
+    """The payload of an index sweep result."""
+    return cast(SweepPayload, result["payload"])
+
+
+def series_payload(result: Result) -> SeriesPayload:
+    """The payload of an index latency or scaling result."""
+    return cast(SeriesPayload, result["payload"])
 
 
 def state(unit: Unit) -> str:
@@ -98,11 +201,11 @@ def state(unit: Unit) -> str:
 
 def write(
     unit: Unit,
-    payload: Mapping[str, Any],
+    payload: Payload,
     *,
-    host: Mapping[str, Any],
-    provenance: Mapping[str, Any] | None = None,
-    inputs: Mapping[str, Any] | None = None,
+    host: HostFacts | Mapping[str, spec.JSON],
+    provenance: Provenance | None = None,
+    inputs: Mapping[str, spec.JSON] | None = None,
 ) -> Path:
     """Store ``payload`` as ``unit``'s result, under the key of ``inputs``.
 

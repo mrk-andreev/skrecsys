@@ -1,7 +1,6 @@
 """Item-based k-nearest-neighbor collaborative filtering."""
 
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -9,13 +8,15 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import SparseSpace
+from skrecsys.indexing import IndexSpec, SparseSpace
 from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr, kernel_indices
 from skrecsys.recommendation._incremental import (
     IncrementalRecommenderMixin,
     affected_item_rows,
     replace_rows,
 )
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_int, check_real, resolve_n_jobs
 
 
 class ItemKNNRecommender(IncrementalRecommenderMixin, SimilarityRecommender):
@@ -75,10 +76,10 @@ class ItemKNNRecommender(IncrementalRecommenderMixin, SimilarityRecommender):
 
     def __init__(
         self,
-        n_neighbors: int | None = 50,
-        shrink: float = 0.0,
+        n_neighbors: Annotated[int | None, Int(5, 1000, log=True)] = 50,
+        shrink: Annotated[float, Float(0.0, 500.0)] = 0.0,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.shrink = shrink
@@ -151,14 +152,6 @@ class ItemKNNRecommender(IncrementalRecommenderMixin, SimilarityRecommender):
     @override
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
-        if self.n_neighbors is not None and (
-            not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1
-        ):
-            raise ValueError(f"n_neighbors must be None or >= 1, got {self.n_neighbors!r}.")
-        if not isinstance(self.shrink, numbers.Real) or self.shrink < 0:
-            raise ValueError(f"shrink must be >= 0, got {self.shrink!r}.")
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        check_int(self.n_neighbors, "n_neighbors", min_value=1, allow_none=True)
+        check_real(self.shrink, "shrink", min_value=0)
+        return resolve_n_jobs(self.n_jobs)

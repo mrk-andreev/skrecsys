@@ -23,17 +23,16 @@ pub fn all_pairs_top_k(w: &Csr, k: usize) -> CsrOwned {
 /// by the rows it skips and no more.
 pub fn all_pairs_top_k_rows(w: &Csr, k: usize, rows: Option<&[usize]>) -> CsrOwned {
     let items = Csc::from_csr(w);
-    let init = || (Accumulator::new(w.n_cols), BinaryHeap::with_capacity(k + 1));
-    let fill = |(acc, heap): &mut (Accumulator, BinaryHeap<Reverse<Entry>>),
-                i: usize,
-                out: &mut Vec<(usize, f64)>| {
-        for (u, w1) in items.column(i) {
-            for p in w.indptr[u]..w.indptr[u + 1] {
-                acc.add(w.col(p), w.data[p] * w1);
+    let init = || (Accumulator::new(w.n_cols), ImplicitTopK::new(k));
+    let fill =
+        |(acc, top): &mut (Accumulator, ImplicitTopK), i: usize, out: &mut Vec<(usize, f64)>| {
+            for (u, w1) in items.column(i) {
+                for p in w.indptr[u]..w.indptr[u + 1] {
+                    acc.add(w.col(p), w.data[p] * w1);
+                }
             }
-        }
-        drain_top_k(acc, heap, k, out);
-    };
+            drain_top_k(acc, top, out);
+        };
     match rows {
         Some(rows) => CsrOwned::build_rows(rows, init, fill),
         None => CsrOwned::build(w.n_cols, init, fill),
@@ -113,35 +112,56 @@ pub(crate) fn keep_best(out: &mut Vec<(usize, f64)>, from: usize, k: usize) {
 /// Select the top `k` accumulated entries, sorted by index, and reset the accumulator.
 ///
 /// implicit walks a linked list whose head is the most recently touched index, so
-/// candidates arrive in reverse first-touch order. A candidate enters when fewer than
-/// `k` are kept or its score beats the smallest kept score; the evicted entry is the
-/// smallest `(score, index)` pair.
-fn drain_top_k(
-    acc: &mut Accumulator,
-    heap: &mut BinaryHeap<Reverse<Entry>>,
-    k: usize,
-    out: &mut Vec<(usize, f64)>,
-) {
-    heap.clear();
+/// candidates arrive in reverse first-touch order.
+fn drain_top_k(acc: &mut Accumulator, top: &mut ImplicitTopK, out: &mut Vec<(usize, f64)>) {
     for &index in acc.touched().iter().rev() {
-        let score = acc.get(index);
-        let admit = match heap.peek() {
-            _ if heap.len() < k => true,
-            Some(Reverse(min)) => score > min.score,
-            None => false,
-        };
-        if admit {
-            if heap.len() >= k {
-                heap.pop();
-            }
-            heap.push(Reverse(Entry { score, index }));
-        }
+        top.offer(index, acc.get(index));
     }
     acc.reset();
 
     let before = out.len();
-    out.extend(heap.drain().map(|Reverse(e)| (e.index, e.score)));
+    out.extend(top.drain());
     out[before..].sort_unstable_by_key(|&(index, _)| index);
+}
+
+/// implicit's `TopK` functor: the `k` best of the entries offered, in offer order.
+///
+/// A candidate enters when fewer than `k` are kept or its score beats the smallest kept
+/// score, and the evicted entry is the smallest `(score, index)` pair. A tie at the
+/// cutoff therefore goes to whichever tied entry was offered first, which is why the
+/// callers reproduce implicit's offer order as well.
+pub(crate) struct ImplicitTopK {
+    heap: BinaryHeap<Reverse<Entry>>,
+    k: usize,
+}
+
+impl ImplicitTopK {
+    pub(crate) fn new(k: usize) -> Self {
+        Self {
+            heap: BinaryHeap::with_capacity(k + 1),
+            k,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn offer(&mut self, index: usize, score: f64) {
+        let admit = match self.heap.peek() {
+            _ if self.heap.len() < self.k => true,
+            Some(Reverse(min)) => score > min.score,
+            None => false,
+        };
+        if admit {
+            if self.heap.len() >= self.k {
+                self.heap.pop();
+            }
+            self.heap.push(Reverse(Entry { score, index }));
+        }
+    }
+
+    /// The kept `(index, score)` entries in no particular order, leaving it empty.
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.heap.drain().map(|Reverse(e)| (e.index, e.score))
+    }
 }
 
 /// `std::pair<double, int>` ordering: by score, then by index.

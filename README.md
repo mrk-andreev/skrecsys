@@ -48,17 +48,43 @@ extension, so installing needs no Rust toolchain; they are built against the sta
 which means one wheel per platform covers every supported interpreter. Building from a
 source checkout needs a Rust toolchain and [maturin](https://www.maturin.rs/).
 
-Two optional extras add dependencies the core does not need:
+Five optional extras add dependencies the core does not need:
 
 ```sh
-pip install skrecsys[pandas]   # `as_frame=True` on the dataset loaders
-pip install skrecsys[nn]       # PyTorch, for the recommenders in `skrecsys.nn`
+pip install skrecsys[pandas]     # `as_frame=True` on the dataset loaders
+pip install skrecsys[nn]         # PyTorch, for the recommenders in `skrecsys.nn`
+pip install skrecsys[catboost]   # CatBoost, for `skrecsys.integrations.catboost.CatBoostRanker`
+pip install skrecsys[xgboost]    # XGBoost, for `skrecsys.integrations.xgboost.XGBRanker`
+pip install skrecsys[lightgbm]   # LightGBM, for `skrecsys.integrations.lightgbm.LGBMRanker`
 ```
 
 `skrecsys.nn` raises an `ImportError` naming the extra when torch is missing; everything
 else works without it. Torch is needed to *fit* a neural recommender, not to use one: a
 fitted model holds nothing but numpy arrays, so it scores, pickles and unpickles in an
 environment that has no torch installed.
+
+## Notebooks
+
+Explanatory examples live in `notebooks/` as [marimo](https://docs.marimo.io) notebooks, with
+their own dependency group. Read them in order:
+
+1. `01_intro_to_recommendations.py`: feedback types, collaborative filtering, metrics, baselines
+   and evaluation;
+2. `02_model_selection_and_tuning.py`: `GridSearchCV`, `AutoTune`, `Study` and time-aware splits;
+3. `03_candidates_and_ranking.py`: two-stage recommenders with `Cascade`, and cold start with
+   `Switch`;
+4. `04_production.py`: pickled models, `partial_fit`, request-time controls and vector indexes;
+5. `05_sequential_and_neural.py`: next-item prediction with `skrecsys.nn` (needs `--extra nn`);
+6. `06_time_aware_recommendation.py`: time-based evaluation and tuning, recency weighting,
+   point-in-time features with `Cascade(time=True)`, and bitemporal data.
+
+Each notebook ends with self-check questions.
+
+```sh
+uv run --group notebooks marimo edit notebooks/01_intro_to_recommendations.py  # open in the browser
+uv run --group notebooks python notebooks/01_intro_to_recommendations.py       # run as a script
+uv run --group notebooks --extra nn marimo edit notebooks/05_sequential_and_neural.py
+```
 
 ## Usage
 
@@ -146,6 +172,615 @@ search = GridSearchCV(
 ).fit(X)
 ```
 
+A quality report usually needs several metrics at several cutoffs. `evaluate_recommender` asks
+for one ranking of `max(k)` items per user and computes every metric at every cutoff from it.
+Given lists, `make_recommender_scorer` does the same inside scikit-learn: it becomes a
+multi-metric scorer.
+
+```python
+from sklearn.model_selection import cross_validate
+
+from skrecsys.metrics import evaluate_recommender, hit_rate_at_k, recall_at_k
+
+train, test = next(WarmStartKFold(n_splits=5, shuffle=True, random_state=0).split(X))
+rec = ItemKNNRecommender().fit(X[train])
+evaluate_recommender(
+    rec, X[test], metrics=[ndcg_at_k, recall_at_k, hit_rate_at_k], k=[10, 50, 100]
+)  # {"ndcg@10": ..., "ndcg@50": ..., ..., "hit_rate@100": ...}
+
+scores = cross_validate(
+    ItemKNNRecommender(),
+    X,
+    cv=WarmStartKFold(n_splits=5, shuffle=True, random_state=0),
+    scoring=make_recommender_scorer([ndcg_at_k, recall_at_k], k=[10, 100]),
+)  # scores["test_ndcg@10"], scores["test_recall@100"], ...
+```
+
+With a multi-metric scorer, `GridSearchCV` must be told which score to select by, for instance
+`refit="ndcg@10"`.
+
+## Composing recommenders
+
+`skrecsys.compose` builds pipelines out of recommenders, the way `sklearn.pipeline` builds them out
+of transformers. Every composite is itself a recommender, so composites nest, clone, pickle and
+take part in a grid search through nested parameters such as `on_true__ranker__iterations`.
+
+There are two composites, `Switch` and `Cascade`, and three kinds of primitive they are built
+from: conditions, feature components and rankers. Each primitive is a small estimator that can be
+fitted and called on its own, which is the easiest way to see what it does.
+
+### Conditions
+
+A condition is fitted on interactions and then answers, for a batch of queries, which of them it
+holds for. `evaluate` returns a boolean array with one entry per query:
+
+```python
+from skrecsys.compose import KnownUser, MinInteractions, QueryIn
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "b"], ["u2", "c"], ["u3", "c"], ["u3", "a"], ["u3", "d"]]
+
+KnownUser().fit(X).evaluate(["u1", "new"])  # -> [True, False]
+MinInteractions(3).fit(X).evaluate(["u1", "u3", "new"])  # -> [False, True, False]
+QueryIn(["u2", "new"]).fit(X).evaluate(["u1", "u2", "new"])  # -> [False, True, True]
+```
+
+`KnownUser` holds for users seen in `fit`; `MinInteractions(n)` for users with at least `n` rows
+(a user never seen has none); `QueryIn(ids)` for an explicit list, such as an experiment cohort,
+whether or not those identifiers were seen. Conditions combine with `~`, `&` and `|`, which build
+`Not`, `AllOf` and `AnyOf`:
+
+```python
+known, cohort = KnownUser(), QueryIn(["u2", "new"])
+
+(known & ~cohort).fit(X).evaluate(["u1", "u2", "new"])  # -> [True, False, False]
+(known | cohort).fit(X).evaluate(["u1", "u2", "new"])  # -> [True, True, True]
+```
+
+### Features
+
+A feature component turns candidate pairs, an array of shape `(n_pairs, 2)` laid out like the `X`
+of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None)`. The
+`scores` are what the candidate generator gave each pair.
+
+```python
+import numpy as np
+
+from skrecsys.compose import (
+    ConcatFeatures,
+    GeneratorScores,
+    JoinDynamicFeatures,
+    JoinStaticFeatures,
+)
+
+item_table = np.array([["a", 1.0, 10.0], ["b", 2.0, 20.0]], dtype=object)  # column 0 the id
+
+# a fixed table keyed by user or item; an identifier the table lacks gets NaN
+join = JoinStaticFeatures("item", item_table).fit()
+join.transform([["u1", "b"], ["u1", "z"]])  # -> [[2., 20.], [nan, nan]]
+# JoinStaticFeatures("item", item_table, missing="error") raises a ValueError there instead
+
+
+# features that live elsewhere, fetched on demand: one call per transform, with the distinct ids
+def name_length(ids):
+    return np.array([[len(i)] for i in ids], dtype=float)
+
+
+JoinDynamicFeatures("user", name_length, n_features=1).fit().transform([["ann", "a"], ["bo", "a"]])
+# -> [[3.], [2.]]
+
+
+# a tuple of kinds asks about the distinct combinations: rows of shape (n_distinct, 2) here,
+# the columns in the order of the tuple
+def same_initial(pairs):
+    return np.array([[u[0] == i[0]] for u, i in pairs], dtype=float)
+
+
+JoinDynamicFeatures(("user", "item"), same_initial).fit().transform([["ann", "a"], ["bo", "a"]])
+# -> [[1.], [0.]]
+
+
+# a key may include the time a pair is ranked as of -- "time", "item-time", "user-item-time",
+# or the same as a tuple -- which a Cascade constructed with time=True puts in a third column
+# of the pairs; NaN (or NaT) asks for the latest value. See "Time" under Cascade.
+def price(keys):  # keys: rows of (item, time)
+    return np.where(np.isnan(keys[:, 1]) | (keys[:, 1] > 5), 2.0, 1.0)
+
+
+JoinDynamicFeatures("item-time", price).fit().transform(np.array([[1, 7, 3], [2, 7, np.nan]]))
+# -> [[1.], [2.]]
+
+# the generator's own score, which nearly every ranker wants
+GeneratorScores().fit().transform([["u1", "a"]], scores=[0.5])  # -> [[0.5]]
+```
+
+Three components learn from the interactions they are fitted on, which inside a `Cascade` are
+the rows the generator was fitted on, never the held-out ones:
+
+```python
+from skrecsys.compose import InteractionCounts, RecommenderScores, SegmentPopularity
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"]]
+
+# how much history the pair's user or item has; an unseen identifier counts zero
+InteractionCounts("item").fit(X).transform([["u9", "a"], ["u9", "z"]])  # -> [[2.], [0.]]
+
+# a second model's opinion of the pair; NaN where it has not seen the user or the item
+RecommenderScores(ItemKNNRecommender()).fit(X).transform([["u1", "c"], ["new", "c"]])
+# -> [[0.707], [nan]]
+
+# how popular the item is among users of the pair's user's segment, and that share over
+# the global one: the one signal a cold user has, as long as the table lists them
+segments = np.array([["u1", "kid"], ["u2", "adult"], ["new", "kid"]], dtype=object)
+SegmentPopularity(segments, smoothing=0.0).fit(X).transform([["new", "b"]])  # -> [[1., 2.]]
+```
+
+`ConcatFeatures` puts components side by side, as `FeatureUnion` does. Give the components names to
+address their parameters as `name__param` and to prefix the feature names:
+
+```python
+both = ConcatFeatures(
+    [("item", JoinStaticFeatures("item", item_table)), ("gen", GeneratorScores())]
+).fit()
+both.transform([["u1", "b"], ["u1", "a"]], scores=[0.5, 0.25])
+# -> [[2., 20., 0.5], [1., 10., 0.25]]
+both.get_feature_names_out()  # -> ["item__item_feature_0", "item__item_feature_1", "gen__generator_score"]
+both.set_params(item__missing="error")
+```
+
+`JoinDynamicFeatures` has to be picklable for the recommender to be: pass a module-level function
+or a callable object, not a lambda. Its features are named after `kind`: `user_feature_0`,
+`item_feature_0`, `user_item_feature_0` for `("user", "item")`, or `item_time_feature_0` for
+`"item-time"`. Tables may be DataFrames, whose column names become the
+feature names; pandas is never imported.
+
+### Rankers
+
+A ranker learns to order the candidates of each query. `fit(F, y, *, groups)` takes the feature
+matrix `F`, a relevance label per row, and `groups`, the number of consecutive rows that belong
+to each query; `predict(F, *, groups)` returns one score per row, higher meaning better.
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+from skrecsys.compose import PointwiseRanker
+
+# three queries with two candidates each, the second of each pair relevant
+F = np.array([[0.0], [1.0], [0.2], [0.9], [0.1], [0.8]])
+ranker = PointwiseRanker(LogisticRegression()).fit(F, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2])
+ranker.predict([[0.1], [0.8], [0.9], [0.2]], groups=[2, 2])  # -> [0.40, 0.57, 0.60, 0.43]
+```
+
+`BlendRanker` combines several rankers. Their scores are on unrelated scales, so each ranker's
+scores are first normalized within every query: percentile ranks by default, or `"zscore"`. The
+blender is then learned from *out-of-fold* scores. `fit` splits the queries into `cv` folds, fits
+every ranker on all but one fold, scores the fold it left out, and fits the blender (a logistic
+regression by default, or any ranker) on those scores. Only then does it refit every ranker on
+all rows. A blender fitted on in-sample scores would learn to trust whichever ranker overfits
+most. `blender=None` skips the learning and returns the `weights`-weighted mean of the
+normalized scores:
+
+```python
+from sklearn.tree import DecisionTreeClassifier
+
+from skrecsys.compose import BlendRanker
+
+F2 = np.column_stack([F[:, 0], 1 - F[:, 0]])
+blend = BlendRanker(
+    [
+        ("linear", PointwiseRanker(LogisticRegression())),
+        ("tree", PointwiseRanker(DecisionTreeClassifier(max_depth=2))),
+    ],
+    cv=3,
+    random_state=0,
+).fit(F2, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2])
+blend.set_params(tree__estimator__max_depth=3)  # nested parameters, as in ConcatFeatures
+```
+
+With `skrecsys.integrations` it blends gradient-boosting libraries. The
+[reranking benchmark](#reranking-benchmark) measures a blend of CatBoost, XGBoost and LightGBM
+against each of them on their own.
+
+`PointwiseRanker` wraps any scikit-learn classifier or regressor and scores every pair on its own,
+ignoring `groups`. `GroupRanker` wraps an estimator whose `fit` takes group sizes, such as
+`LGBMRanker` or `XGBRanker`, and passes them under `group_param` (default `"group"`).
+`skrecsys.integrations` provides `CatBoostRanker`, `XGBRanker` and `LGBMRanker` that already speak
+this protocol. Estimators that handle NaN, such as `HistGradientBoostingClassifier`, take missing
+joined features as they are.
+
+### Switch
+
+`Switch(condition, on_true, on_false)` serves each query with `on_true` where the condition
+holds and with `on_false` elsewhere. The usual use is cold start: a personalized model for the
+users it knows and a popularity baseline for everyone else. The condition and both branches are
+fitted on the same interactions, and a branch may be a composite itself.
+
+```python
+from skrecsys.compose import KnownUser, Switch
+from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+
+rec = Switch(KnownUser(), ItemKNNRecommender(), MostPopularRecommender()).fit(X)
+rec.recommend(["u3", "new-user"], n_recommendations=1)[0]  # -> [["b"], ["a"]]
+```
+
+Scores come from whichever branch served the row, so they compare within a row but not across
+rows. `MostPopularRecommender` serves users it has never seen, which is what makes it the natural
+`on_false`; a query routed to a branch that cannot serve it raises there.
+
+### Cascade
+
+`Cascade(generator, features, ranker)` is a two-stage recommender. `recommend` asks the generator
+for `n_retrieved` candidates per query, turns each candidate pair into a row of `features`, and
+returns the `n_recommendations` the ranker scores highest:
+
+```python
+from skrecsys.compose import Cascade
+
+X = [[u, i] for u in range(20) for i in (u % 5, u % 5 + 1, u % 5 + 2)]
+rec = Cascade(
+    ItemKNNRecommender(),
+    GeneratorScores(),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=3,
+    split=0.4,
+).fit(X)
+items, scores = rec.recommend([0], n_recommendations=2)
+```
+
+`Cascade.fit` never lets the ranker learn from interactions the generator was fitted on. It holds
+out the last `split` fraction of each user's rows (row order is read as time, so sort by timestamp),
+fits a generator on the rest, and labels its candidates for the held-out users by whether they were
+held out. Only then does it refit the generator on everything, for serving. `split` also takes any
+scikit-learn splitter. A query with fewer eligible items than `n_retrieved` gets all of them as
+candidates rather than an error.
+
+A splitter that holds out a user's rows entirely, such as
+`skrecsys.model_selection.ColdStartSplit`, trains a cold-start ranker, as long as the generator
+can serve a user it has never seen — `MostPopularRecommender` can. The ranker then learns from
+candidate lists exactly as a cold user is served them, rather than from those of warm users whose
+own history has been filtered out:
+
+```python
+from skrecsys.model_selection import ColdStartSplit
+
+cold = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), SegmentPopularity(segments)]),
+    PointwiseRanker(LogisticRegression()),
+    split=ColdStartSplit(cold_users=0.2, test_size=0.0, random_state=0),
+)
+```
+
+#### Time
+
+Features that change -- a price, a stock level, an item's click-through over the last week -- leak
+into the ranker if they are joined as they are today: the held-out interactions the ranker learns
+from happened in the past, when those values were different, and the ranker learns to trust
+values it will not have when serving. Construct the cascade with `time=True` and give `X` a third
+column, the time of each interaction, as a number (Unix seconds, say) or a `datetime64`; a
+DataFrame's datetime column works as it is. Then:
+
+- the float `split` holds out each user's *latest* interactions by time, not by row order;
+- the generators still see `[user, item]`, and the features see `[user, item, time]`;
+- each held-out user's candidates are featurized as of that user's earliest held-out
+  interaction -- what they would have been shown just before it -- so a
+  `JoinDynamicFeatures` keyed by time can return what was known then;
+- `recommend(..., as_of=...)` ranks as of a time, one for all queries or one per query, to
+  replay what would have been served; without it, as when serving, the time is missing and
+  the features are the latest.
+
+```python
+def price_as_of(keys):  # rows of (item, time); a feature store's point-in-time lookup
+    ...  # the latest price recorded strictly before each time, the current one where NaN
+
+
+X_timed = np.column_stack([X, timestamps])  # [user, item, time]
+rec = Cascade(
+    ItemKNNRecommender(),
+    ConcatFeatures([JoinDynamicFeatures("item-time", price_as_of), GeneratorScores()]),
+    PointwiseRanker(LogisticRegression()),
+    time=True,
+).fit(X_timed)
+rec.recommend(users)  # serving: the latest prices
+rec.recommend(users, as_of=last_monday)  # a backtest: the prices then
+```
+
+A recommender uses time only when it is asked to, so a stray third column -- a rating, say -- is
+an error everywhere else. `Switch(..., time=True)` hands the time to a branch that uses it and
+`[user, item]` to the other one and the condition; `make_recommender_scorer` and
+`evaluate_recommender` rank a timed recommender as of each user's earliest held-out time, which
+makes cross-validation and `AutoTune` of a timed cascade leak-free too.
+
+#### Several generators
+
+`generator` also takes a list, bare or as `(name, recommender)` tuples like `ConcatFeatures`. Each
+generator retrieves up to `n_retrieved` items per query. Their lists are interleaved round-robin
+by rank, an item already proposed is skipped, and each query keeps the first `n_retrieved` distinct
+items, so `n_retrieved` is the budget after merging. The generator scores then have one column per
+generator, in list order. A generator scores a candidate it did not retrieve with `predict`, and
+gets NaN where it cannot, such as for a user it has never seen. A generator that cannot serve
+unknown users is asked only about the users it knows, so one list covers warm and cold users alike:
+
+```python
+from sklearn.ensemble import HistGradientBoostingClassifier
+
+rec = Cascade(
+    [ItemKNNRecommender(), MostPopularRecommender()],
+    GeneratorScores(n_generators=2),  # generator_score_0, generator_score_1
+    PointwiseRanker(HistGradientBoostingClassifier()),  # handles the NaN of cold users
+    n_retrieved=100,
+)
+```
+
+Nested parameters address a generator by name: `generator__itemknnrecommender__n_neighbors`.
+
+#### Business rules
+
+The ranker learns what users will interact with. A product usually has the last word on top of
+that: an item out of stock must not be shown, a campaign item goes first, no more than three
+items of one category. `Cascade(..., postprocess=callback)` gives those rules a place inside the
+recommender, so they are pickled, cloned, tuned and evaluated along with it.
+
+The callback is a black box on the ranked lists: `postprocess(pairs, scores, groups)` returns
+`(pairs, scores, groups)` in the same layout. It receives *every* candidate of each query, best
+first by the ranker: `pairs` as the features see them (`[user, item]`, or `[user, item, time]`
+under `time=True`), the ranker's `scores`, and `groups`, the length of each query's list. It may
+reorder the lists, drop items, or add items that were never candidates, with scores of its
+choosing. `recommend` then serves the first `n_recommendations` of each list it returns:
+
+```python
+IN_STOCK = np.arange(0, 1000, 2)  # stand-ins for a stock service and a campaign
+CAMPAIGN = np.array([42])
+
+
+def business_rules(pairs, scores, groups):
+    """Drop what is out of stock and put campaign items first."""
+    group_of_row = np.repeat(np.arange(len(groups)), groups)
+    keep = np.isin(pairs[:, 1], IN_STOCK)
+    pairs, scores, group_of_row = pairs[keep], scores[keep], group_of_row[keep]
+    # a stable sort by (query, not in campaign) keeps the ranker's order within each tier
+    order = np.lexsort((~np.isin(pairs[:, 1], CAMPAIGN), group_of_row))
+    return pairs[order], scores[order], np.bincount(group_of_row, minlength=len(groups))
+
+
+rec = Cascade(
+    ItemKNNRecommender(),
+    GeneratorScores(),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=100,  # room for what the rules drop
+    postprocess=business_rules,
+).fit(X)
+```
+
+A cap per category is a rule of the same shape, using the rank of each item within its query and
+category:
+
+```python
+def at_most_3_per_genre(pairs, scores, groups):
+    group_of_row = np.repeat(np.arange(len(groups)), groups)
+    genre = genre_of(pairs[:, 1])  # your lookup: one category code per item
+    # rows sorted by (query, genre), stable, so each run keeps the ranker's order
+    order = np.lexsort((genre, group_of_row))
+    key = group_of_row[order] * (genre.max() + 1) + genre[order]
+    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]])
+    rank = np.arange(len(order)) - np.repeat(starts, np.diff(np.r_[starts, len(order)]))
+    keep = np.zeros(len(pairs), dtype=bool)
+    keep[order[rank < 3]] = True
+    return pairs[keep], scores[keep], np.bincount(group_of_row[keep], minlength=len(groups))
+```
+
+The callback runs in `recommend` alone. `fit` trains the ranker without it, since the ranker
+should learn relevance rather than policy, and `predict` returns the ranker's scores. Because
+`make_recommender_scorer` and `evaluate_recommender` call `recommend`, evaluation and tuning do
+measure the rules, and they show what a policy costs in accuracy. `Cascade` raises a
+`ValueError` when:
+
+- a query is left with fewer than `n_recommendations` items, so size `n_retrieved` with room
+  for what the rules drop;
+- the callback moves rows between queries or changes the number of queries;
+- the callback returns NaN scores.
+
+The callback runs once per block of queries, so it must not assume it sees them all at once.
+For the cascade to pickle, it must be a module-level function or a picklable callable object,
+as with `JoinDynamicFeatures`.
+
+### Reciprocal rank fusion
+
+Reciprocal rank fusion (RRF) combines ranked lists by rank alone: a candidate scores
+`sum(weight / (k + rank))` over the lists that hold it, its rank counting from 1, and a list that
+does not hold it adds nothing. Only ranks enter the sum, so models whose scores live on unrelated
+scales combine without normalization, and nothing is trained. `k` (60 by default, as in the
+original paper) flattens the advantage of the top ranks; `weights` sets how much each list counts.
+It comes in both shapes a composite takes, so it works outside a `Cascade` and inside one.
+
+`ReciprocalRankFusion` is a recommender. Each of its recommenders retrieves `n_retrieved` items
+per query and the fused top of those lists is recommended, so it stands anywhere a recommender
+does: on its own, as a `Switch` branch, or as the generator of a `Cascade`. As in a list of
+generators, a recommender that cannot serve unknown users is asked only about the users it knows:
+
+```python
+from skrecsys.compose import ReciprocalRankFusion
+from skrecsys.recommendation import EASE, BM25Recommender
+
+fusion = ReciprocalRankFusion(
+    [("bm25", BM25Recommender()), ("ease", EASE()), ("popular", MostPopularRecommender())],
+    weights=[1.0, 1.0, 0.5],
+).fit(X)
+fusion.recommend(["u1", "someone-new"], n_recommendations=2)  # the new user gets popular items
+fusion.set_params(ease__l2_reg=100.0)  # nested parameters, as in BlendRanker
+```
+
+`ReciprocalRankRanker` is a ranker, for `Cascade(ranker=...)`. Without `rankers` it reads every
+feature column as a score, higher meaning better, and fuses the columns' ranks within each query:
+a second stage with nothing to learn, which suits features such as `GeneratorScores` and
+`RecommenderScores`. A NaN feature does not rank its row. With `rankers`, it fits each ranker on
+all rows once and fuses their ranks, the untrained counterpart of `BlendRanker` with no
+out-of-fold refits:
+
+```python
+from skrecsys.compose import ReciprocalRankRanker
+
+ReciprocalRankRanker(k=1).fit(F2, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2]).predict(
+    [[0.9, 0.1], [0.2, 0.8]], groups=[2]
+)  # -> [0.83, 0.83]: each column ranks a different row first
+
+rec = Cascade(
+    BM25Recommender(),
+    ConcatFeatures([GeneratorScores(), RecommenderScores(EASE())]),
+    ReciprocalRankRanker(),
+    n_retrieved=100,
+)
+```
+
+The [reranking benchmark](#reranking-benchmark) measures both against the rankers above, and the
+[candidate generation benchmark](#candidate-generation-benchmark) compares fusion with
+round-robin as a way to merge generators.
+
+### Putting it together
+
+The composites nest. This one serves known users with a BM25 candidate generator and a CatBoost
+ranker over user, item and generator-score features, and everyone else with the most popular
+items. The [reranking benchmark](#reranking-benchmark) measures a fuller version of it against
+the same switch without the rankers, for warm and cold users:
+
+```python
+from skrecsys.compose import (
+    Cascade,
+    ConcatFeatures,
+    GeneratorScores,
+    JoinStaticFeatures,
+    KnownUser,
+    Switch,
+)
+from skrecsys.integrations.catboost import CatBoostRanker  # pip install skrecsys[catboost]
+from skrecsys.recommendation import BM25Recommender, MostPopularRecommender
+
+rec = Switch(
+    condition=KnownUser(),
+    on_true=Cascade(
+        generator=BM25Recommender(),
+        features=ConcatFeatures(
+            [
+                JoinStaticFeatures("user", user_table),  # column 0 the id, then the features
+                JoinStaticFeatures("item", item_table),
+                GeneratorScores(),
+            ]
+        ),
+        ranker=CatBoostRanker(),
+        n_retrieved=100,
+    ),
+    on_false=MostPopularRecommender(),
+).fit(X)
+rec.recommend(["u1", "someone-new"], n_recommendations=10)
+```
+
+The parts play five roles, each a small protocol:
+
+| Role | Protocol | Provided |
+| --- | --- | --- |
+| recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion` |
+| condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
+| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
+| features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
+| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
+
+On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
+business rules that turn each query's ranked candidate list into the list to serve (see
+[Business rules](#business-rules)).
+
+Everything here works on numpy arrays alone: a DataFrame is accepted wherever a table is, but pandas
+is never required.
+
+## Hyperparameter tuning
+
+`skrecsys.tune` is a small Optuna-style tuner whose sampler, a Tree-structured Parzen Estimator
+(TPE), runs in Rust. Each estimator declares the range worth searching as an annotation on its
+`__init__` parameters, so the search space lives next to the default it belongs to:
+
+```python
+from typing import Annotated
+from skrecsys.tune import Float, Int
+
+class BM25Recommender(...):
+    def __init__(
+        self,
+        n_neighbors: Annotated[int, Int(5, 1000, log=True)] = 20,
+        k1: Annotated[float, Float(0.05, 5.0, log=True)] = 1.2,
+        b: Annotated[float, Float(0.0, 1.0)] = 0.75,
+        ...
+    ): ...
+```
+
+`Annotated` leaves the parameter's type unchanged, and `get_params`, `clone` and type checkers
+never notice. `search_space(estimator)` reads the annotations back, following nested estimators
+as `name__param`. Every model in `skrecsys.recommendation` and `skrecsys.nn` declares its main
+parameters, except `MostPopularRecommender`, which has nothing to tune. For the neural models the
+space covers the architecture and optimizer (factors, blocks, dropout, learning rate, loss
+temperatures and weights), and training length stays fixed. A trial there costs a full training
+run, so start with a small `n_trials` or a tighter `search_space`.
+
+`AutoTune` wraps a recommender so that `fit` tunes it first. It scores each configuration by
+cross-validation on the training interactions alone, with 3-fold `WarmStartKFold` and NDCG@10 by
+default. Then it refits the best configuration on all of them. The first trial is always the
+estimator as given, so the tuned model cannot score below it in cross-validation:
+
+```python
+from skrecsys.recommendation import BM25Recommender
+from skrecsys.tune import AutoTune, Float
+
+tuned = AutoTune(BM25Recommender(), n_trials=50, random_state=0).fit(X_train)
+tuned.best_params_  # {'n_neighbors': 584, 'k1': 1.755..., 'b': 0.775...}
+tuned.recommend(users, n_recommendations=10)
+
+# Override or extend the declared space; nested parameters use their set_params names.
+AutoTune(BM25Recommender(), search_space={"b": Float(0.5, 1.0)})
+
+# Hold parameters at the instance's value and search the rest.
+AutoTune(BM25Recommender(k1=0.5), freeze=["k1"])
+```
+
+On MovieLens 100K, `AutoTune(BM25Recommender())` improves on the defaults on the held-out `ua`
+test split, which tuning never sees:
+
+| Model | NDCG@10 | MAP | MRR | fit |
+| --- | --- | --- | --- | --- |
+| `BM25Recommender()` | 0.2661 | 0.1370 | 0.5788 | 7 ms |
+| `AutoTune(BM25Recommender())` | **0.2759** | **0.1443** | **0.6049** | 2.6 s |
+
+The full row is in the [leaderboard](#leaderboard), and
+`tests/benchmarks/test_movielens_100k.py` guards the improvement. The gain carries over to
+MovieLens 1M's leave-one-out split at the cutoff it was tuned for (HR@10 0.0684 against 0.0642)
+but not at 200, a reminder that the tuner optimizes the metric and split you give it.
+
+For any other objective, `Study` is the ask-and-tell loop underneath. It is define-by-run like
+Optuna's: which parameters a trial asks for may depend on earlier answers.
+
+```python
+from skrecsys.tune import Study
+
+
+def objective(trial):
+    x = trial.suggest_float("x", -10, 10)
+    kind = trial.suggest_categorical("kind", ["a", "b"])
+    return -((x - 2) ** 2) + (kind == "b")
+
+
+study = Study(direction="maximize", random_state=0)  # sampler="random" for random search
+study.optimize(objective, n_trials=60)
+study.best_params  # {'x': 2.0..., 'kind': 'b'}
+
+trial = study.ask()  # or drive it by hand
+study.tell(trial, objective(trial))
+```
+
+The sampler follows Optuna's univariate TPE defaults:
+
+- The first 10 trials are random.
+- After that, the best `min(ceil(n / 10), 25)` trials form the "good" group.
+- Each group is modelled with a truncated-Gaussian Parzen estimator plus a prior. Log-scaled
+  parameters are modelled in log space.
+- Out of 24 candidates drawn from the good model, the one maximizing `l(x) / g(x)` wins.
+
 ## Production lifecycle
 
 [Usage](#usage) shows each call on its own. This section is about how `fit`, `partial_fit`
@@ -163,13 +798,8 @@ A deployment has three jobs, and they should not share a live object:
 What passes between them is a pickled, versioned model. Every fitted estimator pickles,
 index included, and a `skrecsys.nn` model unpickles and scores without torch installed.
 
-The service gets its answers in one of two ways, and a deployment picks **one**:
-
-- **A. Batch.** A job calls `recommend` for every user after each new version and writes the
-  results to a key-value cache. The service only looks results up and never loads a model.
-- **B. Realtime.** Each service replica holds the model in memory, swaps to every new
-  version atomically, and calls `recommend` on the request path. There is no per-user
-  result cache.
+Trainer and updater are the same in every deployment. The service gets its answers in one
+of two ways, and a deployment picks **one**: [Batch](#batch) or [Realtime](#realtime).
 
 ```mermaid
 flowchart LR
@@ -178,38 +808,21 @@ flowchart LR
     trainer["Trainer<br/>fit(window)"]
     updater["Updater<br/>partial_fit(batch)"]
     store[("Model store<br/>v1, v2, ...")]
-    client(["Client"])
+    serving(["Batch or Realtime<br/>serving"])
 
     log -->|"nightly / weekly"| trainer
     trainer -->|"publish v(n)"| store
     stream -->|"every few minutes"| updater
     store -->|"load latest"| updater
     updater -->|"publish v(n+1)"| store
-
-    subgraph A["A. Batch: pick this..."]
-        direction TB
-        batch["Batch job<br/>recommend(all users)"]
-        cache[("Key-value cache<br/>(user, version) to items")]
-        serviceA["Recommendation service<br/>cache lookup only"]
-        batch --> cache --> serviceA
-    end
-
-    subgraph B["B. Realtime: ...or this"]
-        direction TB
-        serviceB["Recommendation service<br/>model in memory<br/>recommend(user, candidates,<br/>exclude_interactions)"]
-    end
-
-    store -->|"on every version"| batch
-    store -->|"atomic swap"| serviceB
-    client -.->|"either"| serviceA
-    client -.->|"or"| serviceB
+    store -->|"every new version"| serving
 ```
 
 Neither mode calls `partial_fit` on a model that is serving requests. `partial_fit` updates
 the model in place and rebinds `user_ids_`, `item_ids_`, `interactions_` and the fitted arrays
 one after another, so a `recommend` running at the same time can read a vocabulary from
 one version and a matrix from the other. The updater works on its own copy and publishes
-a new version, which the batch job reads (A) or each replica swaps to in one step (B).
+a new version, which the batch job reads or each realtime replica swaps to in one step.
 
 ### When to `fit`
 
@@ -269,7 +882,7 @@ stateDiagram-v2
 
 `recommend` is built for batches. It ranks queries a block at a time inside one kernel,
 and ranking every MovieLens-100K user against the whole catalog takes about a
-millisecond (see [the leaderboard](#leaderboard)). Two properties of the API decide which
+millisecond (see [the leaderboard](#leaderboard)). Three properties of the API decide which
 mode fits:
 
 - `recommend` accepts **only users the model has seen**. An unknown user raises
@@ -283,66 +896,119 @@ mode fits:
   what has already happened when it runs; a realtime call excludes what has happened by
   the time of the request.
 
-**Batch** fits when every request for a user gets the same list and most users come back
-between versions. The job passes the events that arrived after the version was fitted as
-`exclude_interactions`, so each list starts fresh. Events that arrive after the job ran
-still have to be filtered out at lookup time, so set `n_recommendations` above what a page
-shows to leave enough items after filtering. Key the cache by `(user, model_version)` so that a new version
-replaces every entry at once, and never mix lists from two versions: their scores are on
-different scales. How fresh the results are depends on how long the batch job takes, since
-a version is not live until its job finishes.
-
-**Realtime** fits when eligibility depends on the request, or when the user base is large
-and mostly inactive, so computing lists for everyone wastes work. Each replica loads the
-pickle once and never refits at startup. Each call passes the user's recent events as
-`exclude_interactions`, so it returns exactly the number of fresh items asked for, with no
-over-fetching and no filtering afterwards. Replicas should batch concurrent requests into
-one `recommend` call; the pairs of every user in the batch can go in together. On large catalogs an `index` makes each call cheaper, but see
-[vector indexes](#vector-indexes) for what it costs in exactness and speed first.
-
 ```mermaid
 flowchart TD
     start(["Choose a serving mode"]) --> percand{"Candidates depend<br/>on the request?"}
-    percand -->|yes| realtime["B. Realtime"]
+    percand -->|yes| realtime["Realtime"]
     percand -->|no| active{"Most users active<br/>between versions?"}
-    active -->|yes| batch["A. Batch"]
+    active -->|yes| batch["Batch"]
     active -->|no| realtime
 ```
 
-### The request path
+### Batch
 
-Both modes read the user's recent events and fall back to a popular list for unknown
-users. They differ in where the recent events are applied: inside `recommend` (realtime),
-or to a list computed earlier (batch).
+A job calls `recommend` for every user after each new version and writes the results to a
+key-value cache. The service only looks results up and never loads a model. Batch fits when
+every request for a user gets the same list and most users come back between versions.
+
+```mermaid
+flowchart LR
+    store[("Model store")]
+    batch["Batch job<br/>recommend(all users,<br/>exclude_interactions)"]
+    cache[("Key-value cache<br/>(user, version) to items")]
+    service["Recommendation service<br/>cache lookup only"]
+    client(["Client"])
+
+    store -->|"on every version"| batch --> cache --> service --> client
+```
+
+- The job passes the events that arrived after the version was fitted as
+  `exclude_interactions`, so each list starts fresh.
+- Events that arrive after the job ran still have to be filtered out at lookup time, so set
+  `n_recommendations` above what a page shows to leave enough items after filtering.
+- Key the cache by `(user, model_version)` so that a new version replaces every entry at
+  once, and never mix lists from two versions: their scores are on different scales.
+- Freshness depends on how long the batch job takes, since a version is not live until its
+  job finishes.
+
+The request path reads the user's recent events, drops them from the cached list, and falls
+back to a popular list for a user the cache has no entry for:
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant S as Recommendation service
-    participant V as Results for v(n)
+    participant V as Cache
     participant R as Recent events
 
     C->>S: recommendations for user u
     S->>R: events of u since v(n) was fitted
     R-->>S: recent (user, item) pairs
-    alt A. Batch
-        S->>V: cache.get(u, v(n))
-        V-->>S: top-(N + margin), or a miss if u is unknown
+    S->>V: cache.get(u, v(n))
+    V-->>S: top-(N + margin), or a miss if u is unknown
+    S->>S: drop recent items, cut to N
+    opt miss
+        S->>V: cache.get(popular, v(n))
+        V-->>S: popular list
         S->>S: drop recent items, cut to N
-    else B. Realtime
-        S->>V: model.recommend([u], n_recommendations=N,<br/>candidates=..., exclude_interactions=recent)
-        V-->>S: exactly N items, or ValueError if u is unknown
     end
+    S-->>C: N items
+```
+
+The popular list does not depend on the user. Compute it once per version, either with
+`MostPopularRecommender` ranking any known user with `exclude_seen=False` or directly from
+the counts, and write it to the cache under its own key.
+
+### Realtime
+
+Each service replica holds the model in memory, swaps to every new version atomically, and
+calls `recommend` on the request path. There is no per-user result cache. Realtime fits
+when eligibility depends on the request, or when the user base is large and mostly
+inactive, so computing lists for everyone wastes work.
+
+```mermaid
+flowchart LR
+    store[("Model store")]
+    service["Recommendation service replica<br/>model in memory<br/>recommend(user, candidates,<br/>exclude_interactions)"]
+    client(["Client"])
+
+    store -->|"atomic swap"| service
+    client --> service
+```
+
+- Each replica loads the pickle once and never refits at startup.
+- Each call passes the user's recent events as `exclude_interactions`, so it returns exactly
+  the number of fresh items asked for, with no over-fetching and no filtering afterwards.
+- Replicas should batch concurrent requests into one `recommend` call; the pairs of every
+  user in the batch can go in together.
+- On large catalogs an `index` makes each call cheaper, but see
+  [vector indexes](#vector-indexes) for what it costs in exactness and speed first.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Recommendation service
+    participant M as Model v(n)
+    participant R as Recent events
+
+    C->>S: recommendations for user u
+    S->>R: events of u since v(n) was fitted
+    R-->>S: recent (user, item) pairs
+    S->>M: recommend([u], n_recommendations=N,<br/>candidates=..., exclude_interactions=recent)
+    M-->>S: exactly N items, or ValueError if u is unknown
     opt u unknown to v(n)
         S->>S: popular list for v(n), minus recent items, cut to N
     end
     S-->>C: N items
 ```
 
-A user unknown to the model gets a popular list that does not depend on the user. Compute
-it once per version, either with `MostPopularRecommender` ranking any known user with
-`exclude_seen=False` or directly from the counts. The batch job writes it to the cache under
-its own key (A), and a realtime replica keeps it in memory next to the model (B).
+The popular list is computed once per version, as in Batch, and kept in memory next to the
+model.
+
+### Recent events
+
+Both modes read the user's recent events. They differ in where those are applied: inside
+`recommend` (Realtime), or to a list computed earlier (Batch).
 
 The recent events close a freshness gap that `exclude_seen` cannot. `exclude_seen` filters
 against `interactions_` as the model saw it, so without them anything the user took after
@@ -508,13 +1174,14 @@ MovieLens 100K, official `ua` split, k=10, default hyper-parameters. Regenerate 
 | BPR | 0.2800 | 0.2467 | 0.2467 | 0.9226 | 0.1451 | 0.5782 | 0.3542 | 1.0000 | 228.5243 | 8.84 |
 | EASE | 0.2767 | 0.2382 | 0.2382 | 0.9035 | 0.1444 | 0.5888 | 0.3030 | 1.0000 | 228.8724 | 8.79 |
 | RP3Beta | 0.2762 | 0.2407 | 0.2407 | 0.9215 | 0.1414 | 0.5911 | 0.2417 | 1.0000 | 235.4201 | 8.78 |
+| BM25+AutoTune | 0.2759 | 0.2333 | 0.2333 | 0.8929 | 0.1443 | 0.6049 | 0.1274 | 1.0000 | 282.8901 | 8.41 |
 | BM25 | 0.2661 | 0.2292 | 0.2292 | 0.8918 | 0.1370 | 0.5788 | 0.1024 | 1.0000 | 293.0034 | 8.36 |
 | ItemKNN | 0.2550 | 0.2200 | 0.2200 | 0.9173 | 0.1268 | 0.5624 | 0.2887 | 1.0000 | 217.0530 | 8.86 |
 | SimpleX | 0.2467 | 0.2137 | 0.2137 | 0.8388 | 0.1267 | 0.5336 | 0.3315 | 1.0000 | 222.2856 | 8.96 |
 | MostPopular | 0.1331 | 0.1215 | 0.1215 | 0.7306 | 0.0545 | 0.3218 | 0.0530 | 1.0000 | 371.7549 | 7.97 |
 | ALS | 0.0422 | 0.0408 | 0.0408 | 0.3160 | 0.0144 | 0.1119 | 0.1464 | 1.0000 | 155.0729 | 10.09 |
 
-Measured on more than one host, so compare timings only between rows that share one. SLIM, BPR, EASE, RP3Beta, BM25, ItemKNN, MostPopular, ALS: Apple M4 Pro (12 usable cores), macOS-26.7-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. XSimGCL, SimpleX: Apple M4 Pro (12 usable cores), macOS-26.6.2-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+Measured on more than one host, so compare timings only between rows that share one. SLIM, BPR, EASE, RP3Beta, BM25, ItemKNN, MostPopular, ALS: Apple M4 Pro (12 usable cores), macOS-26.7-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. XSimGCL, SimpleX: Apple M4 Pro (12 usable cores), macOS-26.6.2-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. BM25+AutoTune: Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
 
 Wall clock per call. Each operation is sampled until it has spent 20s or reached its cap (1000 fits, 1000 `recommend` calls), after untimed warm-up calls (1 fit, 10 rank) so that no sample pays for a cold start; the `samples` columns say how many each row actually got, which is why a slow model shows fewer. The batch columns say what a single call processed: one fit covers the whole training split, and one `recommend` call ranks the entire catalog for every held-out user at once, so these are throughput numbers rather than single-request latency. Fit reports the spread a handful of samples can resolve; ranking is sampled often enough for nearest-rank quantiles, each of which is a call that really happened. Compare `min` across machines and watch `max` for the variance a run saw.
 
@@ -525,6 +1192,7 @@ Wall clock per call. Each operation is sampled until it has spent 20s or reached
 | BPR | 90570 | 16 | 1.30 s | 1.31 s | 1.32 s | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
 | EASE | 90570 | 710 | 26 ms | 28 ms | 33 ms | 943 x 1680 | 1000 | 3 ms | 3 ms | 3 ms | 4 ms |
 | RP3Beta | 90570 | 1000 | 8 ms | 8 ms | 18 ms | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
+| BM25+AutoTune | 90570 | 8 | 2.60 s | 2.63 s | 2.88 s | 943 x 1680 | 1000 | 7 ms | 7 ms | 8 ms | 9 ms |
 | BM25 | 90570 | 1000 | 6 ms | 7 ms | 9 ms | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
 | ItemKNN | 90570 | 1000 | 5 ms | 6 ms | 7 ms | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
 | SimpleX | 90570 | 3 | 130.37 s | 134.37 s | 139.83 s | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
@@ -532,7 +1200,9 @@ Wall clock per call. Each operation is sampled until it has spent 20s or reached
 | ALS | 90570 | 60 | 324 ms | 326 ms | 444 ms | 943 x 1680 | 1000 | 1 ms | 1 ms | 1 ms | 1 ms |
 
 Every model uses its default hyper-parameters, so this ranks the library's baselines,
-not the best each method can do. `R@10` equals `P@10` because the `ua` split holds out
+not the best each method can do. The one exception is `BM25+AutoTune`, which is
+[tuned](#hyperparameter-tuning) on the training split. It shows how much of that gap a
+search closes: 0.2661 to 0.2759 NDCG for BM25, at the cost of a 2.6 s fit. `R@10` equals `P@10` because the `ua` split holds out
 exactly 10 items per user, and `user cov` is 1 by construction: `recommend` raises
 rather than return a short list. The beyond-accuracy columns are the interesting ones —
 `MostPopular` has the highest `mean pop` and the lowest `novelty`, and `BM25` buys its
@@ -560,7 +1230,7 @@ why `BPR` at 1.3 s a fit gets sixteen and `MostPopular` gets its full thousand;
 
 ### Amazon Books
 
-Amazon Books (`amzn-books-l50`), `leave-one-out` split, k=10, default hyper-parameters. Scored on a fixed random sample of 10,000 held-out users. Not run: EASE (a dense 674k x 674k item matrix does not fit in memory); SLIM (one elastic net per item over a 674k-item catalog does not finish); SimpleX (one training epoch of 7.4M interactions runs over an hour on CPU); XSimGCL (one training epoch of 7.4M interactions runs over an hour on CPU). Regenerate with `python benchmarks/run.py run leaderboard --dataset amazon-books`.
+Amazon Books (`amzn-books-l50`), `leave-one-out` split, k=10, default hyper-parameters. Scored on a fixed random sample of 10,000 held-out users. Not run: EASE (a dense 674k x 674k item matrix does not fit in memory); SLIM (one elastic net per item over a 674k-item catalog does not finish); BM25+AutoTune (50 trials of 3-fold cross-validation over 7.4M interactions is hours of fitting); SimpleX (one training epoch of 7.4M interactions runs over an hour on CPU); XSimGCL (one training epoch of 7.4M interactions runs over an hour on CPU). Regenerate with `python benchmarks/run.py run leaderboard --dataset amazon-books`.
 
 | Model | NDCG@10 | P@10 | R@10 | hit rate | MAP | MRR | cat cov | user cov | mean pop | novelty |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -609,12 +1279,13 @@ Not yet measured: Mamba4Rec.
 | SLIM | 0.0825 | 0.0413 | 0.2510 | 0.0775 | 0.4912 | 0.1135 | 0.1843 |
 | BPR | 0.0714 | 0.0350 | 0.2459 | 0.0721 | 0.5402 | 0.1162 | 0.4907 |
 | ItemKNN | 0.0714 | 0.0368 | 0.2306 | 0.0709 | 0.5111 | 0.1128 | 0.3733 |
+| BM25+AutoTune | 0.0684 | 0.0351 | 0.2081 | 0.0652 | 0.4220 | 0.0972 | 0.1662 |
 | BM25 | 0.0642 | 0.0334 | 0.2096 | 0.0644 | 0.4526 | 0.1007 | 0.1338 |
 | RP3Beta | 0.0639 | 0.0323 | 0.2207 | 0.0656 | 0.4892 | 0.1058 | 0.3744 |
 | MostPopular | 0.0315 | 0.0151 | 0.1248 | 0.0346 | 0.3159 | 0.0630 | 0.0137 |
 | ALS | 0.0182 | 0.0081 | 0.0604 | 0.0170 | 0.1555 | 0.0311 | 0.1226 |
 
-Measured on more than one host, so compare timings only between rows that share one. HSTU: Apple M4 Pro (12 usable cores), macOS-26.6.2-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. EASE, SLIM, BPR, ItemKNN, BM25, RP3Beta, MostPopular, ALS: Apple M4 Pro (12 usable cores), macOS-26.7-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. The sequential models ran with `device="auto"`, which resolved to MPS on this host (torch 2.14.0); every other model is CPU only. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+Measured on more than one host, so compare timings only between rows that share one. HSTU: Apple M4 Pro (12 usable cores), macOS-26.6.2-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. EASE, SLIM, BPR, ItemKNN, BM25, RP3Beta, MostPopular, ALS: Apple M4 Pro (12 usable cores), macOS-26.7-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.4.0, `_core` built in release mode. The sequential models ran with `device="auto"`, which resolved to MPS on this host (torch 2.14.0); every other model is CPU only. BM25+AutoTune: Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
 
 Wall clock per call. Each operation is sampled until it has spent 30s or reached its cap (1 fits, 5 `recommend` calls), after untimed warm-up calls (0 fit, 1 rank) so that no sample pays for a cold start; the `samples` columns say how many each row actually got, which is why a slow model shows fewer. The batch columns say what a single call processed: one fit covers the whole training split, and one `recommend` call ranks the entire catalog for every held-out user at once, so these are throughput numbers rather than single-request latency. Fit reports the spread a handful of samples can resolve; ranking is sampled often enough for nearest-rank quantiles, each of which is a call that really happened. Compare `min` across machines and watch `max` for the variance a run saw.
 
@@ -625,6 +1296,7 @@ Wall clock per call. Each operation is sampled until it has spent 30s or reached
 | SLIM | 656566 | 1 | 214 ms | 214 ms | 214 ms | 6040 x 3646 | 5 | 23 ms | 22 ms | 25 ms | 25 ms |
 | BPR | 656566 | 1 | 11.21 s | 11.21 s | 11.21 s | 6040 x 3646 | 5 | 32 ms | 32 ms | 33 ms | 33 ms |
 | ItemKNN | 656566 | 1 | 33 ms | 33 ms | 33 ms | 6040 x 3646 | 5 | 25 ms | 25 ms | 26 ms | 26 ms |
+| BM25+AutoTune | 656566 | 1 | 11.60 s | 11.60 s | 11.60 s | 6040 x 3646 | 5 | 97 ms | 97 ms | 101 ms | 101 ms |
 | BM25 | 656566 | 1 | 40 ms | 40 ms | 40 ms | 6040 x 3646 | 5 | 16 ms | 16 ms | 17 ms | 17 ms |
 | RP3Beta | 656566 | 1 | 43 ms | 43 ms | 43 ms | 6040 x 3646 | 5 | 24 ms | 24 ms | 25 ms | 25 ms |
 | MostPopular | 656566 | 1 | 9 ms | 9 ms | 9 ms | 6040 x 3646 | 5 | 22 ms | 22 ms | 23 ms | 23 ms |
@@ -679,6 +1351,430 @@ every user pay for the catalog instead: `MostPopular` inverts the usual order at
 per call, with nothing to fit and no structure to exploit, and the factor models rank in
 1 s (`ALS`, eight factors) and 3.9 s (`BPR`, sixty-four). `BPR` is also the slowest to
 fit at 5 minutes, single-threaded because the entry is seeded.
+
+## Reranking benchmark
+
+What does a second stage buy a production pipeline, and does blending several of them buy
+more? This compares the `Switch` pipelines of [composing recommenders](#composing-recommenders)
+on the users a service really has: ones it knows, and ones arriving with no history.
+
+- **`BM25`** is `Switch(KnownUser(), BM25Recommender(), MostPopularRecommender())`: BM25 for
+  known users, the most popular items for everyone else.
+- **`BM25+CatBoost`** is the same switch with a `CatBoostRanker` behind each branch. Known
+  users get BM25's top 100, reordered on who the user is (age, gender, occupation), what the
+  movie is (genres), the BM25 score, how many interactions the user and the movie have
+  (`InteractionCounts`), EASE's score for the pair (`RecommenderScores`) and how popular the
+  movie is among users of the same gender, age band and occupation (`SegmentPopularity`).
+  Cold users get the 100 most popular movies, reordered on popularity and segment popularity,
+  which is all there is to know about someone with no history. That ranker is fitted on users
+  that `ColdStartSplit` holds out whole inside `Cascade.fit`, so it learns from candidates
+  exactly as a cold user is served them.
+- **`BM25+XGBoost`** and **`BM25+LightGBM`** are the same pipeline with `XGBRanker` or
+  `LGBMRanker` in place of CatBoost, on exactly the same features. Both are regularized,
+  with a lower learning rate and larger minimum leaves. At their defaults (300 trees at a
+  learning rate of 0.1), both overfit the few hundred users a ranker learns from. That
+  reached 0.166 and 0.178 NDCG@10 on warm users, and fell *below* the popularity baseline
+  on cold users (0.469 and 0.451).
+- **`BM25+Blend`** puts a `BlendRanker` over all three boosters behind each branch, at its
+  defaults. Each booster is fitted three times on two thirds of the users and scores the
+  third it did not see. A logistic regression then learns how to weigh their rank-normalized
+  scores, and the three are refitted on every user for serving.
+- **`EASE`** is the baseline switch with `EASE` in place of BM25, the second member of the
+  fusions below, shown on its own so a fusion can be compared with each of its members.
+- **`BM25+EASE RRF`** serves known users with `ReciprocalRankFusion` of BM25 and EASE: each
+  retrieves its top 100, and an item scores `1/(60 + rank)` summed over the two lists. There is
+  no ranker and nothing is learned. Cold users get the most popular movies, as in the baseline.
+- **`BM25+RRF`** is the `BM25+CatBoost` switch with a training-free `ReciprocalRankRanker` in
+  place of CatBoost. Known users get BM25's top 100, reordered by the fused ranks of their BM25
+  and EASE scores. Cold users get the 100 most popular movies, reordered by the fused ranks of
+  popularity and segment popularity.
+- **`BM25+RRF boosters`** is the `BM25+Blend` switch with the three boosters fused by
+  `ReciprocalRankRanker` instead of stacked by `BlendRanker`. Each booster is fitted once on
+  every user. There are no out-of-fold refits and no blender to learn: three booster fits per
+  branch, against the blend's twelve.
+
+The split is `ColdStartSplit`, so the held-out set asks both questions at once, and every
+quality row is reported three times: for all held-out users, for the warm ones and for the
+cold ones. Time is reported one way only, as what one user's request costs, since that is
+what a reranker adds.
+
+```sh
+uv sync --extra catboost --extra xgboost --extra lightgbm
+uv run python benchmarks/run.py run reranking   # measure it, re-render the tables below
+```
+
+### MovieLens 100K
+
+MovieLens 100K, `ColdStartSplit`: 10% of users held out whole, the latest 20% of every other user's ratings held out, k=10. Regenerate with `python benchmarks/run.py run reranking --dataset movielens-100k-cold`.
+
+| Pipeline | users | n users | NDCG@10 | P@10 | R@10 | hit rate | MAP | MRR | cat cov | mean pop | novelty |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| BM25 | all | 943 | 0.2057 | 0.1832 | 0.1004 | 0.6914 | 0.1154 | 0.3642 | 0.1039 | 270.9265 | 8.18 |
+| BM25+CatBoost | all | 943 | 0.2395 | 0.2121 | 0.1183 | 0.7656 | 0.1365 | 0.4085 | 0.2611 | 227.8753 | 8.53 |
+| BM25+XGBoost | all | 943 | 0.2341 | 0.2036 | 0.1158 | 0.7561 | 0.1302 | 0.4198 | 0.2786 | 214.2264 | 8.65 |
+| BM25+LightGBM | all | 943 | 0.2320 | 0.2040 | 0.1129 | 0.7497 | 0.1302 | 0.4104 | 0.2830 | 215.5760 | 8.65 |
+| BM25+Blend | all | 943 | 0.2367 | 0.2078 | 0.1176 | 0.7625 | 0.1329 | 0.4133 | 0.2780 | 219.8461 | 8.61 |
+| EASE | all | 943 | 0.2210 | 0.1910 | 0.1070 | 0.7349 | 0.1234 | 0.4038 | 0.3062 | 221.6990 | 8.58 |
+| BM25+EASE RRF | all | 943 | 0.2200 | 0.1945 | 0.1080 | 0.7158 | 0.1245 | 0.3859 | 0.1778 | 252.5215 | 8.32 |
+| BM25+RRF | all | 943 | 0.2205 | 0.1943 | 0.1062 | 0.7126 | 0.1277 | 0.3874 | 0.1653 | 252.2036 | 8.31 |
+| BM25+RRF boosters | all | 943 | 0.2379 | 0.2078 | 0.1169 | 0.7593 | 0.1338 | 0.4174 | 0.2755 | 218.6677 | 8.61 |
+| BM25 | warm | 849 | 0.1701 | 0.1468 | 0.1010 | 0.6596 | 0.0872 | 0.3242 | 0.1039 | 256.4918 | 8.26 |
+| BM25+CatBoost | warm | 849 | 0.2052 | 0.1775 | 0.1217 | 0.7420 | 0.1068 | 0.3709 | 0.2611 | 209.6465 | 8.64 |
+| BM25+XGBoost | warm | 849 | 0.2004 | 0.1696 | 0.1188 | 0.7314 | 0.1024 | 0.3794 | 0.2786 | 195.0029 | 8.77 |
+| BM25+LightGBM | warm | 849 | 0.1985 | 0.1700 | 0.1159 | 0.7256 | 0.1020 | 0.3724 | 0.2830 | 196.7113 | 8.76 |
+| BM25+Blend | warm | 849 | 0.2029 | 0.1737 | 0.1209 | 0.7385 | 0.1043 | 0.3748 | 0.2780 | 200.7451 | 8.72 |
+| EASE | warm | 849 | 0.1871 | 0.1554 | 0.1084 | 0.7079 | 0.0961 | 0.3682 | 0.3062 | 201.8139 | 8.70 |
+| BM25+EASE RRF | warm | 849 | 0.1860 | 0.1592 | 0.1095 | 0.6867 | 0.0973 | 0.3483 | 0.1778 | 236.0490 | 8.41 |
+| BM25+RRF | warm | 849 | 0.1847 | 0.1577 | 0.1087 | 0.6867 | 0.0965 | 0.3478 | 0.1653 | 238.6967 | 8.39 |
+| BM25+RRF boosters | warm | 849 | 0.2041 | 0.1742 | 0.1202 | 0.7362 | 0.1053 | 0.3772 | 0.2755 | 199.5106 | 8.73 |
+| BM25 | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
+| BM25+CatBoost | cold | 94 | 0.5486 | 0.5245 | 0.0872 | 0.9787 | 0.4048 | 0.7480 | 0.0125 | 392.5160 | 7.58 |
+| BM25+XGBoost | cold | 94 | 0.5382 | 0.5106 | 0.0884 | 0.9787 | 0.3811 | 0.7846 | 0.0188 | 387.8511 | 7.60 |
+| BM25+LightGBM | cold | 94 | 0.5352 | 0.5117 | 0.0861 | 0.9681 | 0.3854 | 0.7538 | 0.0182 | 385.9606 | 7.61 |
+| BM25+Blend | cold | 94 | 0.5416 | 0.5160 | 0.0874 | 0.9787 | 0.3912 | 0.7611 | 0.0144 | 392.3649 | 7.58 |
+| EASE | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
+| BM25+EASE RRF | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
+| BM25+RRF | cold | 94 | 0.5440 | 0.5245 | 0.0837 | 0.9468 | 0.4096 | 0.7451 | 0.0244 | 374.1968 | 7.66 |
+| BM25+RRF boosters | cold | 94 | 0.5428 | 0.5117 | 0.0872 | 0.9681 | 0.3915 | 0.7806 | 0.0150 | 391.6926 | 7.58 |
+
+Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+
+Each row below is one call of `recommend` for a single user, the way a serving process sees a request: each request asks for the next user of its segment, so the samples cover every warm or cold user rather than one user's cached history. Sampled until 10s or 1,000 requests per row, after 10 untimed ones; `q95` and `q99` are nearest-rank quantiles, so each is a request that really happened.
+
+| Pipeline | users | requests | median | q95 | q99 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | warm | 1,000 | 21 us | 27 us | 34 us |
+| BM25+CatBoost | warm | 1,000 | 666 us | 858 us | 1.00 ms |
+| BM25+XGBoost | warm | 1,000 | 665 us | 915 us | 1.11 ms |
+| BM25+LightGBM | warm | 1,000 | 879 us | 1.14 ms | 1.37 ms |
+| BM25+Blend | warm | 1,000 | 1.58 ms | 1.81 ms | 1.98 ms |
+| EASE | warm | 1,000 | 32 us | 83 us | 117 us |
+| BM25+EASE RRF | warm | 1,000 | 240 us | 328 us | 387 us |
+| BM25+RRF | warm | 1,000 | 358 us | 573 us | 682 us |
+| BM25+RRF boosters | warm | 1,000 | 1.72 ms | 2.28 ms | 2.68 ms |
+| BM25 | cold | 1,000 | 24 us | 26 us | 35 us |
+| BM25+CatBoost | cold | 1,000 | 392 us | 446 us | 486 us |
+| BM25+XGBoost | cold | 1,000 | 432 us | 592 us | 683 us |
+| BM25+LightGBM | cold | 1,000 | 634 us | 868 us | 1.02 ms |
+| BM25+Blend | cold | 1,000 | 1.26 ms | 1.39 ms | 1.50 ms |
+| EASE | cold | 1,000 | 24 us | 26 us | 34 us |
+| BM25+EASE RRF | cold | 1,000 | 26 us | 33 us | 48 us |
+| BM25+RRF | cold | 1,000 | 314 us | 418 us | 588 us |
+| BM25+RRF boosters | cold | 1,000 | 1.21 ms | 1.47 ms | 1.58 ms |
+
+The first 3 cold users by id, and the top 5 of what each pipeline serves them. **Bold** titles are ones the user rated in the held-out set; `held out` is how many they rated in all.
+
+| cold user | age, gender, occupation | held out | BM25 | BM25+CatBoost | BM25+XGBoost | BM25+LightGBM | BM25+Blend | EASE | BM25+EASE RRF | BM25+RRF | BM25+RRF boosters |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 9 | 29, M, student | 22 | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Contact (1997)<br>Return of the Jedi (1983)<br>Fargo (1996)<br>Independence Day (ID4) (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>**English Patient, The (1996)**<br>Godfather, The (1972) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Return of the Jedi (1983)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Twelve Monkeys (1995)**<br>Return of the Jedi (1983)<br>**Star Wars (1977)**<br>Toy Story (1995)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Return of the Jedi (1983)<br>Godfather, The (1972) |
+| 15 | 49, F, educator | 104 | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Contact (1997)** | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>**Contact (1997)**<br>Fargo (1996)<br>**Air Force One (1997)** | **English Patient, The (1996)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>**Star Wars (1977)**<br>Fargo (1996) | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Contact (1997)**<br>**Air Force One (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Full Monty, The (1997)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Star Wars (1977)** | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>Fargo (1996) |
+| 32 | 28, F, student | 41 | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>**Star Wars (1977)**<br>**Scream (1996)**<br>Toy Story (1995) | Contact (1997)<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Liar Liar (1997)**<br>**Star Wars (1977)** | English Patient, The (1996)<br>Contact (1997)<br>**Scream (1996)**<br>**Star Wars (1977)**<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>**Scream (1996)**<br>**Star Wars (1977)**<br>English Patient, The (1996) | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Scream (1996)**<br>**Star Wars (1977)**<br>Toy Story (1995)<br>**Liar Liar (1997)**<br>**Return of the Jedi (1983)** | Contact (1997)<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Liar Liar (1997)**<br>**Star Wars (1977)** |
+
+### MovieLens 1M
+
+The same pipelines and settings on MovieLens 1M, split the same way: 5,436 warm users and 604
+cold ones, six times as many as MovieLens 100K has, so differences that are noise there can be
+told apart here.
+
+MovieLens 1M, `ColdStartSplit`: 10% of users held out whole, the latest 20% of every other user's ratings held out, k=10. Regenerate with `python benchmarks/run.py run reranking --dataset movielens-1m-cold`.
+
+| Pipeline | users | n users | NDCG@10 | P@10 | R@10 | hit rate | MAP | MRR | cat cov | mean pop | novelty |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| BM25 | all | 6,040 | 0.1725 | 0.1583 | 0.0613 | 0.6101 | 0.0979 | 0.3090 | 0.1092 | 1596.1259 | 8.94 |
+| BM25+CatBoost | all | 6,040 | 0.1916 | 0.1744 | 0.0734 | 0.6662 | 0.1087 | 0.3431 | 0.2165 | 1492.6599 | 9.09 |
+| BM25+XGBoost | all | 6,040 | 0.1873 | 0.1694 | 0.0725 | 0.6768 | 0.1036 | 0.3453 | 0.2318 | 1433.2288 | 9.19 |
+| BM25+LightGBM | all | 6,040 | 0.1899 | 0.1725 | 0.0740 | 0.6879 | 0.1049 | 0.3476 | 0.2373 | 1386.8866 | 9.24 |
+| BM25+Blend | all | 6,040 | 0.1923 | 0.1748 | 0.0745 | 0.6818 | 0.1080 | 0.3474 | 0.2233 | 1468.2511 | 9.13 |
+| EASE | all | 6,040 | 0.1670 | 0.1515 | 0.0649 | 0.6333 | 0.0919 | 0.3097 | 0.3519 | 1245.7657 | 9.44 |
+| BM25+EASE RRF | all | 6,040 | 0.1763 | 0.1610 | 0.0661 | 0.6411 | 0.0984 | 0.3213 | 0.1814 | 1444.2125 | 9.13 |
+| BM25+RRF | all | 6,040 | 0.1768 | 0.1628 | 0.0656 | 0.6379 | 0.0993 | 0.3159 | 0.1609 | 1459.5701 | 9.10 |
+| BM25+RRF boosters | all | 6,040 | 0.1922 | 0.1742 | 0.0745 | 0.6834 | 0.1072 | 0.3502 | 0.2302 | 1445.1213 | 9.16 |
+| BM25 | warm | 5,436 | 0.1379 | 0.1249 | 0.0634 | 0.5747 | 0.0685 | 0.2636 | 0.1092 | 1518.0176 | 9.01 |
+| BM25+CatBoost | warm | 5,436 | 0.1572 | 0.1401 | 0.0766 | 0.6365 | 0.0787 | 0.3027 | 0.2165 | 1412.7076 | 9.17 |
+| BM25+XGBoost | warm | 5,436 | 0.1532 | 0.1353 | 0.0757 | 0.6485 | 0.0740 | 0.3049 | 0.2318 | 1349.2017 | 9.28 |
+| BM25+LightGBM | warm | 5,436 | 0.1561 | 0.1388 | 0.0773 | 0.6613 | 0.0754 | 0.3066 | 0.2373 | 1300.2331 | 9.33 |
+| BM25+Blend | warm | 5,436 | 0.1580 | 0.1406 | 0.0778 | 0.6540 | 0.0780 | 0.3075 | 0.2233 | 1386.3667 | 9.21 |
+| EASE | warm | 5,436 | 0.1318 | 0.1173 | 0.0674 | 0.6004 | 0.0618 | 0.2644 | 0.3519 | 1128.7286 | 9.57 |
+| BM25+EASE RRF | warm | 5,436 | 0.1422 | 0.1279 | 0.0687 | 0.6091 | 0.0690 | 0.2773 | 0.1814 | 1349.2249 | 9.22 |
+| BM25+RRF | warm | 5,436 | 0.1424 | 0.1281 | 0.0680 | 0.6054 | 0.0696 | 0.2777 | 0.1609 | 1379.4854 | 9.18 |
+| BM25+RRF boosters | warm | 5,436 | 0.1583 | 0.1405 | 0.0779 | 0.6554 | 0.0777 | 0.3103 | 0.2302 | 1362.1021 | 9.25 |
+| BM25 | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
+| BM25+CatBoost | cold | 604 | 0.5010 | 0.4829 | 0.0452 | 0.9338 | 0.3779 | 0.7065 | 0.0096 | 2212.2300 | 8.37 |
+| BM25+XGBoost | cold | 604 | 0.4946 | 0.4765 | 0.0442 | 0.9321 | 0.3698 | 0.7087 | 0.0112 | 2189.4720 | 8.39 |
+| BM25+LightGBM | cold | 604 | 0.4947 | 0.4755 | 0.0443 | 0.9272 | 0.3698 | 0.7165 | 0.0120 | 2166.7677 | 8.40 |
+| BM25+Blend | cold | 604 | 0.5008 | 0.4826 | 0.0451 | 0.9321 | 0.3775 | 0.7065 | 0.0099 | 2205.2111 | 8.37 |
+| EASE | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
+| BM25+EASE RRF | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
+| BM25+RRF | cold | 604 | 0.4858 | 0.4753 | 0.0438 | 0.9305 | 0.3672 | 0.6595 | 0.0107 | 2180.3326 | 8.39 |
+| BM25+RRF boosters | cold | 604 | 0.4968 | 0.4778 | 0.0443 | 0.9354 | 0.3727 | 0.7100 | 0.0101 | 2192.2937 | 8.38 |
+
+Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+
+Each row below is one call of `recommend` for a single user, the way a serving process sees a request: each request asks for the next user of its segment, so the samples cover every warm or cold user rather than one user's cached history. Sampled until 10s or 1,000 requests per row, after 10 untimed ones; `q95` and `q99` are nearest-rank quantiles, so each is a request that really happened.
+
+| Pipeline | users | requests | median | q95 | q99 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | warm | 1,000 | 25 us | 44 us | 57 us |
+| BM25+CatBoost | warm | 1,000 | 785 us | 1.38 ms | 1.85 ms |
+| BM25+XGBoost | warm | 1,000 | 810 us | 1.42 ms | 2.00 ms |
+| BM25+LightGBM | warm | 1,000 | 938 us | 1.53 ms | 2.08 ms |
+| BM25+Blend | warm | 1,000 | 1.61 ms | 2.24 ms | 2.80 ms |
+| EASE | warm | 1,000 | 71 us | 334 us | 542 us |
+| BM25+EASE RRF | warm | 1,000 | 288 us | 617 us | 869 us |
+| BM25+RRF | warm | 1,000 | 388 us | 895 us | 1.41 ms |
+| BM25+RRF boosters | warm | 1,000 | 1.63 ms | 2.34 ms | 2.99 ms |
+| BM25 | cold | 1,000 | 28 us | 33 us | 72 us |
+| BM25+CatBoost | cold | 1,000 | 406 us | 465 us | 503 us |
+| BM25+XGBoost | cold | 1,000 | 491 us | 583 us | 648 us |
+| BM25+LightGBM | cold | 1,000 | 639 us | 944 us | 1.31 ms |
+| BM25+Blend | cold | 1,000 | 1.21 ms | 1.33 ms | 1.39 ms |
+| EASE | cold | 1,000 | 28 us | 29 us | 36 us |
+| BM25+EASE RRF | cold | 1,000 | 28 us | 29 us | 36 us |
+| BM25+RRF | cold | 1,000 | 317 us | 332 us | 379 us |
+| BM25+RRF boosters | cold | 1,000 | 1.18 ms | 1.55 ms | 2.28 ms |
+
+The first 3 cold users by id, and the top 5 of what each pipeline serves them. **Bold** titles are ones the user rated in the held-out set; `held out` is how many they rated in all.
+
+| cold user | age, gender, occupation | held out | BM25 | BM25+CatBoost | BM25+XGBoost | BM25+LightGBM | BM25+Blend | EASE | BM25+EASE RRF | BM25+RRF | BM25+RRF boosters |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 56, M, 16 | 129 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | **American Beauty (1999)**<br>Fargo (1996)<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>L.A. Confidential (1997)<br>Fargo (1996)<br>**Silence of the Lambs, The (1991)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>Fargo (1996) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Jurassic Park (1993)**<br>Fargo (1996) | **American Beauty (1999)**<br>Fargo (1996)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)** |
+| 13 | 45, M, 1 | 108 | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Star Wars: Episode IV - A New Hope (1977)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Terminator 2: Judgment Day (1991)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>Back to the Future (1985) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>American Beauty (1999)<br>**Jurassic Park (1993)**<br>Shakespeare in Love (1998) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Fargo (1996) |
+| 15 | 25, M, 7 | 201 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**American Beauty (1999)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Matrix, The (1999)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | Terminator 2: Judgment Day (1991)<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Raiders of the Lost Ark (1981)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Matrix, The (1999)** |
+
+### What the rankers buy
+
+On MovieLens 100K, every trained reranker beats the baseline on every segment, and MovieLens 1M
+agrees. The paragraphs below follow CatBoost on MovieLens 100K,
+the strongest of them. For the 849 warm users, NDCG@10 rises from 0.170 to
+0.205, a fifth better, and every other ranking metric moves with it: hit rate from 0.66 to
+0.74, MAP from 0.087 to 0.107. It also recommends less of the head. Catalog coverage goes from
+a tenth to a quarter and `mean pop` drops from 256 to 210, because BM25's top 100 holds
+plenty of less popular films that the ranker's other signals can lift into the top 10. The
+largest single gain in tuning came from `RecommenderScores(EASE())`. A second model with a
+different inductive bias gives the ranker something to weigh BM25's score against. The
+demographic columns on their own added little.
+
+The 94 cold users are a harder case. Their baseline is already strong, because MovieLens
+users rate the popular films, and a cold user's whole history is held out. NDCG@10 still
+rises from 0.527 to 0.549, MAP from 0.370 to 0.405 and MRR from 0.725 to 0.748. Recall@10
+falls slightly, from 0.094 to 0.087, so the reranker puts the hits it finds higher rather
+than finding more of them. The examples show the mechanism: the popularity baseline serves
+every cold user the same five films, while the reranker gives the 49-year-old educator *The
+English Patient* and *Air Force One* and the 28-year-old student *Scream*. The segment
+features only work because of how the ranker is trained. Trained on warm users, whose
+candidates have their own history removed, the same features scored *below* the popularity
+baseline during development: the ranker learned from candidate lists that no cold user ever
+gets.
+
+The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.203
+on warm users against CatBoost's 0.205, and 0.542 on cold users against 0.549. It clearly
+beats XGBoost (0.200, 0.538) and LightGBM (0.199, 0.535). The spread between the three
+boosters is small, and they learn from identical features, so they mostly agree and there is
+little for a blender to combine. Other variants did no better during tuning. Z-score
+normalization, five folds and a plain average (`blender=None`) came within 0.003 of CatBoost
+on warm users and 0.003–0.011 under it on cold users. Passing the original features to the
+logistic blender, or using a gradient-boosted blender, did worse. None of them beat CatBoost
+alone. What the blend buys
+here is not having to know in advance which booster wins, and it charges for that. Its
+request runs all three boosters, so it costs 1.6 ms on a warm user against CatBoost's
+0.67 ms. Blending pays when its members disagree, for example when they are trained on
+different features or different candidate sources, and this setup does not give them that.
+
+The price of any reranker is latency. With CatBoost, a warm user's request goes from about
+20 µs to about 0.67 ms at the median and 1 ms at `q99`, and a cold user's to about 0.4 ms. BM25 alone answers in 21 µs, so
+at least 95% of the reranked request is the second stage: featurizing 100 candidates and
+running the tree ensemble over them. That fits comfortably in a request budget, but a service
+ranking per request should know where its time goes.
+
+### Reciprocal rank fusion
+
+**Fusing two recommenders gets the better of them without having to know which one it is.**
+Which of BM25 and EASE is stronger depends on the dataset: EASE on MovieLens 100K (0.187 NDCG@10
+on warm users against 0.170), BM25 on MovieLens 1M (0.138 against 0.132). `BM25+EASE RRF`, which
+learns nothing, is never measurably worse than the stronger one, and on MovieLens 1M it beats
+both, at 0.142. A paired bootstrap over users (2,000 resamples) puts the gains at:
+
+| Warm users | RRF − BM25 (95% CI) | RRF − EASE (95% CI) |
+| --- | --- | --- |
+| MovieLens 100K, 849 users | +0.016 [+0.009, +0.022] | −0.001 [−0.007, +0.005] |
+| MovieLens 1M, 5,436 users | +0.004 [+0.002, +0.007] | +0.010 [+0.008, +0.013] |
+
+The fusion also recalls more and covers more of the catalog than BM25 (0.18 of it against 0.11 on
+MovieLens 1M). A request costs about 0.25–0.3 ms, because both members retrieve 100 items. It is
+still a third of what a booster costs, and there is no training run to schedule. The trained
+rankers gain more on warm users, 0.157 against 0.142 on MovieLens 1M, because they also learn from
+the demographics, genres and counts. Fusion is the step before a ranker, or the choice when there
+is nothing to train one on.
+
+**Fusing the three boosters by rank matches stacking them, at a quarter of the fits.** On MovieLens
+1M, `BM25+RRF boosters` and `BM25+Blend` both reach 0.192 NDCG@10 over all users. The fusion is
+slightly ahead on warm users (0.158, the best warm row) and behind on cold ones (0.497 against
+0.501). MovieLens 100K agrees, within 0.001 in each segment. The blend fits every booster once per
+fold and once more for serving, twelve fits per branch, while the fusion fits each booster once.
+Neither beats CatBoost alone by a margin that matters, for the reason given above. A request costs
+the same either way, because both run all three boosters.
+
+**As a cold-start ranker, fusion helps but a trained ranker helps more.** Fusing popularity with
+segment popularity (`BM25+RRF`) lifts cold users' NDCG@10 over the popularity baseline on both
+datasets, from 0.527 to 0.544 and from 0.483 to 0.486. On MovieLens 100K it even had the best cold
+MAP of any row, but that rested on 94 users. On MovieLens 1M's 604, CatBoost's 0.501 is clearly
+ahead.
+
+## Candidate generation benchmark
+
+When is it worth giving `Cascade` several generators instead of one? A ranker can only reorder
+what the first stage retrieved, so this measures the first stage alone: how many of the items a
+user goes on to like are among the `N` candidates, for single generators and for merges of them,
+at the same budget of `N` distinct items. Each merged set is compared with the best of its own
+members, which is the alternative a merge has to beat. No ranker is trained, so every number is
+deterministic.
+
+```sh
+uv run python benchmarks/run.py run candidates   # measure it, re-render the tables below
+```
+
+### MovieLens 100K
+
+MovieLens 100K, `ColdStartSplit`: 10% of users held out whole, the latest 20% of every other user's ratings held out, warm held-out users only, every generator at its default hyper-parameters. Regenerate with `python benchmarks/run.py run candidates --dataset movielens-100k-cold`.
+
+`candidate recall@N` is measured at each budget `N` of distinct items retrieved per user: the share of a user's held-out items among the candidates, averaged over users, which is the most any ranker could recall from them. A merged set's gain over the best of its own members at the same `N` is in brackets.
+
+| Generators | candidate recall@10 | candidate recall@20 | candidate recall@50 | candidate recall@100 | candidate recall@200 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | 0.101 | 0.171 | 0.305 | 0.425 | 0.536 |
+| EASE | 0.108 | 0.184 | 0.326 | 0.460 | 0.604 |
+| ItemKNN | 0.103 | 0.181 | 0.341 | 0.507 | 0.683 |
+| RP3Beta | 0.091 | 0.153 | 0.300 | 0.453 | 0.625 |
+| MostPopular | 0.060 | 0.098 | 0.195 | 0.316 | 0.476 |
+| BM25+EASE | 0.107 (-0.001) | 0.184 (+0.000) | 0.335 (+0.010) | 0.472 (+0.012) | 0.626 (+0.022) |
+| EASE+RP3Beta | 0.103 (-0.006) | 0.176 (-0.008) | 0.323 (-0.003) | 0.465 (+0.005) | 0.637 (+0.012) |
+| EASE+ItemKNN | 0.108 (-0.000) | 0.189 (+0.006) | 0.344 (+0.002) | 0.498 (-0.009) | 0.670 (-0.013) |
+| BM25+EASE+ItemKNN | 0.109 (+0.001) | 0.185 (+0.002) | 0.341 (+0.000) | 0.489 (-0.018) | 0.661 (-0.022) |
+| EASE+MostPopular | 0.093 (-0.015) | 0.156 (-0.028) | 0.296 (-0.030) | 0.440 (-0.020) | 0.612 (+0.009) |
+| BM25+EASE RRF | 0.108 (-0.001) | 0.186 (+0.002) | 0.335 (+0.010) | 0.473 (+0.013) | 0.627 (+0.023) |
+| EASE+RP3Beta RRF | 0.102 (-0.007) | 0.175 (-0.009) | 0.323 (-0.003) | 0.470 (+0.010) | 0.639 (+0.014) |
+| EASE+ItemKNN RRF | 0.110 (+0.002) | 0.192 (+0.008) | 0.344 (+0.002) | 0.504 (-0.003) | 0.673 (-0.010) |
+| BM25+EASE+ItemKNN RRF | 0.109 (+0.000) | 0.189 (+0.005) | 0.346 (+0.005) | 0.502 (-0.004) | 0.673 (-0.010) |
+| EASE+MostPopular RRF | 0.093 (-0.015) | 0.156 (-0.028) | 0.294 (-0.031) | 0.440 (-0.020) | 0.613 (+0.009) |
+
+Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+
+`median latency@N` is the median time to retrieve one user's `N` candidates, the way `Cascade.recommend` does before any feature or ranker runs; a merged set's time includes the `predict` calls that fill in the score of every generator that did not retrieve a candidate. Sampled until 2s or 300 requests per cell, after 10 untimed ones.
+
+| Generators | median latency@10 | median latency@20 | median latency@50 | median latency@100 | median latency@200 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | 61 us | 63 us | 62 us | 63 us | 63 us |
+| EASE | 73 us | 72 us | 78 us | 78 us | 89 us |
+| ItemKNN | 62 us | 63 us | 66 us | 69 us | 78 us |
+| RP3Beta | 62 us | 63 us | 66 us | 68 us | 76 us |
+| MostPopular | 69 us | 70 us | 71 us | 75 us | 81 us |
+| BM25+EASE | 369 us | 366 us | 378 us | 401 us | 453 us |
+| EASE+RP3Beta | 359 us | 371 us | 398 us | 410 us | 464 us |
+| EASE+ItemKNN | 362 us | 366 us | 385 us | 406 us | 455 us |
+| BM25+EASE+ItemKNN | 541 us | 550 us | 577 us | 606 us | 683 us |
+| EASE+MostPopular | 315 us | 312 us | 330 us | 352 us | 394 us |
+| BM25+EASE RRF | 327 us | 326 us | 329 us | 342 us | 368 us |
+| EASE+RP3Beta RRF | 330 us | 325 us | 337 us | 350 us | 399 us |
+| EASE+ItemKNN RRF | 334 us | 343 us | 346 us | 359 us | 379 us |
+| BM25+EASE+ItemKNN RRF | 446 us | 447 us | 467 us | 477 us | 513 us |
+| EASE+MostPopular RRF | 336 us | 338 us | 353 us | 365 us | 399 us |
+
+### MovieLens 1M
+
+MovieLens 1M (`ml-1m-l200`), `leave-one-out` split, warm held-out users only, every generator at its default hyper-parameters. Regenerate with `python benchmarks/run.py run candidates --dataset movielens-1m`.
+
+`candidate recall@N` is measured at each budget `N` of distinct items retrieved per user: the share of a user's held-out items among the candidates, averaged over users, which is the most any ranker could recall from them. A merged set's gain over the best of its own members at the same `N` is in brackets.
+
+| Generators | candidate recall@10 | candidate recall@20 | candidate recall@50 | candidate recall@100 | candidate recall@200 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | 0.064 | 0.108 | 0.210 | 0.321 | 0.453 |
+| EASE | 0.089 | 0.144 | 0.252 | 0.367 | 0.492 |
+| ItemKNN | 0.071 | 0.122 | 0.231 | 0.353 | 0.511 |
+| RP3Beta | 0.064 | 0.111 | 0.221 | 0.343 | 0.489 |
+| MostPopular | 0.031 | 0.056 | 0.125 | 0.204 | 0.316 |
+| BM25+EASE | 0.080 (-0.009) | 0.134 (-0.010) | 0.238 (-0.014) | 0.362 (-0.006) | 0.503 (+0.012) |
+| EASE+RP3Beta | 0.081 (-0.008) | 0.133 (-0.011) | 0.245 (-0.007) | 0.367 (+0.000) | 0.510 (+0.018) |
+| EASE+ItemKNN | 0.082 (-0.007) | 0.138 (-0.006) | 0.255 (+0.003) | 0.376 (+0.009) | 0.519 (+0.008) |
+| BM25+EASE+ItemKNN | 0.081 (-0.009) | 0.132 (-0.012) | 0.246 (-0.006) | 0.369 (+0.001) | 0.517 (+0.006) |
+| EASE+MostPopular | 0.063 (-0.026) | 0.114 (-0.030) | 0.213 (-0.039) | 0.328 (-0.040) | 0.472 (-0.020) |
+| BM25+EASE RRF | 0.080 (-0.009) | 0.134 (-0.011) | 0.240 (-0.012) | 0.365 (-0.002) | 0.507 (+0.015) |
+| EASE+RP3Beta RRF | 0.079 (-0.010) | 0.132 (-0.012) | 0.247 (-0.005) | 0.371 (+0.004) | 0.515 (+0.023) |
+| EASE+ItemKNN RRF | 0.082 (-0.007) | 0.140 (-0.004) | 0.254 (+0.002) | 0.378 (+0.011) | 0.523 (+0.012) |
+| BM25+EASE+ItemKNN RRF | 0.079 (-0.010) | 0.133 (-0.011) | 0.250 (-0.002) | 0.375 (+0.008) | 0.523 (+0.012) |
+| EASE+MostPopular RRF | 0.062 (-0.027) | 0.113 (-0.031) | 0.212 (-0.040) | 0.328 (-0.039) | 0.473 (-0.019) |
+
+Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
+
+`median latency@N` is the median time to retrieve one user's `N` candidates, the way `Cascade.recommend` does before any feature or ranker runs; a merged set's time includes the `predict` calls that fill in the score of every generator that did not retrieve a candidate. Sampled until 2s or 300 requests per cell, after 10 untimed ones.
+
+| Generators | median latency@10 | median latency@20 | median latency@50 | median latency@100 | median latency@200 |
+| --- | --- | --- | --- | --- | --- |
+| BM25 | 67 us | 66 us | 70 us | 73 us | 72 us |
+| EASE | 128 us | 129 us | 134 us | 134 us | 157 us |
+| ItemKNN | 72 us | 73 us | 76 us | 83 us | 93 us |
+| RP3Beta | 69 us | 71 us | 74 us | 80 us | 94 us |
+| MostPopular | 77 us | 78 us | 79 us | 87 us | 103 us |
+| BM25+EASE | 439 us | 439 us | 459 us | 501 us | 566 us |
+| EASE+RP3Beta | 444 us | 457 us | 482 us | 522 us | 602 us |
+| EASE+ItemKNN | 444 us | 465 us | 487 us | 524 us | 610 us |
+| BM25+EASE+ItemKNN | 648 us | 677 us | 700 us | 764 us | 862 us |
+| EASE+MostPopular | 402 us | 423 us | 420 us | 458 us | 548 us |
+| BM25+EASE RRF | 397 us | 394 us | 410 us | 426 us | 460 us |
+| EASE+RP3Beta RRF | 436 us | 431 us | 453 us | 471 us | 524 us |
+| EASE+ItemKNN RRF | 435 us | 427 us | 453 us | 457 us | 530 us |
+| BM25+EASE+ItemKNN RRF | 567 us | 599 us | 697 us | 626 us | 683 us |
+| EASE+MostPopular RRF | 420 us | 423 us | 464 us | 494 us | 506 us |
+
+### When a merge pays
+
+A merge splits a fixed budget between its members. Round-robin gives each generator about the same
+number of slots, so the merge gains only when the items a second generator brings are worth more
+than the items of the first that they push out. On these two datasets, that happens under
+narrow conditions:
+
+- **Only at large budgets.** At `N` of 50 and below, a merge moves recall by about 0.01 either way.
+  On MovieLens 1M, every merge loses at `N=10` and `N=20`: by 0.006 to 0.012, and by up to 0.030
+  with popularity. Near the top of the list
+  the generators largely agree, so the slots a second generator takes are mostly slots the first
+  would have filled with hits. The gains appear at `N=100` and `N=200`, where each generator's
+  tail reaches items the other misses. They are modest: the best is BM25+EASE at `N=200` on
+  MovieLens 100K, 0.604 to 0.626, about 4% relative.
+- **Only between generators of similar strength.** EASE+MostPopular loses up to 0.040 of recall,
+  because popularity takes half the budget and recalls far less with it. Its one gain is +0.009
+  at `N=200` on MovieLens 100K. The same holds for any weak partner.
+- **More members is not better.** BM25+EASE+ItemKNN is never more than 0.001 ahead of the best
+  pair, and on MovieLens 100K it trails ItemKNN alone by 0.018 at `N=100` and 0.022 at `N=200`.
+- **Compare with the best single generator at your budget, not only with the merge's members.**
+  The strongest generator changes with `N`: EASE leads at small budgets and ItemKNN at large ones.
+  On MovieLens 100K, no merge beats ItemKNN alone at `N=100` or `N=200`. On MovieLens 1M, only the
+  merges holding both EASE and ItemKNN beat every single generator at `N=100` and `N=200`. The
+  better of them, EASE+ItemKNN, reaches 0.376 against EASE's 0.367 at `N=100`, and 0.519 against
+  ItemKNN's 0.511 at `N=200`.
+
+The merge also costs time. A request asks every member for the full budget, and then each member
+scores the candidates it did not retrieve with `predict`, so the ranker sees every generator's
+opinion of every candidate. That scoring is about half of a merged request. A two-generator
+merge costs 0.3–0.6 ms against 60–160 µs for one generator, and a third member adds another
+0.2 ms or so.
+
+**Reciprocal rank fusion merges slightly better, and usually faster, than round-robin.** The rows
+marked `RRF` merge the same members with `ReciprocalRankFusion`, which asks every member for the same
+`N` items and keeps the `N` with the highest fused score, so items several members rank high come
+first. Against round-robin it wins 29 of the 50 cells, ties 11 and loses 10, none by more than
+0.002. It gains most where round-robin does worst: for BM25+EASE+ItemKNN on MovieLens 100K it cuts
+the deficit to ItemKNN alone from 0.018 to 0.004 at `N=100` and from 0.022 to 0.010 at `N=200`. A
+fused request fills no missing scores with `predict`, since the fused score is the only one it
+keeps, so it is up to a quarter cheaper, and more so for more members. The exception is
+EASE+MostPopular, where filling in popularity costs almost nothing and fusion runs up to 10% slower.
+Fusion does not rescue a weak partner either: EASE+MostPopular loses as much recall either way.
+
+In short: merge generators when the ranker reorders a wide list (`N` of 100 or more) and the members
+are comparably strong but disagree, and check the merge against the best single generator at the
+same `N`. For a narrow list, spend the whole budget on the best single generator. Candidate
+recall is the ceiling, not the result. Whether a ranker turns a higher ceiling into better top-10
+lists is what the [reranking benchmark](#reranking-benchmark) measures. A merge can also be
+worth its cost for a reason this benchmark does not measure: one `Cascade` whose list includes
+`MostPopularRecommender` also serves cold users (see [composing recommenders](#several-generators)).
 
 ## Vector indexes
 
@@ -1403,8 +2499,40 @@ choosing `bits`. At `bits=8` it needs `ov=8` to pass `0.99`; at `bits=4` it reac
 other models' do, and four bits throws that away. The graph has no such trouble with it
 (`0.992` at `ef=16`). Narrow codes are a per-model decision, not a global one.
 
-Integer (int8×int8) arithmetic for the scan was evaluated and not adopted; the measurements
-are in [`docs/quantized_integer_arithmetic.md`](docs/quantized_integer_arithmetic.md).
+#### Integer arithmetic in the quantized scan
+
+`QuantizedFlatIndex` scans with narrow item codes and a floating-point query. A natural
+extension is to quantize the query as well and run the inner loop as
+int8×int8→int32, which is where real quantized indexes get their speed: one ARM `udot`
+does sixteen multiply-accumulates against NEON's two `f64` ones. It was built and
+measured, and not adopted. This note records why.
+
+The arithmetic works out cleanly — an integer accumulator can only hold `Σ qc·vc`, so
+every scale has to come out of the sum:
+
+```text
+<q,v> ~= sq·sv·Σ(qc·vc) + sq·ov·Σqc + oq·sv·Σvc + oq·ov·dim
+```
+
+with `Σvc` precomputed per item. Three findings decided against it:
+
+1. **It was worth 1.26x, not 7x.** Measured on the 60,000-item catalog: `5.44` → `4.33`
+   ns per candidate at eight bits, `5.66` → `3.97` at four. Still `4.8x` slower than the
+   exact path, so nothing about the decision changes.
+2. **`udot` never appeared.** LLVM emits `u32` multiplies from safe Rust, not the
+   sixteen-lane widening dot product the estimate assumed. Reaching it needs
+   `std::arch::aarch64` intrinsics, which are `unsafe`, and this crate does not use
+   `unsafe` anywhere. That is a deliberate property worth more than 1.3x.
+3. **It set a trap for `EASE`.** An integer accumulator forces one global scale in place
+   of the per-dimension ones. `EASE`'s space is dense, so it qualified at fit time — but
+   it always scores through *sparse* queries, so it fell back to the float kernel and paid
+   the accuracy cost for none of the speed. Recall went to `0.059` at four bits and
+   `0.000` at two, against `0.998` with per-dimension scales. Silent, catastrophic, and
+   exactly the "fast and wrong" outcome the index benchmarks in the README exist to catch.
+
+Tiling survived because it is free: it changes the loop order, not the numbers. Integer
+arithmetic is not free — it trades away per-dimension resolution — and at 1.26x the trade
+does not pay.
 
 The Amazon Books block is a long run to reproduce: the quantized rows alone take hours
 over a 660,940-item catalog, because the scan is sequential by design, and the `ItemKNN`
@@ -1480,10 +2608,16 @@ interaction, roughly what `interactions_` already costs.
 | Module | Contents |
 | --- | --- |
 | `skrecsys` | `RecommenderMixin`, `is_recommender`, `supports_partial_fit` |
-| `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer` |
+| `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
+| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker` |
+| `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
+| `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
+| `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
+| `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
 | `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
 | `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
-| `skrecsys.model_selection` | `WarmStartKFold` |
+| `skrecsys.model_selection` | `WarmStartKFold`, `ColdStartSplit` |
+| `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
 | `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
 | `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
 | `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |
@@ -1528,16 +2662,20 @@ LTO still crosses the crate boundary.
 ### Benchmarks
 
 The tables in this README are generated, and so is the README itself: `README.md.j2` is
-the source, and `python benchmarks/run.py render` fills in its tables, and the sentences
-around them, from the results stored in `benchmarks/results`. Edit the template, not
+the source, with one `docs/*.md.j2` fragment per section, and
+`python benchmarks/run.py render` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
 `README.md`; a test fails when the two disagree.
 
 What the benchmarks run is configuration rather than code. `benchmarks/config/`
-holds one file per report — `leaderboard.json`, `sequential.json`, `indexes.json` — each
+holds one file per report — `leaderboard.json`, `sequential.json`, `reranking.json`,
+`indexes.json` — each
 listing its entries, a model or an index named by `package` and `cls` with its `params`,
 a `version` and a `comment`, and the datasets it runs on with the settings each is timed
-under; `datasets.json` defines the datasets they share. The sequential and index reports
-take their models from the leaderboard's, so a model is defined once. Every result is
+under; `datasets.json` defines the datasets they share, and may replace a dataset's own split
+with a splitter such as `ColdStartSplit`. The sequential and index reports take their models
+from the leaderboard's, so a model is defined once. A reranking entry names a builder in
+`benchmarks/pipelines.py` rather than a class, because its feature tables come from the
+dataset. Every result is
 keyed on a hash of everything its entry and its dataset say, which makes the workflow:
 
 - **Adding a model** is adding an entry to `leaderboard.json` and running
@@ -1607,6 +2745,84 @@ specific to this workload and micro-architecture, so the script is there to re-m
 1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
 2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
 3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.
+
+## Changelog
+
+### 0.1.0
+
+- Project skeleton: packaging, typed `skrecsys` package and the PyPI release workflow.
+
+### 0.2.0
+
+- First working release: scikit-learn-style recommenders with `fit`, `partial_fit`,
+  `recommend` and `predict`, backed by Rust kernels exposed through PyO3 as `skrecsys._core`.
+- `skrecsys.recommendation`: `MostPopularRecommender`, `ItemKNNRecommender`,
+  `AlternatingLeastSquares`, `BM25Recommender`, `EASE` and `RP3Beta`.
+- `skrecsys.metrics`: ranking metrics (NDCG, precision, recall, hit rate, MAP, MRR) and
+  beyond-accuracy metrics (catalog and user coverage, mean popularity, novelty), plus
+  `make_recommender_scorer` for scikit-learn model selection.
+- `skrecsys.model_selection.WarmStartKFold` and the `fetch_movielens_100k` dataset loader.
+- MovieLens 100K leaderboard, checked against reference implementations (implicit, RecTools,
+  libFM and the Dacrema et al. baselines).
+- Test CI and pre-commit hooks; macOS x86_64 dropped from the release targets.
+
+### 0.3.0
+
+- New estimators: `SLIMElasticNet` and `BayesianPersonalizedRanking`.
+- Faster `fit` and `recommend`: identifier encoding, similarity pruning and top-k ranking
+  moved to Rust, and neighbourhood models rank a batch of queries in one kernel without
+  building a dense score matrix.
+- Profile-guided optimization build script (`scripts/pgo.py`).
+- Leaderboard reports fit and ranking timings separately, with sample counts and quantiles.
+
+### 0.4.0
+
+- `skrecsys.nn`: neural recommenders `HSTU`, `Mamba4Rec`, `SimpleX` and `XSimGCL`, behind
+  the opt-in `nn` extra. Fitted models unpickle and score without torch.
+- `skrecsys.indexing`: `HNSW` and `QuantizedFlatIndex` vector indexes with an index registry
+  (`make_index`, `register_index`), usable by the factor and neural models.
+- Incremental fitting reworked: `partial_fit` grows the user and item vocabularies and
+  updates the model from the batch instead of refitting on the full history.
+- New datasets: `fetch_movielens_1m` and `fetch_amazon_books`.
+- Core refactored into a separate `rust/kernels` crate with Criterion benchmarks.
+- Benchmark suite (`benchmarks/run.py`) with configs for the leaderboard, sequential
+  and index benchmarks; the README is now rendered from `README.md.j2`.
+- Documentation of the production lifecycle (fit, `partial_fit`, serving modes).
+
+### 0.5.0
+
+- `skrecsys.compose`: `Switch` and `Cascade` composites, built from conditions (`KnownUser`,
+  `MinInteractions`, `QueryIn`, `AllOf`, `AnyOf`, `Not`), feature components and rankers
+  (`PointwiseRanker`, `GroupRanker`, `BlendRanker`).
+- `Cascade` takes a list of candidate generators: their candidates are interleaved by rank,
+  deduplicated and capped at `n_retrieved` per query, and every generator scores every
+  candidate, so `GeneratorScores(n_generators=...)` gives the ranker one feature per generator.
+- Reciprocal rank fusion, which needs no training: `ReciprocalRankFusion` fuses the lists of
+  several recommenders and stands wherever a recommender does, and `ReciprocalRankRanker` is a
+  `Cascade` ranker fusing feature columns or other rankers by rank.
+- `skrecsys.integrations`: `CatBoostRanker`, `LGBMRanker` and `XGBRanker` for `Cascade`,
+  each behind its own opt-in extra.
+- `skrecsys.tune`: TPE hyperparameter tuner with a Rust sampler; estimators declare their
+  search space as annotations on `__init__`, and `AutoTune` tunes a recommender inside `fit`.
+- `skrecsys.model_selection.ColdStartSplit` for training cold-start rankers.
+- Shared parameter validation: estimators check their parameters at `fit` time with
+  consistent error messages.
+- Reranking benchmark comparing `Switch` pipelines with and without a second-stage ranker, on
+  MovieLens 100K and 1M split by `ColdStartSplit`.
+- Candidate generation benchmark: candidate recall of single and merged generators at
+  several budgets, against the best member of each merge, and the cost of one request.
+- README split into per-topic templates under `docs/`.
+- `skrecsys.metrics.evaluate_recommender` evaluates several metrics at several cutoffs from
+  one `recommend` call, and `make_recommender_scorer` takes lists of metrics and cutoffs to make
+  a scikit-learn multi-metric scorer.
+- `JoinDynamicFeatures` takes a tuple of kinds, such as `kind=("user", "item")`, to compute
+  pair features: the callback gets the distinct combinations of those columns.
+- `Cascade(postprocess=...)`: business rules on top of the ranker. A callback receives every
+  candidate of each query, best first, and returns the lists to serve, which it may reorder,
+  shorten or extend with items that were not candidates. It applies in `recommend` only, so
+  the ranker trains without it while evaluation and tuning measure it.
+- `recommend(exclude_interactions=...)` accepts an empty array, such as a request with no
+  events since the fit, and excludes nothing instead of raising.
 
 ## License
 

@@ -1,9 +1,10 @@
 """Head-to-head benchmark of BM25Recommender against implicit's BM25Recommender.
 
-Both fit the same interaction matrix of MovieLens 100K ``ua``. The algorithm is
-deterministic, so the similarity matrices must be identical and recommendations must
-agree. Install the reference with ``uv sync --group reference``; without it the
-benchmark is skipped.
+Both fit the same interaction matrix of MovieLens 100K ``ua``, with the ratings as
+weights and as binary implicit feedback. The algorithm is deterministic, so the
+similarity matrices must be identical and so must the recommendations -- tied scores
+included, which on binary feedback decide a large share of the lists. Install the
+reference with ``uv sync --group reference``; without it the benchmark is skipped.
 """
 
 import time
@@ -27,9 +28,11 @@ pytestmark = [
 K = 10
 
 
-def test_bm25_matches_implicit(movielens_100k_ua, request):
+@pytest.mark.parametrize("weights", ["ratings", "binary"])
+def test_bm25_matches_implicit(movielens_100k_ua, weights, request):
     dataset = movielens_100k_ua
-    X_train, y_train = dataset.data[dataset.train_indices], dataset.target[dataset.train_indices]
+    X_train = dataset.data[dataset.train_indices]
+    y_train = dataset.target[dataset.train_indices] if weights == "ratings" else None
     X_test = dataset.data[dataset.test_indices]
 
     start = time.perf_counter()
@@ -66,20 +69,19 @@ def test_bm25_matches_implicit(movielens_100k_ua, request):
     ref_rec = time.perf_counter() - start
     ref_items = est.item_ids_[ref_idx]
 
-    # Position-wise scores agree regardless of how tied items are ordered.
     np.testing.assert_allclose(ours_scores, ref_scores, rtol=1e-12, atol=1e-9)
     identical = float(np.mean(np.all(ours_items == ref_items, axis=1)))
-    assert identical >= 0.99, f"only {identical:.2%} of top-{K} lists are identical"
+    assert identical == 1.0, f"only {identical:.2%} of top-{K} lists are identical"
 
     y_true = [relevant[u] for u in users]
     ours_metrics = [float(m(y_true, ours_items, k=K)) for m in (ndcg_at_k, precision_at_k)]
     ref_metrics = [float(m(y_true, ref_items, k=K)) for m in (ndcg_at_k, precision_at_k)]
-    assert max(abs(a - b) for a, b in zip(ours_metrics, ref_metrics, strict=True)) <= 1e-3
+    assert ours_metrics == ref_metrics
 
     reporter = request.config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
         reporter.write_line(
-            f"\nBM25 vs implicit on ML-100k ua ({len(users)} users, "
+            f"\nBM25 vs implicit on ML-100k ua, {weights} ({len(users)} users, "
             f"{identical:.2%} identical top-{K} lists)\n"
             f"  {'':9}{'ndcg@10':>10}{'prec@10':>10}{'fit s':>10}{'rec s':>10}\n"
             f"  {'skrecsys':9}{ours_metrics[0]:>10.4f}{ours_metrics[1]:>10.4f}"

@@ -1,0 +1,493 @@
+{#- Included by README.md.j2 right after "Usage", so headings start at
+    level two and relative links resolve from the repository root. -#}
+## Composing recommenders
+
+`skrecsys.compose` builds pipelines out of recommenders, the way `sklearn.pipeline` builds them out
+of transformers. Every composite is itself a recommender, so composites nest, clone, pickle and
+take part in a grid search through nested parameters such as `on_true__ranker__iterations`.
+
+There are two composites, `Switch` and `Cascade`, and three kinds of primitive they are built
+from: conditions, feature components and rankers. Each primitive is a small estimator that can be
+fitted and called on its own, which is the easiest way to see what it does.
+
+### Conditions
+
+A condition is fitted on interactions and then answers, for a batch of queries, which of them it
+holds for. `evaluate` returns a boolean array with one entry per query:
+
+```python
+from skrecsys.compose import KnownUser, MinInteractions, QueryIn
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "b"], ["u2", "c"], ["u3", "c"], ["u3", "a"], ["u3", "d"]]
+
+KnownUser().fit(X).evaluate(["u1", "new"])  # -> [True, False]
+MinInteractions(3).fit(X).evaluate(["u1", "u3", "new"])  # -> [False, True, False]
+QueryIn(["u2", "new"]).fit(X).evaluate(["u1", "u2", "new"])  # -> [False, True, True]
+```
+
+`KnownUser` holds for users seen in `fit`; `MinInteractions(n)` for users with at least `n` rows
+(a user never seen has none); `QueryIn(ids)` for an explicit list, such as an experiment cohort,
+whether or not those identifiers were seen. Conditions combine with `~`, `&` and `|`, which build
+`Not`, `AllOf` and `AnyOf`:
+
+```python
+known, cohort = KnownUser(), QueryIn(["u2", "new"])
+
+(known & ~cohort).fit(X).evaluate(["u1", "u2", "new"])  # -> [True, False, False]
+(known | cohort).fit(X).evaluate(["u1", "u2", "new"])  # -> [True, True, True]
+```
+
+### Features
+
+A feature component turns candidate pairs, an array of shape `(n_pairs, 2)` laid out like the `X`
+of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None)`. The
+`scores` are what the candidate generator gave each pair.
+
+```python
+import numpy as np
+
+from skrecsys.compose import (
+    ConcatFeatures,
+    GeneratorScores,
+    JoinDynamicFeatures,
+    JoinStaticFeatures,
+)
+
+item_table = np.array([["a", 1.0, 10.0], ["b", 2.0, 20.0]], dtype=object)  # column 0 the id
+
+# a fixed table keyed by user or item; an identifier the table lacks gets NaN
+join = JoinStaticFeatures("item", item_table).fit()
+join.transform([["u1", "b"], ["u1", "z"]])  # -> [[2., 20.], [nan, nan]]
+# JoinStaticFeatures("item", item_table, missing="error") raises a ValueError there instead
+
+
+# features that live elsewhere, fetched on demand: one call per transform, with the distinct ids
+def name_length(ids):
+    return np.array([[len(i)] for i in ids], dtype=float)
+
+
+JoinDynamicFeatures("user", name_length, n_features=1).fit().transform([["ann", "a"], ["bo", "a"]])
+# -> [[3.], [2.]]
+
+
+# a tuple of kinds asks about the distinct combinations: rows of shape (n_distinct, 2) here,
+# the columns in the order of the tuple
+def same_initial(pairs):
+    return np.array([[u[0] == i[0]] for u, i in pairs], dtype=float)
+
+
+JoinDynamicFeatures(("user", "item"), same_initial).fit().transform([["ann", "a"], ["bo", "a"]])
+# -> [[1.], [0.]]
+
+
+# a key may include the time a pair is ranked as of -- "time", "item-time", "user-item-time",
+# or the same as a tuple -- which a Cascade constructed with time=True puts in a third column
+# of the pairs; NaN (or NaT) asks for the latest value. See "Time" under Cascade.
+def price(keys):  # keys: rows of (item, time)
+    return np.where(np.isnan(keys[:, 1]) | (keys[:, 1] > 5), 2.0, 1.0)
+
+
+JoinDynamicFeatures("item-time", price).fit().transform(np.array([[1, 7, 3], [2, 7, np.nan]]))
+# -> [[1.], [2.]]
+
+# the generator's own score, which nearly every ranker wants
+GeneratorScores().fit().transform([["u1", "a"]], scores=[0.5])  # -> [[0.5]]
+```
+
+Three components learn from the interactions they are fitted on, which inside a `Cascade` are
+the rows the generator was fitted on, never the held-out ones:
+
+```python
+from skrecsys.compose import InteractionCounts, RecommenderScores, SegmentPopularity
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"]]
+
+# how much history the pair's user or item has; an unseen identifier counts zero
+InteractionCounts("item").fit(X).transform([["u9", "a"], ["u9", "z"]])  # -> [[2.], [0.]]
+
+# a second model's opinion of the pair; NaN where it has not seen the user or the item
+RecommenderScores(ItemKNNRecommender()).fit(X).transform([["u1", "c"], ["new", "c"]])
+# -> [[0.707], [nan]]
+
+# how popular the item is among users of the pair's user's segment, and that share over
+# the global one: the one signal a cold user has, as long as the table lists them
+segments = np.array([["u1", "kid"], ["u2", "adult"], ["new", "kid"]], dtype=object)
+SegmentPopularity(segments, smoothing=0.0).fit(X).transform([["new", "b"]])  # -> [[1., 2.]]
+```
+
+`ConcatFeatures` puts components side by side, as `FeatureUnion` does. Give the components names to
+address their parameters as `name__param` and to prefix the feature names:
+
+```python
+both = ConcatFeatures(
+    [("item", JoinStaticFeatures("item", item_table)), ("gen", GeneratorScores())]
+).fit()
+both.transform([["u1", "b"], ["u1", "a"]], scores=[0.5, 0.25])
+# -> [[2., 20., 0.5], [1., 10., 0.25]]
+both.get_feature_names_out()  # -> ["item__item_feature_0", "item__item_feature_1", "gen__generator_score"]
+both.set_params(item__missing="error")
+```
+
+`JoinDynamicFeatures` has to be picklable for the recommender to be: pass a module-level function
+or a callable object, not a lambda. Its features are named after `kind`: `user_feature_0`,
+`item_feature_0`, `user_item_feature_0` for `("user", "item")`, or `item_time_feature_0` for
+`"item-time"`. Tables may be DataFrames, whose column names become the
+feature names; pandas is never imported.
+
+### Rankers
+
+A ranker learns to order the candidates of each query. `fit(F, y, *, groups)` takes the feature
+matrix `F`, a relevance label per row, and `groups`, the number of consecutive rows that belong
+to each query; `predict(F, *, groups)` returns one score per row, higher meaning better.
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+from skrecsys.compose import PointwiseRanker
+
+# three queries with two candidates each, the second of each pair relevant
+F = np.array([[0.0], [1.0], [0.2], [0.9], [0.1], [0.8]])
+ranker = PointwiseRanker(LogisticRegression()).fit(F, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2])
+ranker.predict([[0.1], [0.8], [0.9], [0.2]], groups=[2, 2])  # -> [0.40, 0.57, 0.60, 0.43]
+```
+
+`BlendRanker` combines several rankers. Their scores are on unrelated scales, so each ranker's
+scores are first normalized within every query: percentile ranks by default, or `"zscore"`. The
+blender is then learned from *out-of-fold* scores. `fit` splits the queries into `cv` folds, fits
+every ranker on all but one fold, scores the fold it left out, and fits the blender (a logistic
+regression by default, or any ranker) on those scores. Only then does it refit every ranker on
+all rows. A blender fitted on in-sample scores would learn to trust whichever ranker overfits
+most. `blender=None` skips the learning and returns the `weights`-weighted mean of the
+normalized scores:
+
+```python
+from sklearn.tree import DecisionTreeClassifier
+
+from skrecsys.compose import BlendRanker
+
+F2 = np.column_stack([F[:, 0], 1 - F[:, 0]])
+blend = BlendRanker(
+    [
+        ("linear", PointwiseRanker(LogisticRegression())),
+        ("tree", PointwiseRanker(DecisionTreeClassifier(max_depth=2))),
+    ],
+    cv=3,
+    random_state=0,
+).fit(F2, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2])
+blend.set_params(tree__estimator__max_depth=3)  # nested parameters, as in ConcatFeatures
+```
+
+With `skrecsys.integrations` it blends gradient-boosting libraries. The
+[reranking benchmark](#reranking-benchmark) measures a blend of CatBoost, XGBoost and LightGBM
+against each of them on their own.
+
+`PointwiseRanker` wraps any scikit-learn classifier or regressor and scores every pair on its own,
+ignoring `groups`. `GroupRanker` wraps an estimator whose `fit` takes group sizes, such as
+`LGBMRanker` or `XGBRanker`, and passes them under `group_param` (default `"group"`).
+`skrecsys.integrations` provides `CatBoostRanker`, `XGBRanker` and `LGBMRanker` that already speak
+this protocol. Estimators that handle NaN, such as `HistGradientBoostingClassifier`, take missing
+joined features as they are.
+
+### Switch
+
+`Switch(condition, on_true, on_false)` serves each query with `on_true` where the condition
+holds and with `on_false` elsewhere. The usual use is cold start: a personalized model for the
+users it knows and a popularity baseline for everyone else. The condition and both branches are
+fitted on the same interactions, and a branch may be a composite itself.
+
+```python
+from skrecsys.compose import KnownUser, Switch
+from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+
+rec = Switch(KnownUser(), ItemKNNRecommender(), MostPopularRecommender()).fit(X)
+rec.recommend(["u3", "new-user"], n_recommendations=1)[0]  # -> [["b"], ["a"]]
+```
+
+Scores come from whichever branch served the row, so they compare within a row but not across
+rows. `MostPopularRecommender` serves users it has never seen, which is what makes it the natural
+`on_false`; a query routed to a branch that cannot serve it raises there.
+
+### Cascade
+
+`Cascade(generator, features, ranker)` is a two-stage recommender. `recommend` asks the generator
+for `n_retrieved` candidates per query, turns each candidate pair into a row of `features`, and
+returns the `n_recommendations` the ranker scores highest:
+
+```python
+from skrecsys.compose import Cascade
+
+X = [[u, i] for u in range(20) for i in (u % 5, u % 5 + 1, u % 5 + 2)]
+rec = Cascade(
+    ItemKNNRecommender(),
+    GeneratorScores(),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=3,
+    split=0.4,
+).fit(X)
+items, scores = rec.recommend([0], n_recommendations=2)
+```
+
+`Cascade.fit` never lets the ranker learn from interactions the generator was fitted on. It holds
+out the last `split` fraction of each user's rows (row order is read as time, so sort by timestamp),
+fits a generator on the rest, and labels its candidates for the held-out users by whether they were
+held out. Only then does it refit the generator on everything, for serving. `split` also takes any
+scikit-learn splitter. A query with fewer eligible items than `n_retrieved` gets all of them as
+candidates rather than an error.
+
+A splitter that holds out a user's rows entirely, such as
+`skrecsys.model_selection.ColdStartSplit`, trains a cold-start ranker, as long as the generator
+can serve a user it has never seen — `MostPopularRecommender` can. The ranker then learns from
+candidate lists exactly as a cold user is served them, rather than from those of warm users whose
+own history has been filtered out:
+
+```python
+from skrecsys.model_selection import ColdStartSplit
+
+cold = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), SegmentPopularity(segments)]),
+    PointwiseRanker(LogisticRegression()),
+    split=ColdStartSplit(cold_users=0.2, test_size=0.0, random_state=0),
+)
+```
+
+#### Time
+
+Features that change -- a price, a stock level, an item's click-through over the last week -- leak
+into the ranker if they are joined as they are today: the held-out interactions the ranker learns
+from happened in the past, when those values were different, and the ranker learns to trust
+values it will not have when serving. Construct the cascade with `time=True` and give `X` a third
+column, the time of each interaction, as a number (Unix seconds, say) or a `datetime64`; a
+DataFrame's datetime column works as it is. Then:
+
+- the float `split` holds out each user's *latest* interactions by time, not by row order;
+- the generators still see `[user, item]`, and the features see `[user, item, time]`;
+- each held-out user's candidates are featurized as of that user's earliest held-out
+  interaction -- what they would have been shown just before it -- so a
+  `JoinDynamicFeatures` keyed by time can return what was known then;
+- `recommend(..., as_of=...)` ranks as of a time, one for all queries or one per query, to
+  replay what would have been served; without it, as when serving, the time is missing and
+  the features are the latest.
+
+```python
+def price_as_of(keys):  # rows of (item, time); a feature store's point-in-time lookup
+    ...  # the latest price recorded strictly before each time, the current one where NaN
+
+
+X_timed = np.column_stack([X, timestamps])  # [user, item, time]
+rec = Cascade(
+    ItemKNNRecommender(),
+    ConcatFeatures([JoinDynamicFeatures("item-time", price_as_of), GeneratorScores()]),
+    PointwiseRanker(LogisticRegression()),
+    time=True,
+).fit(X_timed)
+rec.recommend(users)  # serving: the latest prices
+rec.recommend(users, as_of=last_monday)  # a backtest: the prices then
+```
+
+A recommender uses time only when it is asked to, so a stray third column -- a rating, say -- is
+an error everywhere else. `Switch(..., time=True)` hands the time to a branch that uses it and
+`[user, item]` to the other one and the condition; `make_recommender_scorer` and
+`evaluate_recommender` rank a timed recommender as of each user's earliest held-out time, which
+makes cross-validation and `AutoTune` of a timed cascade leak-free too.
+
+#### Several generators
+
+`generator` also takes a list, bare or as `(name, recommender)` tuples like `ConcatFeatures`. Each
+generator retrieves up to `n_retrieved` items per query. Their lists are interleaved round-robin
+by rank, an item already proposed is skipped, and each query keeps the first `n_retrieved` distinct
+items, so `n_retrieved` is the budget after merging. The generator scores then have one column per
+generator, in list order. A generator scores a candidate it did not retrieve with `predict`, and
+gets NaN where it cannot, such as for a user it has never seen. A generator that cannot serve
+unknown users is asked only about the users it knows, so one list covers warm and cold users alike:
+
+```python
+from sklearn.ensemble import HistGradientBoostingClassifier
+
+rec = Cascade(
+    [ItemKNNRecommender(), MostPopularRecommender()],
+    GeneratorScores(n_generators=2),  # generator_score_0, generator_score_1
+    PointwiseRanker(HistGradientBoostingClassifier()),  # handles the NaN of cold users
+    n_retrieved=100,
+)
+```
+
+Nested parameters address a generator by name: `generator__itemknnrecommender__n_neighbors`.
+
+#### Business rules
+
+The ranker learns what users will interact with. A product usually has the last word on top of
+that: an item out of stock must not be shown, a campaign item goes first, no more than three
+items of one category. `Cascade(..., postprocess=callback)` gives those rules a place inside the
+recommender, so they are pickled, cloned, tuned and evaluated along with it.
+
+The callback is a black box on the ranked lists: `postprocess(pairs, scores, groups)` returns
+`(pairs, scores, groups)` in the same layout. It receives *every* candidate of each query, best
+first by the ranker: `pairs` as the features see them (`[user, item]`, or `[user, item, time]`
+under `time=True`), the ranker's `scores`, and `groups`, the length of each query's list. It may
+reorder the lists, drop items, or add items that were never candidates, with scores of its
+choosing. `recommend` then serves the first `n_recommendations` of each list it returns:
+
+```python
+IN_STOCK = np.arange(0, 1000, 2)  # stand-ins for a stock service and a campaign
+CAMPAIGN = np.array([42])
+
+
+def business_rules(pairs, scores, groups):
+    """Drop what is out of stock and put campaign items first."""
+    group_of_row = np.repeat(np.arange(len(groups)), groups)
+    keep = np.isin(pairs[:, 1], IN_STOCK)
+    pairs, scores, group_of_row = pairs[keep], scores[keep], group_of_row[keep]
+    # a stable sort by (query, not in campaign) keeps the ranker's order within each tier
+    order = np.lexsort((~np.isin(pairs[:, 1], CAMPAIGN), group_of_row))
+    return pairs[order], scores[order], np.bincount(group_of_row, minlength=len(groups))
+
+
+rec = Cascade(
+    ItemKNNRecommender(),
+    GeneratorScores(),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=100,  # room for what the rules drop
+    postprocess=business_rules,
+).fit(X)
+```
+
+A cap per category is a rule of the same shape, using the rank of each item within its query and
+category:
+
+```python
+def at_most_3_per_genre(pairs, scores, groups):
+    group_of_row = np.repeat(np.arange(len(groups)), groups)
+    genre = genre_of(pairs[:, 1])  # your lookup: one category code per item
+    # rows sorted by (query, genre), stable, so each run keeps the ranker's order
+    order = np.lexsort((genre, group_of_row))
+    key = group_of_row[order] * (genre.max() + 1) + genre[order]
+    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]])
+    rank = np.arange(len(order)) - np.repeat(starts, np.diff(np.r_[starts, len(order)]))
+    keep = np.zeros(len(pairs), dtype=bool)
+    keep[order[rank < 3]] = True
+    return pairs[keep], scores[keep], np.bincount(group_of_row[keep], minlength=len(groups))
+```
+
+The callback runs in `recommend` alone. `fit` trains the ranker without it, since the ranker
+should learn relevance rather than policy, and `predict` returns the ranker's scores. Because
+`make_recommender_scorer` and `evaluate_recommender` call `recommend`, evaluation and tuning do
+measure the rules, and they show what a policy costs in accuracy. `Cascade` raises a
+`ValueError` when:
+
+- a query is left with fewer than `n_recommendations` items, so size `n_retrieved` with room
+  for what the rules drop;
+- the callback moves rows between queries or changes the number of queries;
+- the callback returns NaN scores.
+
+The callback runs once per block of queries, so it must not assume it sees them all at once.
+For the cascade to pickle, it must be a module-level function or a picklable callable object,
+as with `JoinDynamicFeatures`.
+
+### Reciprocal rank fusion
+
+Reciprocal rank fusion (RRF) combines ranked lists by rank alone: a candidate scores
+`sum(weight / (k + rank))` over the lists that hold it, its rank counting from 1, and a list that
+does not hold it adds nothing. Only ranks enter the sum, so models whose scores live on unrelated
+scales combine without normalization, and nothing is trained. `k` (60 by default, as in the
+original paper) flattens the advantage of the top ranks; `weights` sets how much each list counts.
+It comes in both shapes a composite takes, so it works outside a `Cascade` and inside one.
+
+`ReciprocalRankFusion` is a recommender. Each of its recommenders retrieves `n_retrieved` items
+per query and the fused top of those lists is recommended, so it stands anywhere a recommender
+does: on its own, as a `Switch` branch, or as the generator of a `Cascade`. As in a list of
+generators, a recommender that cannot serve unknown users is asked only about the users it knows:
+
+```python
+from skrecsys.compose import ReciprocalRankFusion
+from skrecsys.recommendation import EASE, BM25Recommender
+
+fusion = ReciprocalRankFusion(
+    [("bm25", BM25Recommender()), ("ease", EASE()), ("popular", MostPopularRecommender())],
+    weights=[1.0, 1.0, 0.5],
+).fit(X)
+fusion.recommend(["u1", "someone-new"], n_recommendations=2)  # the new user gets popular items
+fusion.set_params(ease__l2_reg=100.0)  # nested parameters, as in BlendRanker
+```
+
+`ReciprocalRankRanker` is a ranker, for `Cascade(ranker=...)`. Without `rankers` it reads every
+feature column as a score, higher meaning better, and fuses the columns' ranks within each query:
+a second stage with nothing to learn, which suits features such as `GeneratorScores` and
+`RecommenderScores`. A NaN feature does not rank its row. With `rankers`, it fits each ranker on
+all rows once and fuses their ranks, the untrained counterpart of `BlendRanker` with no
+out-of-fold refits:
+
+```python
+from skrecsys.compose import ReciprocalRankRanker
+
+ReciprocalRankRanker(k=1).fit(F2, [0, 1, 0, 1, 0, 1], groups=[2, 2, 2]).predict(
+    [[0.9, 0.1], [0.2, 0.8]], groups=[2]
+)  # -> [0.83, 0.83]: each column ranks a different row first
+
+rec = Cascade(
+    BM25Recommender(),
+    ConcatFeatures([GeneratorScores(), RecommenderScores(EASE())]),
+    ReciprocalRankRanker(),
+    n_retrieved=100,
+)
+```
+
+The [reranking benchmark](#reranking-benchmark) measures both against the rankers above, and the
+[candidate generation benchmark](#candidate-generation-benchmark) compares fusion with
+round-robin as a way to merge generators.
+
+### Putting it together
+
+The composites nest. This one serves known users with a BM25 candidate generator and a CatBoost
+ranker over user, item and generator-score features, and everyone else with the most popular
+items. The [reranking benchmark](#reranking-benchmark) measures a fuller version of it against
+the same switch without the rankers, for warm and cold users:
+
+```python
+from skrecsys.compose import (
+    Cascade,
+    ConcatFeatures,
+    GeneratorScores,
+    JoinStaticFeatures,
+    KnownUser,
+    Switch,
+)
+from skrecsys.integrations.catboost import CatBoostRanker  # pip install skrecsys[catboost]
+from skrecsys.recommendation import BM25Recommender, MostPopularRecommender
+
+rec = Switch(
+    condition=KnownUser(),
+    on_true=Cascade(
+        generator=BM25Recommender(),
+        features=ConcatFeatures(
+            [
+                JoinStaticFeatures("user", user_table),  # column 0 the id, then the features
+                JoinStaticFeatures("item", item_table),
+                GeneratorScores(),
+            ]
+        ),
+        ranker=CatBoostRanker(),
+        n_retrieved=100,
+    ),
+    on_false=MostPopularRecommender(),
+).fit(X)
+rec.recommend(["u1", "someone-new"], n_recommendations=10)
+```
+
+The parts play five roles, each a small protocol:
+
+| Role | Protocol | Provided |
+| --- | --- | --- |
+| recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion` |
+| condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
+| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
+| features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
+| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
+
+On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
+business rules that turn each query's ranked candidate list into the list to serve (see
+[Business rules](#business-rules)).
+
+Everything here works on numpy arrays alone: a DataFrame is accepted wherever a table is, but pandas
+is never required.

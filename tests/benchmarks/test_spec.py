@@ -5,10 +5,19 @@ depends on -- which is the whole contract of the incremental harness.
 import copy
 from typing import Any
 
+import candidates
+import numpy as np
 import pytest
+import reranking
 import spec
+from sklearn.base import BaseEstimator
+from sklearn.utils import Bunch
 
+from skrecsys.compose import BlendRanker, Cascade, ReciprocalRankFusion, Switch
 from skrecsys.indexing import HNSW
+from skrecsys.recommendation import ItemKNNRecommender
+
+from .conftest import synthetic_dataset
 
 
 @pytest.mark.parametrize("benchmark", spec.BENCHMARKS)
@@ -54,7 +63,7 @@ def test_the_title_fills_in_the_dataset_s_own_parameters():
 
 
 def test_an_entry_builds_its_class_with_its_params():
-    als = spec.load("leaderboard").model("ALS").build()
+    als = spec.load("leaderboard").model("ALS").build(BaseEstimator)
     assert type(als).__name__ == "AlternatingLeastSquares"
     assert als.get_params()["random_state"] == 0
 
@@ -64,6 +73,7 @@ def test_a_nested_object_spec_is_built_too():
         "skrecsys.recommendation",
         "ItemKNNRecommender",
         {"index": {"package": "skrecsys.indexing", "cls": "HNSW", "params": {"m": 8}}},
+        ItemKNNRecommender,
     )
     assert isinstance(estimator.index, HNSW)
     assert estimator.index.m == 8
@@ -255,4 +265,99 @@ def test_index_settings_are_checked_too(sandbox):
         "indexes",
         lambda config: config["settings"].update(catalog_scale=[0.5, 2.0]),
         r"catalog_scale must list shares in \(0, 1\]",
+    )
+
+
+_COLD_SPLIT: dict[str, spec.JSON] = {
+    "package": "skrecsys.model_selection",
+    "cls": "ColdStartSplit",
+    "params": {"cold_users": 0.25, "test_size": 0.34, "random_state": 0},
+}
+
+
+def test_a_dataset_without_a_split_keys_as_it_always_has():
+    definition = spec.DatasetDef("toy", "sandbox.load", "bands", "Toy")
+    assert "split" not in definition.spec()
+
+
+def test_a_dataset_split_moves_the_key():
+    plain = spec.DatasetDef("toy", "sandbox.load", "bands", "Toy")
+    split = spec.DatasetDef("toy", "sandbox.load", "bands", "Toy", split=_COLD_SPLIT)
+    assert split.spec()["split"] == _COLD_SPLIT
+    assert spec.key(plain.spec()) != spec.key(split.spec())
+
+
+def test_a_dataset_split_replaces_the_subset_s_indices():
+    toy = synthetic_dataset()
+    loaded = Bunch(data=toy.data, target=toy.target)
+    spec._apply_split(loaded, _COLD_SPLIT)
+    train, test = loaded.train_indices, loaded.test_indices
+    assert len(train) + len(test) == len(toy.data)
+    assert len(np.setdiff1d(toy.data[test, 0], toy.data[train, 0])) == 10
+
+
+def test_a_misspelled_split_key_is_refused(sandbox):
+    def change(config):
+        config["datasets"]["toy"]["split"] = {"package": "x", "klass": "y"}
+
+    sandbox.edit("datasets", change)
+    with pytest.raises(spec.ConfigError, match=r"split: missing \['cls'\]"):
+        spec.load_datasets()
+
+
+def test_the_candidates_config_builds_its_generator_sets():
+    config = spec.load("candidates")
+    for entry in config.models:
+        built = candidates.build(entry)
+        if entry.cls == "fused":
+            # One fusion, holding the members.
+            (fusion,) = built
+            assert isinstance(fusion, ReciprocalRankFusion)
+            built = fusion.recommenders
+        assert [type(member).__name__ for member in built] == entry.params["members"]
+
+
+def test_a_candidates_member_must_be_a_recommender():
+    with pytest.raises(spec.ConfigError, match="is not a recommender"):
+        candidates.generators(members=["NoSuchModel"])
+
+
+def test_n_retrieved_must_list_budgets(sandbox):
+    def change(config):
+        config["settings"]["n_retrieved"] = []
+
+    sandbox.edit("candidates", change)
+    with pytest.raises(spec.ConfigError, match="n_retrieved must be a non-empty list"):
+        spec.load("candidates")
+
+
+def test_the_reranking_config_builds_its_pipelines():
+    for extra in ("catboost", "xgboost", "lightgbm"):
+        pytest.importorskip(extra)
+    side = _side_info()
+    for entry in spec.load("reranking").models:
+        pipeline = reranking.build(entry, side)
+        assert isinstance(pipeline, Switch)
+    catboost = reranking.build(spec.load("reranking").model("BM25+CatBoost"), side)
+    assert isinstance(catboost, Switch)
+    assert isinstance(catboost.on_true, Cascade)
+    assert isinstance(catboost.on_false, Cascade)
+    blend = reranking.build(spec.load("reranking").model("BM25+Blend"), side)
+    assert isinstance(blend, Switch)
+    assert isinstance(blend.on_true, Cascade)
+    assert isinstance(blend.on_true.ranker, BlendRanker)
+    names = [name for name, _ in blend.on_true.ranker._named()]
+    assert names == ["catboost", "xgboost", "lightgbm"]
+
+
+def _side_info():
+    """What a builder reads of MovieLens 100K, for three users and two movies."""
+    return Bunch(
+        user_info={
+            "user_id": np.array([1, 2, 3]),
+            "age": np.array([17, 30, 60]),
+            "gender": np.array(["F", "M", "F"]),
+            "occupation": np.array(["student", "writer", "retired"]),
+        },
+        item_info={"item_id": np.array([1, 2]), "genres": np.array([[True, False], [False, True]])},
     )

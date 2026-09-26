@@ -1,0 +1,13 @@
+# Type-checks the third-party integrations, which the root config excludes because their
+# libraries are absent from the environment `ty check` normally runs in. Used by the
+# `integrations` job in .github/workflows/tests.yml, where every integration extra is installed.
+
+[environment]
+# The one interpreter the integration extras are tested on; see the `integrations` job in tests.yml.
+python-version = "3.11"
+
+[src]
+include = ["src/skrecsys/integrations", "tests/integrations"]
+
+[rules]
+all = "error"

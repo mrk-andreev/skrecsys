@@ -6,8 +6,7 @@ All metrics share the signature
 an array of shape (n_queries, n_ranked) of item identifiers ranked best first.
 """
 
-from collections.abc import Collection, Sequence
-from typing import Any
+from collections.abc import Collection, Hashable, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -26,13 +25,13 @@ __all__ = [
 _RANKED_NDIM = 2
 
 
-def _check_two_dimensional(y_pred: NDArray[Any]) -> None:
+def _check_two_dimensional(y_pred: NDArray[np.generic]) -> None:
     if y_pred.ndim != _RANKED_NDIM:
         raise ValueError(f"y_pred must be two-dimensional, got shape {y_pred.shape}.")
 
 
 def _check_ranking(
-    y_true: Sequence[Collection[Any]], y_pred: ArrayLike, k: int | None
+    y_true: Sequence[Collection[Hashable]], y_pred: ArrayLike, k: int | None
 ) -> tuple[NDArray[np.bool_], NDArray[np.intp], int]:
     """Return the (n_queries, k) hit matrix, relevant counts and effective k."""
     ranked = np.asarray(y_pred)
@@ -84,7 +83,7 @@ def _discounts(k: int) -> NDArray[np.float64]:
 
 
 def precision_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,
@@ -115,7 +114,7 @@ def precision_at_k(
 
 
 def recall_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,
@@ -131,7 +130,7 @@ def recall_at_k(
 
 
 def ndcg_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,
@@ -153,7 +152,7 @@ def ndcg_at_k(
 
 
 def average_precision_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,
@@ -174,7 +173,7 @@ def average_precision_at_k(
 
 
 def reciprocal_rank_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,
@@ -193,7 +192,7 @@ def reciprocal_rank_at_k(
 
 
 def hit_rate_at_k(
-    y_true: Sequence[Collection[Any]],
+    y_true: Sequence[Collection[Hashable]],
     y_pred: ArrayLike,
     *,
     k: int | None = None,

@@ -23,6 +23,7 @@ use std::collections::BinaryHeap;
 use multiversion::multiversion;
 use rayon::prelude::*;
 
+use crate::knn::ImplicitTopK;
 use crate::ranking::{Candidate, Excluded, TooFewEligible};
 use crate::sparse::{Accumulator, Csr};
 use crate::vectors::{BASELINE_FMA, axpy, madd, reduce};
@@ -288,10 +289,6 @@ impl Best {
         }
     }
 
-    fn len(&self) -> usize {
-        self.heap.len()
-    }
-
     /// Move the kept candidates into `out`, best first, and start over empty.
     fn drain_sorted(&mut self, out: &mut Vec<Candidate>) {
         out.clear();
@@ -352,8 +349,21 @@ fn run_chunks<S: Send>(
         });
 }
 
+/// How [`top_k_from_similarity`] ranks candidates whose scores are exactly equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ties {
+    /// Ties go to the lower candidate position.
+    LowerPosition,
+    /// implicit's `NearestNeighboursScorer.recommend`: the reached candidates are offered
+    /// in reverse first-touch order to its `TopK`, which admits a tie at the cutoff only
+    /// if nothing tied was offered before it, and the kept ones rank ties to the higher
+    /// position. On binary interactions ties are common enough that this decides a
+    /// sizeable share of the lists.
+    Implicit,
+}
+
 /// For each query, the `k` best candidates of `users[rows[q]] * similarity`, best first,
-/// with ties going to the lower candidate position.
+/// with ties ranked as `ties` says.
 ///
 /// `users` is the whole user-side matrix; row `rows[q]` is query `q`. The similarity has
 /// one row per item the user side can hold, spreading that item's weight over the items
@@ -367,6 +377,7 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
     candidates: Candidates<'_>,
     exclusions: &Exclusions<'_, Q>,
     k: usize,
+    ties: Ties,
 ) -> Result<(Vec<usize>, Vec<f64>), TooFewEligible> {
     check_eligible(rows, &candidates, exclusions, k)?;
     let n_candidates = candidates.len();
@@ -382,6 +393,7 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
         dropped: Vec<bool>,
         skip: Vec<usize>,
         best: Best,
+        implicit: ImplicitTopK,
         scored: Vec<Candidate>,
         zeros: Vec<Candidate>,
     }
@@ -397,6 +409,7 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
             dropped: vec![false; n_candidates],
             skip: Vec::new(),
             best: Best::new(k),
+            implicit: ImplicitTopK::new(k),
             scored: Vec::with_capacity(k),
             zeros: Vec::with_capacity(k),
         },
@@ -409,12 +422,13 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
             // per-add bookkeeping costs more than a plain dense row: unconditional adds,
             // then one ordered pass over the candidates. That pass ranks an untouched
             // candidate at exactly zero with ties to the lower position, which is what
-            // the sparse path's zero fallback reproduces, so the result is the same.
+            // the sparse path's zero fallback reproduces, so the result is the same. It
+            // does lose the touch order that implicit's tie rule depends on.
             let work: usize = users
                 .row(row)
                 .map(|(item, _)| similarity.range(item).len())
                 .sum();
-            if work >= similarity.n_cols / DENSE_WORK_RATIO {
+            if ties == Ties::LowerPosition && work >= similarity.n_cols / DENSE_WORK_RATIO {
                 st.dense.resize(similarity.n_cols, 0.0);
                 for (item, weight) in users.row(row) {
                     for (j, w) in similarity.row(item) {
@@ -442,15 +456,39 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
                     st.acc.add(j, weight * w);
                 }
             }
-            for &j in st.acc.touched() {
-                if let Some(p) = candidates.position(j)
-                    && !st.dropped[p]
-                {
-                    st.best.offer(st.acc.get(j), p);
+            match ties {
+                Ties::LowerPosition => {
+                    for &j in st.acc.touched() {
+                        if let Some(p) = candidates.position(j)
+                            && !st.dropped[p]
+                        {
+                            st.best.offer(st.acc.get(j), p);
+                        }
+                    }
+                    st.best.drain_sorted(&mut st.scored);
+                }
+                Ties::Implicit => {
+                    // Positions ascend with the item index, so ranking ties by position
+                    // is ranking them by item, as implicit does.
+                    for &j in st.acc.touched().iter().rev() {
+                        if let Some(p) = candidates.position(j)
+                            && !st.dropped[p]
+                        {
+                            st.implicit.offer(p, st.acc.get(j));
+                        }
+                    }
+                    st.scored.clear();
+                    st.scored.extend(
+                        st.implicit
+                            .drain()
+                            .map(|(index, score)| Candidate { score, index }),
+                    );
+                    st.scored.sort_unstable_by(|a, b| {
+                        b.score.total_cmp(&a.score).then(b.index.cmp(&a.index))
+                    });
                 }
             }
-            let reached = st.best.len();
-            st.best.drain_sorted(&mut st.scored);
+            let reached = st.scored.len();
 
             // A candidate the product never reached scores exactly zero, which the dense
             // path ranked alongside the rest. That can only matter when fewer than `k`
@@ -968,12 +1006,26 @@ mod tests {
                 self.candidates(),
                 &self.exclusions(),
                 k,
+                Ties::LowerPosition,
             )
         }
 
         fn run(&self, k: usize) -> (Vec<usize>, Vec<f64>) {
             self.try_run(k)
                 .unwrap_or_else(|_| panic!("too few eligible"))
+        }
+
+        fn run_ties(&self, k: usize, ties: Ties) -> (Vec<usize>, Vec<f64>) {
+            top_k_from_similarity(
+                &CsrRows::from(&self.users.csr()),
+                &self.rows,
+                &CsrRows::from(&self.similarity.csr()),
+                self.candidates(),
+                &self.exclusions(),
+                k,
+                ties,
+            )
+            .unwrap_or_else(|_| panic!("too few eligible"))
         }
     }
 
@@ -1119,6 +1171,7 @@ mod tests {
                 indices: full.indices,
             },
             k,
+            Ties::LowerPosition,
         )
         .expect("enough");
         let picked: Vec<Vec<f64>> = rows.iter().map(|&r| users[r].clone()).collect();
@@ -1171,6 +1224,7 @@ mod tests {
                 },
             },
             k,
+            Ties::LowerPosition,
         )
         .expect("enough");
         let picked: Vec<Vec<f64>> = rows.iter().map(|&r| users[r].clone()).collect();
@@ -1446,5 +1500,123 @@ mod tests {
         .expect("enough");
         assert_eq!(order, vec![2, 0, 1, 2]);
         assert_eq!(scores, vec![1.0, 0.5, 2.0, 1.0]);
+    }
+
+    /// implicit's `NearestNeighboursScorer.recommend`, written out plainly: accumulate
+    /// into a first-touch list, offer it back to front to `TopK`, then `sort_heap` with
+    /// `greater`. Excluded and non-candidate items are simply never offered.
+    fn implicit_ranking(
+        user: &[f64],
+        similarity: &[Vec<f64>],
+        position: &[i64],
+        excluded: &[usize],
+        k: usize,
+    ) -> (Vec<usize>, Vec<f64>) {
+        let n = similarity[0].len();
+        let mut sums = vec![0.0f64; n];
+        let mut touched = Vec::new();
+        for (i, &w) in user.iter().enumerate().filter(|(_, w)| **w != 0.0) {
+            for (j, &s) in similarity[i].iter().enumerate().filter(|(_, s)| **s != 0.0) {
+                if !touched.contains(&j) {
+                    touched.push(j);
+                }
+                sums[j] += w * s;
+            }
+        }
+        let mut kept: Vec<(f64, usize)> = Vec::new();
+        for &j in touched.iter().rev() {
+            let Ok(p) = usize::try_from(position[j]) else {
+                continue;
+            };
+            if excluded.contains(&p) {
+                continue;
+            }
+            let min = kept
+                .iter()
+                .copied()
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            match min {
+                Some(min) if kept.len() >= k => {
+                    if sums[j] > min.0 {
+                        kept.retain(|&e| e != min);
+                        kept.push((sums[j], p));
+                    }
+                }
+                _ => kept.push((sums[j], p)),
+            }
+        }
+        kept.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
+        (
+            kept.iter().map(|e| e.1).collect(),
+            kept.iter().map(|e| e.0).collect(),
+        )
+    }
+
+    /// Binary users over a similarity with few distinct values, so scores tie often,
+    /// also at the cutoff, and every query reaches well over `k` candidates.
+    fn tie_heavy(n_users: usize, n_items: usize) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let users = (0..n_users)
+            .map(|_| (0..n_items).map(|_| f64::from(next() % 4 == 0)).collect())
+            .collect();
+        let similarity = (0..n_items)
+            .map(|_| {
+                (0..n_items)
+                    .map(|_| match next() % 6 {
+                        0 => 1.0,
+                        1 => 2.0,
+                        _ => 0.0,
+                    })
+                    .collect()
+            })
+            .collect();
+        (users, similarity)
+    }
+
+    #[test]
+    fn implicit_ties_rank_as_implicit_does() {
+        let (users, similarity) = tie_heavy(60, 40);
+        let k = 5;
+        for candidates in [(0..40).collect::<Vec<_>>(), (0..40).step_by(3).collect()] {
+            let excluded: Vec<Vec<usize>> = (0..users.len())
+                .map(|q| {
+                    if q % 3 == 0 {
+                        vec![0, q % 7 + 1]
+                    } else {
+                        vec![]
+                    }
+                })
+                .collect();
+            let case = Case::new(&users, &similarity, candidates).exclude(&excluded);
+            let (order, scores) = case.run_ties(k, Ties::Implicit);
+            let mut tied_at_cutoff = 0;
+            for (q, user) in users.iter().enumerate() {
+                let (want_order, want_scores) =
+                    implicit_ranking(user, &similarity, &case.position, &excluded[q], k);
+                assert_eq!(want_order.len(), k, "query {q} reaches too few candidates");
+                assert_eq!(&order[q * k..(q + 1) * k], want_order, "query {q}");
+                assert_eq!(&scores[q * k..(q + 1) * k], want_scores, "query {q}");
+                let row = &scores[q * k..(q + 1) * k];
+                tied_at_cutoff += usize::from(row[k - 2] == row[k - 1]);
+            }
+            assert!(tied_at_cutoff > 5, "the data should tie at the cutoff");
+        }
+    }
+
+    #[test]
+    fn implicit_ties_differ_only_in_order_among_equal_scores() {
+        let (users, similarity) = tie_heavy(60, 40);
+        let case = Case::new(&users, &similarity, (0..40).collect());
+        let k = 5;
+        let (lower, lower_scores) = case.run_ties(k, Ties::LowerPosition);
+        let (implicit, implicit_scores) = case.run_ties(k, Ties::Implicit);
+        assert_eq!(lower_scores, implicit_scores);
+        assert_ne!(lower, implicit);
     }
 }

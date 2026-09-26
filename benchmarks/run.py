@@ -29,7 +29,7 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -43,13 +43,13 @@ import suite
 _MARK = {store.FRESH: " ", store.STALE: "~", store.MISSING: "+"}
 
 
-def _override(value: str) -> tuple[str, Any]:
+def _override(value: str) -> tuple[str, spec.JSON]:
     """Parse ``name=value``, reading the value as JSON so numbers and lists survive."""
     name, sep, raw = value.partition("=")
     if not sep or not name:
         raise argparse.ArgumentTypeError(f"expected name=value, got {value!r}")
     try:
-        return name, json.loads(raw)
+        return name, spec.parse_json(raw)
     except json.JSONDecodeError:
         return name, raw
 
@@ -121,15 +121,15 @@ def _status(args: argparse.Namespace) -> int:
     return 0
 
 
-def _with_overrides(config: spec.Config, overrides: Sequence[tuple[str, Any]]) -> spec.Config:
+def _with_overrides(config: spec.Config, overrides: Sequence[tuple[str, spec.JSON]]) -> spec.Config:
     """``config`` with every dataset's settings overridden for this run only."""
     if not overrides:
         return config
     targets = {}
     for name, target in config.targets.items():
-        settings = {**target.settings, **dict(overrides)}
-        spec.check_settings(config.benchmark, f"--set on {name}", settings)
-        targets[name] = dataclasses.replace(target, settings=settings)
+        settings = {**target.raw_settings, **dict(overrides)}
+        checked = spec.check_settings(config.benchmark, f"--set on {name}", settings)
+        targets[name] = dataclasses.replace(target, settings=checked, raw_settings=settings)
     return dataclasses.replace(config, targets=targets)
 
 
@@ -147,9 +147,12 @@ class _Collector:
     """A sink that keeps results in memory, for ``--no-store``."""
 
     def __init__(self) -> None:
-        self.results: dict[store.Unit, dict[str, Any]] = {}
+        self.results: dict[store.Unit, store.Payload] = {}
 
-    def __call__(self, unit: store.Unit, payload: dict[str, Any], *, host: Any) -> None:
+    def __call__(
+        self, unit: store.Unit, payload: store.Payload, *, host: leaderboard.HostFacts
+    ) -> None:
+        del host
         self.results[unit] = payload
 
 
@@ -160,25 +163,57 @@ def _print_collected(config: spec.Config, dataset: str, collected: _Collector) -
     }
     if not found:
         return
+    if config.benchmark == "reranking":
+        # As below, the unit's benchmark says which payload it holds.
+        _print_reranking([cast(store.RerankingPayload, payload) for payload in found.values()])
+        return
+    if config.benchmark == "candidates":
+        # As below, the unit's benchmark says which payload it holds.
+        payloads = [cast(store.CandidatesPayload, payload) for payload in found.values()]
+        print(leaderboard.render_box([payload["recall"] for payload in payloads]))
+        print(leaderboard.render_box([payload["latency"] for payload in payloads]))
+        return
     if config.benchmark != "indexes":
         column = suite.rank_column(config.benchmark, config.targets[dataset].settings)
-        rows = sorted(found.values(), key=lambda row: float(row["quality"][column]), reverse=True)
+        # A unit's kind says which payload it measured; these reports store rows.
+        rows = sorted(
+            (cast(store.RowPayload, payload) for payload in found.values()),
+            key=lambda row: float(row["quality"][column]),
+            reverse=True,
+        )
         print(leaderboard.render_box([row["quality"] for row in rows]))
         print(leaderboard.render_box([row["timing"] for row in rows]))
         return
     models = [entry.name for entry in config.active_models(dataset)]
     active = config.active_indexes(dataset)
-    by_kind: dict[str, dict[tuple[str, str], Any]] = {kind: {} for kind in indexes.KINDS}
+    sweep: dict[tuple[str, str], store.SweepPayload] = {}
+    series: dict[str, dict[tuple[str, str], store.SeriesPayload]] = {
+        "latency": {},
+        "scaling": {},
+    }
     for unit, payload in found.items():
-        if isinstance(unit, store.IndexUnit):
-            by_kind[unit.kind][unit.model, unit.index] = payload
+        if not isinstance(unit, store.IndexUnit):
+            continue
+        # As above, the unit's kind says which payload it holds.
+        if unit.kind == "sweep":
+            sweep[unit.model, unit.index] = cast(store.SweepPayload, payload)
+        else:
+            series[unit.kind][unit.model, unit.index] = cast(store.SeriesPayload, payload)
     for table in (
-        *indexes.sweep_tables(models, active, by_kind["sweep"]),
-        indexes.latency_table(models, active, by_kind["latency"]),
-        indexes.scaling_table(models, active, by_kind["scaling"]),
+        *indexes.sweep_tables(models, active, sweep),
+        indexes.latency_table(models, active, series["latency"]),
+        indexes.scaling_table(models, active, series["scaling"]),
     ):
         if table:
             print(leaderboard.render_box(table))
+
+
+def _print_reranking(payloads: Sequence[store.RerankingPayload]) -> None:
+    """The reranking report's three tables, every pipeline's rows in each."""
+    for table in ("quality", "latency", "examples"):
+        rows = [row for payload in payloads for row in payload[table]]
+        if rows:
+            print(leaderboard.render_box(rows))
 
 
 def _run(args: argparse.Namespace) -> int:

@@ -13,7 +13,8 @@ same assertions.
 
 import pytest
 
-from skrecsys import recommendation
+from skrecsys import compose, recommendation
+from skrecsys.base import RecommenderMixin
 from skrecsys.recommendation import (
     EASE,
     AlternatingLeastSquares,
@@ -24,6 +25,7 @@ from skrecsys.recommendation import (
     RP3Beta,
     SLIMElasticNet,
 )
+from tests.compose._composites import COMPOSITES
 from tests.estimator_checks import check_partial_fit_survives_a_pickle, check_pickle_round_trip
 
 try:
@@ -62,8 +64,12 @@ MODELS = CLASSICAL + _neural()
 
 def test_every_shipped_recommender_is_listed():
     """The list above has to keep up with the package, or it quietly stops covering it."""
-    listed = {type(estimator).__name__ for estimator in MODELS}
+    listed = {type(estimator).__name__ for estimator in MODELS + COMPOSITES}
     expected = set(recommendation.__all__)
+    # The composites have no `partial_fit`, so they are listed apart, in tests/compose.
+    expected |= {
+        name for name in compose.__all__ if issubclass(getattr(compose, name), RecommenderMixin)
+    }
     if nn is not None:
         expected |= set(nn.__all__)
     assert listed == expected, (
@@ -82,3 +88,9 @@ def test_a_fitted_model_pickles_and_answers_the_same(estimator):
 def test_a_model_pickled_mid_stream_goes_on_training(estimator):
     """Fit a batch, store, load, feed the next batch: training has to pick up where it was."""
     check_partial_fit_survives_a_pickle(type(estimator).__name__, estimator)
+
+
+@pytest.mark.parametrize("estimator", COMPOSITES, ids=lambda e: type(e).__name__)
+def test_a_fitted_composite_pickles_and_answers_the_same(estimator):
+    """The composites nest fitted models, and all of them have to come back."""
+    check_pickle_round_trip(type(estimator).__name__, estimator)

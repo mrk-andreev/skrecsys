@@ -9,6 +9,7 @@ import spec
 import store
 
 from skrecsys.datasets import fetch_movielens_100k
+from skrecsys.model_selection import ColdStartSplit
 
 
 @pytest.fixture(scope="session")
@@ -39,6 +40,14 @@ def synthetic_dataset():
         train_indices=indices[(indices % 6) < 4],
         test_indices=indices[(indices % 6) >= 4],
     )
+
+
+def cold_dataset():
+    """The synthetic dataset split by ``ColdStartSplit``: some users are held out whole."""
+    data = synthetic_dataset()
+    split = ColdStartSplit(cold_users=0.25, test_size=0.34, random_state=0)
+    data.train_indices, data.test_indices = next(split.split(data.data))
+    return data
 
 
 @pytest.fixture
@@ -96,6 +105,58 @@ SANDBOX_CONFIGS = {
         "datasets": {"toy": {}},
         "models": ["*"],
     },
+    "reranking": {
+        "schema": 1,
+        "settings": {
+            "k": 3,
+            "latency_repeat": 2,
+            "budget": 0.001,
+            "warmup": {"fit": 0, "rank": 0},
+        },
+        "datasets": {"toy": {}},
+        "models": [
+            {
+                "name": "BM25",
+                "package": "pipelines",
+                "cls": "switch_bm25",
+                "params": {},
+                "version": "v1",
+            },
+            {
+                "name": "BM25-k1",
+                "package": "pipelines",
+                "cls": "switch_bm25",
+                "params": {"k1": 0.5},
+                "version": "v1",
+            },
+        ],
+    },
+    "candidates": {
+        "schema": 1,
+        "settings": {
+            "n_retrieved": [2, 4],
+            "latency_repeat": 2,
+            "budget": 0.001,
+            "warmup": {"fit": 0, "rank": 0},
+        },
+        "datasets": {"toy": {}},
+        "models": [
+            {
+                "name": "ItemKNN",
+                "package": "candidates",
+                "cls": "generators",
+                "params": {"members": ["ItemKNNRecommender"]},
+                "version": "v1",
+            },
+            {
+                "name": "ItemKNN+MostPopular",
+                "package": "candidates",
+                "cls": "generators",
+                "params": {"members": ["ItemKNNRecommender", "MostPopularRecommender"]},
+                "version": "v1",
+            },
+        ],
+    },
     "indexes": {
         "schema": 1,
         "models_from": "leaderboard",
@@ -152,7 +213,7 @@ class Sandbox:
         self.write(name, config)
 
 
-def stored(unit: store.Unit) -> dict[str, Any]:
+def stored(unit: store.Unit) -> store.Result:
     """The stored result of ``unit``, which a test has just arranged to exist."""
     result = store.read(unit)
     assert result is not None, f"{unit.label} has no stored result"

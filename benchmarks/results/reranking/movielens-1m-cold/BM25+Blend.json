@@ -1,0 +1,156 @@
+{
+  "key": "e41cccaef9f038df",
+  "unit": "reranking/movielens-1m-cold/BM25+Blend",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T08:27:25+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "reranking",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "all",
+      "load": {},
+      "max_eval_users": null,
+      "split": {
+        "package": "skrecsys.model_selection",
+        "cls": "ColdStartSplit",
+        "params": {
+          "cold_users": 0.1,
+          "test_size": 0.2,
+          "random_state": 0
+        }
+      }
+    },
+    "settings": {
+      "k": 10,
+      "latency_repeat": 1000,
+      "budget": 10.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "pipelines",
+      "cls": "switch_bm25_blend",
+      "params": {
+        "n_retrieved": 100,
+        "cold_users": 0.2,
+        "normalize": "rank",
+        "cv": 3,
+        "random_state": 0,
+        "catboost": {
+          "iterations": 300
+        },
+        "xgboost": {
+          "n_estimators": 300,
+          "learning_rate": 0.05,
+          "max_depth": 4,
+          "min_child_weight": 5
+        },
+        "lightgbm": {
+          "n_estimators": 200,
+          "learning_rate": 0.03,
+          "min_child_samples": 100,
+          "reg_lambda": 10
+        }
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "quality": [
+      {
+        "Pipeline": "BM25+Blend",
+        "users": "all",
+        "n users": "6,040",
+        "NDCG@10": "0.1923",
+        "P@10": "0.1748",
+        "R@10": "0.0745",
+        "hit rate": "0.6818",
+        "MAP": "0.1080",
+        "MRR": "0.3474",
+        "cat cov": "0.2233",
+        "mean pop": "1468.2511",
+        "novelty": "9.13"
+      },
+      {
+        "Pipeline": "BM25+Blend",
+        "users": "warm",
+        "n users": "5,436",
+        "NDCG@10": "0.1580",
+        "P@10": "0.1406",
+        "R@10": "0.0778",
+        "hit rate": "0.6540",
+        "MAP": "0.0780",
+        "MRR": "0.3075",
+        "cat cov": "0.2233",
+        "mean pop": "1386.3667",
+        "novelty": "9.21"
+      },
+      {
+        "Pipeline": "BM25+Blend",
+        "users": "cold",
+        "n users": "604",
+        "NDCG@10": "0.5008",
+        "P@10": "0.4826",
+        "R@10": "0.0451",
+        "hit rate": "0.9321",
+        "MAP": "0.3775",
+        "MRR": "0.7065",
+        "cat cov": "0.0099",
+        "mean pop": "2205.2111",
+        "novelty": "8.37"
+      }
+    ],
+    "latency": [
+      {
+        "Pipeline": "BM25+Blend",
+        "users": "warm",
+        "requests": "1,000",
+        "median": "1.61 ms",
+        "q95": "2.24 ms",
+        "q99": "2.80 ms"
+      },
+      {
+        "Pipeline": "BM25+Blend",
+        "users": "cold",
+        "requests": "1,000",
+        "median": "1.21 ms",
+        "q95": "1.33 ms",
+        "q99": "1.39 ms"
+      }
+    ],
+    "examples": [
+      {
+        "user": "2",
+        "profile": "56, M, 16",
+        "held out": "129",
+        "top": "**American Beauty (1999)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>Fargo (1996)"
+      },
+      {
+        "user": "13",
+        "profile": "45, M, 1",
+        "held out": "108",
+        "top": "American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>Back to the Future (1985)"
+      },
+      {
+        "user": "15",
+        "profile": "25, M, 7",
+        "held out": "201",
+        "top": "**American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991)"
+      }
+    ]
+  }
+}

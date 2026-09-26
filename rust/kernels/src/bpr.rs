@@ -11,11 +11,17 @@
 //! `x_uij = b_i - b_j + <p_u, q_i - q_j>`,
 //!
 //! by taking one gradient step per sampled triplet. This is a port of Cornac's `BPR`
-//! (`cornac/models/bpr/recom_bpr.pyx`), which follows implicit's: one epoch draws as
-//! many triplets as there are interactions, the positive is a uniformly drawn stored
-//! entry, the negative a uniformly drawn item, and a draw whose negative turns out to be
-//! one of the user's own items is skipped rather than resampled. Interaction values are
-//! ignored; only which entries are stored matters.
+//! (`cornac/models/bpr/recom_bpr.pyx`): one epoch draws as many triplets as there are
+//! interactions, the positive is a uniformly drawn stored entry, the negative a
+//! uniformly drawn item, and a draw whose negative turns out to be one of the user's own
+//! items is skipped rather than resampled. Interaction values are ignored; only which
+//! entries are stored matters.
+//!
+//! implicit (`implicit/cpu/bpr.pyx`) differs in one respect, and [`Negatives`] offers
+//! both: it draws the negative as the item of another uniformly drawn stored entry, so
+//! in proportion to item popularity. On a long-tailed catalog a uniform negative is
+//! nearly always an obscure item any model already ranks low, so its gradient carries
+//! little beyond popularity itself; a popular negative is the informative one.
 //!
 //! Threads update the factors without locking, so two samples that touch the same row
 //! race (Hogwild!, F. Niu et al., NIPS 2011), exactly as in the reference. Which
@@ -27,6 +33,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::sparse::Csr;
 
+/// How the negative item of a triplet is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Negatives {
+    /// Uniformly over the catalog, as Cornac does.
+    Uniform,
+    /// As the item of a uniformly drawn stored entry, so in proportion to how many
+    /// interactions the item has, as implicit does.
+    Popularity,
+}
+
 /// Hyper-parameters of the fit, in the reference's parameterization.
 pub struct Hyper {
     pub n_factors: usize,
@@ -35,6 +51,7 @@ pub struct Hyper {
     pub use_bias: bool,
     pub n_iter: usize,
     pub seed: u64,
+    pub negatives: Negatives,
 }
 
 /// Model parameters, updated in place. `user_factors` holds `n_users` rows of
@@ -112,7 +129,7 @@ fn step(
     let entry = positives.map_or(drawn, |p| p[drawn]);
     let u = user_of[entry];
     let i = r.col(entry);
-    let j = (second % r.n_cols as u64) as usize;
+    let j = negative(r, hyper.negatives, second);
     // The reference skips a negative the user has interacted with rather than redraw it.
     if r.indices[r.indptr[u]..r.indptr[u + 1]]
         .binary_search(&(j as i64))
@@ -147,6 +164,14 @@ fn step(
         biases.set(j, b_j + lr * (-z - reg * b_j));
     }
     (usize::from(z < 0.5), 0)
+}
+
+/// The candidate negative item for the uniform draw `second`.
+fn negative(r: &Csr, negatives: Negatives, second: u64) -> usize {
+    match negatives {
+        Negatives::Uniform => (second % r.n_cols as u64) as usize,
+        Negatives::Popularity => r.col((second % r.indices.len() as u64) as usize),
+    }
 }
 
 /// The user each stored entry belongs to, that is the `row` of the COO form.
@@ -229,6 +254,7 @@ mod tests {
             use_bias: true,
             n_iter,
             seed: 7,
+            negatives: Negatives::Uniform,
         }
     }
 
@@ -332,6 +358,7 @@ mod tests {
             // Chosen so that the single draw picks item 1, the unobserved one, as the
             // negative; any other seed would make the sample a skip.
             seed: 2,
+            negatives: Negatives::Uniform,
         };
         let before_user = initial(1, 2, 1);
         let before_item = initial(2, 2, 99);
@@ -405,6 +432,7 @@ mod tests {
         let dense = pseudo_random_dense(40, 20);
         let other = Hyper {
             seed: 8,
+            negatives: Negatives::Uniform,
             ..hyper(8, 30)
         };
         let first = fit_dense(&dense, &hyper(8, 30));
@@ -455,5 +483,45 @@ mod tests {
         let dense = vec![vec![1.0, 1.0, 0.0], vec![1.0, 0.0, 1.0]];
         let fitted = fit_dense(&dense, &hyper(4, 50));
         assert!(fitted.item_bias[0] != 0.0);
+    }
+
+    #[test]
+    fn popularity_negatives_never_draw_an_item_nobody_took() {
+        // Item 3 has no interactions: a uniform negative reaches it, a popularity-weighted
+        // one never does, so its bias stays exactly at its initial zero.
+        let dense = vec![
+            vec![1.0, 1.0, 0.0, 0.0],
+            vec![1.0, 0.0, 1.0, 0.0],
+            vec![0.0, 1.0, 1.0, 0.0],
+        ];
+        let uniform = fit_dense(&dense, &hyper(4, 50));
+        assert!(uniform.item_bias[3] < 0.0);
+        let popularity = fit_dense(
+            &dense,
+            &Hyper {
+                negatives: Negatives::Popularity,
+                ..hyper(4, 50)
+            },
+        );
+        assert_eq!(popularity.item_bias[3], 0.0);
+        assert!(popularity.item_bias[..3].iter().all(|&b| b != 0.0));
+    }
+
+    #[test]
+    fn popularity_negatives_draw_in_proportion_to_interactions() {
+        let dense: Vec<Vec<f64>> = (0..400)
+            .map(|u| vec![1.0, f64::from(u % 4 == 0), 0.0, 0.0, 0.0, 0.0])
+            .collect();
+        let owned = Owned::from_dense(&dense);
+        let r = owned.csr();
+        let mut draws = [0usize; 6];
+        for s in 0..200_000u64 {
+            let (_, second) = draw(3, s);
+            draws[negative(&r, Negatives::Popularity, second)] += 1;
+        }
+        // 400 interactions with item 0 and 100 with item 1: a 4:1 ratio, nothing else.
+        let ratio = draws[0] as f64 / draws[1] as f64;
+        assert!((ratio - 4.0).abs() < 0.1, "{ratio}");
+        assert!(draws[2..].iter().all(|&n| n == 0));
     }
 }

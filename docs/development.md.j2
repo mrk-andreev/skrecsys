@@ -1,0 +1,39 @@
+{#- Included by README.md.j2 after "Modules", so headings start at level two. -#}
+## Development
+
+Native kernels (for example the libFM-style ALS solver) are written in Rust under `rust/` and built
+by [maturin](https://www.maturin.rs) as `skrecsys._core`, so development needs a Rust toolchain
+(`rustup` or your package manager). `uv sync` rebuilds the extension when Rust sources change.
+
+The Rust side is a two-crate workspace. `rust/kernels` (`skrecsys-kernels`) holds the kernels and
+knows nothing about Python: its functions take borrowed slices and the sparse types in
+`sparse.rs`. `rust/src/lib.rs` is the `skrecsys._core` extension module, which validates the numpy
+arrays that come in, converts them and releases the GIL around a kernel call. The split is what
+lets the benchmarks link the kernels while the extension stays LTO'd; see `[lib] crate-type` below.
+
+```sh
+git clone https://github.com/mrk-andreev/skrecsys.git
+cd skrecsys
+uv sync
+uv run pytest
+uv run pytest -m benchmark  # quality benchmarks on real datasets (downloads data)
+LIBFM_BIN=/path/to/libfm/bin/libFM uv run pytest -m benchmark -k libfm  # ALS vs libFM
+uv run --group reference pytest -m benchmark -k implicit  # BM25 vs implicit
+uv run pytest -m benchmark -k rectools  # EASE vs RecTools (needs network on first run)
+uv run pytest -m benchmark -k dacrema  # RP3Beta and SLIMElasticNet vs their reference framework (needs network)
+uv run pytest -m benchmark -k cornac   # BayesianPersonalizedRanking vs Cornac (needs network on first run)
+uv run ruff check
+uv run ty check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo bench -- --test  # run every benchmark once, without measuring
+```
+
+The release profile uses fat LTO and a single codegen unit. `[lib] crate-type` deliberately
+lists only `cdylib`: adding `rlib` back would make Cargo drop LTO silently, because it cannot
+link-time-optimize a unit that also emits an rlib. The kernels live in their own crate so that
+the benchmarks have an rlib to link against without the extension needing one; `cargo build
+--release -v` shows `-C lto=fat` on the `cdylib` and `-C linker-plugin-lto` on the kernels, so
+LTO still crosses the crate boundary.
+
+{% include "docs/benchmarks.md.j2" -%}

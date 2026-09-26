@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "settings": {
+    "n_retrieved": [10, 20, 50, 100, 200],
+    "latency_repeat": 300,
+    "budget": 2.0,
+    "warmup": {
+      "fit": 0,
+      "rank": 10
+    }
+  },
+  "datasets": {
+    "movielens-100k-cold": {},
+    "movielens-1m": {}
+  },
+  "models": [
+    {
+      "name": "BM25",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["BM25Recommender"]},
+      "version": "v1"
+    },
+    {
+      "name": "EASE",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["EASE"]},
+      "version": "v1"
+    },
+    {
+      "name": "ItemKNN",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["ItemKNNRecommender"]},
+      "version": "v1"
+    },
+    {
+      "name": "RP3Beta",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["RP3Beta"]},
+      "version": "v1"
+    },
+    {
+      "name": "MostPopular",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["MostPopularRecommender"]},
+      "version": "v1"
+    },
+    {
+      "name": "BM25+EASE",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["BM25Recommender", "EASE"]},
+      "version": "v1",
+      "comment": "Two neighbourhood-style models of similar strength that disagree on about a quarter of their candidates"
+    },
+    {
+      "name": "EASE+RP3Beta",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["EASE", "RP3Beta"]},
+      "version": "v1"
+    },
+    {
+      "name": "EASE+ItemKNN",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["EASE", "ItemKNNRecommender"]},
+      "version": "v1"
+    },
+    {
+      "name": "BM25+EASE+ItemKNN",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["BM25Recommender", "EASE", "ItemKNNRecommender"]},
+      "version": "v1"
+    },
+    {
+      "name": "EASE+MostPopular",
+      "package": "candidates",
+      "cls": "generators",
+      "params": {"members": ["EASE", "MostPopularRecommender"]},
+      "version": "v1",
+      "comment": "A strong generator merged with a much weaker one, which takes half the budget"
+    },
+    {
+      "name": "BM25+EASE RRF",
+      "package": "candidates",
+      "cls": "fused",
+      "params": {"members": ["BM25Recommender", "EASE"], "k": 60},
+      "version": "v1",
+      "comment": "The members of BM25+EASE, merged by reciprocal rank fusion instead of round-robin"
+    },
+    {
+      "name": "EASE+RP3Beta RRF",
+      "package": "candidates",
+      "cls": "fused",
+      "params": {"members": ["EASE", "RP3Beta"], "k": 60},
+      "version": "v1",
+      "comment": "The members of EASE+RP3Beta, merged by reciprocal rank fusion instead of round-robin"
+    },
+    {
+      "name": "EASE+ItemKNN RRF",
+      "package": "candidates",
+      "cls": "fused",
+      "params": {"members": ["EASE", "ItemKNNRecommender"], "k": 60},
+      "version": "v1",
+      "comment": "The members of EASE+ItemKNN, merged by reciprocal rank fusion instead of round-robin"
+    },
+    {
+      "name": "BM25+EASE+ItemKNN RRF",
+      "package": "candidates",
+      "cls": "fused",
+      "params": {"members": ["BM25Recommender", "EASE", "ItemKNNRecommender"], "k": 60},
+      "version": "v1",
+      "comment": "The members of BM25+EASE+ItemKNN, merged by reciprocal rank fusion instead of round-robin"
+    },
+    {
+      "name": "EASE+MostPopular RRF",
+      "package": "candidates",
+      "cls": "fused",
+      "params": {"members": ["EASE", "MostPopularRecommender"], "k": 60},
+      "version": "v1",
+      "comment": "The members of EASE+MostPopular, merged by reciprocal rank fusion instead of round-robin"
+    }
+  ]
+}

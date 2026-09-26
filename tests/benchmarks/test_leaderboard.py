@@ -12,10 +12,12 @@ import numpy as np
 import pytest
 import spec
 
+from skrecsys.recommendation._base import BaseRecommender
+
 
 def _model(name):
     """A fresh estimator as ``leaderboard.json`` configures it."""
-    return spec.load("leaderboard").model(name).build()
+    return spec.load("leaderboard").model(name).build(BaseRecommender)
 
 
 @pytest.fixture

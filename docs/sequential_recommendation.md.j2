@@ -1,0 +1,65 @@
+{#- Included by README.md.j2 after "Datasets", so headings start at level two. -#}
+## Sequential recommendation
+
+`skrecsys.nn.HSTU` and `skrecsys.nn.Mamba4Rec` predict what a user does *next* rather
+than what they like. Their `X` still has exactly two columns — user ID first, item ID
+second — but row order is now significant: within a user, row `i` precedes row `j`
+whenever `i < j`. If you have timestamps, sort by user and timestamp before fitting;
+timestamps are not passed as a third column or used by these models. Rows of different
+users may be interleaved. Every loader here already sorts its rows by user and then by
+time, so its output is ready to fit, but shuffling the rows first trains the models on
+an incorrect sequence they cannot detect.
+
+```python
+from skrecsys.nn import HSTU, Mamba4Rec
+
+ml = fetch_movielens_1m(subset="leave-one-out", max_sequence_length=200)
+hstu = HSTU(random_state=0).fit(ml.data[ml.train_indices])
+items, scores = hstu.recommend(ml.data[ml.test_indices][:, 0], n_recommendations=10)
+
+mamba = Mamba4Rec(random_state=0).fit(ml.data[ml.train_indices])
+```
+
+The two read a history in different ways. HSTU attends over the window, so every position
+is compared against every other and the cost grows with the square of
+`max_sequence_length`; Mamba4Rec runs a selective state space recurrence over it, which
+carries a fixed-size state from one position to the next and costs the same per position
+however long the window is.
+
+Either one scores from the history it was fitted on: `recommend` takes user identifiers,
+not sequences. Two differences from the published models: HSTU also biases
+attention by the *time* gaps between interactions, and `fit` receives identifiers only,
+so this one carries the positional half of that bias alone. Mamba4Rec's recurrence is
+plain PyTorch rather than the fused CUDA kernel of `mamba-ssm`: the arithmetic is the
+same, the constant factor is not, so a fit is expensive and the paper's efficiency claims
+cannot be checked against it.
+
+Because a fit is expensive, both take a `device`. It defaults to `"cpu"`, the one backend
+every wheel has, and `device="auto"` picks CUDA, then MPS, then CPU — which is what
+`benchmarks/config/sequential.json` and the benchmark tests fit with, so they use whatever
+accelerator the host has:
+
+```python
+mamba = Mamba4Rec(random_state=0, device="auto").fit(ml.data[ml.train_indices])
+```
+
+The seeded batch order and dropout masks are drawn on the CPU whatever the device is, so
+moving a fit to an accelerator changes the last floating point digits of the result and
+nothing else.
+
+Every `skrecsys.nn` model shares one training loop, and it watches the training loss. An
+epoch that fails to beat the best loss so far by `tol` counts as a stall; after
+`n_iter_no_change` of them the `"adaptive"` schedule divides the Adam step size by five,
+and once the step size has bottomed out `early_stopping` ends the fit. `n_iter_` reports
+the epochs actually run and `best_loss_` the lowest loss reached. Pass
+`early_stopping=False, learning_rate_schedule="constant"` for the plain fixed-budget loop:
+
+```python
+hstu = HSTU(random_state=0, early_stopping=False, learning_rate_schedule="constant")
+```
+
+The signal is the training loss, not a held-out split, so this ends a fit that has
+converged rather than one that has begun to overfit — catching that would mean holding
+interactions back from `fit`. In practice it fires rarely at these defaults: measured on
+`ml-1m`, HSTU's loss goes at most one epoch without improving across a hundred of them,
+so its fit is untouched.

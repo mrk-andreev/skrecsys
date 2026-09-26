@@ -1,8 +1,7 @@
 """Vector spaces, the index base class, and the registry that names the index types."""
 
-import numbers
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TypeAlias, cast
 
 import numpy as np
 import scipy.sparse as sp
@@ -12,6 +11,7 @@ from sklearn.base import BaseEstimator, clone
 __all__ = [
     "MIN_EXPECTED_OVERLAP",
     "DenseSpace",
+    "IndexSpec",
     "SparseSpace",
     "VectorIndex",
     "VectorSpace",
@@ -90,6 +90,9 @@ class VectorIndex(BaseEstimator):
     #: walking when there is much more catalog than answer; see ``_worthwhile_index``.
     min_index_size: int
 
+    #: The space ``fit`` indexed, as the index holds it; set by ``fit``.
+    space_: "VectorSpace"
+
     def fit(self, space: VectorSpace, *, n_threads: int = 0, seed: int = 0) -> "VectorIndex":
         """Build the index over ``space`` and return self."""
         raise NotImplementedError
@@ -149,6 +152,11 @@ def is_navigable(space: VectorSpace) -> bool:
     return mean_row * mean_row / space.dim >= MIN_EXPECTED_OVERLAP
 
 
+#: What an estimator's ``index`` parameter takes: ``None`` for the exact path, the name
+#: of a registered index, or an index instance to clone.
+IndexSpec: TypeAlias = "str | VectorIndex | None"
+
+
 #: The index types a string may name. One line per index; nothing else needs to know.
 _REGISTRY: dict[str, type[VectorIndex]] = {}
 
@@ -163,7 +171,7 @@ def available_indexes() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def make_index(spec: Any) -> VectorIndex | None:
+def make_index(spec: object) -> VectorIndex | None:
     """Resolve an ``index`` parameter into an index to build, or ``None`` for exact.
 
     ``None`` keeps the exact path, a string names a registered index and takes its
@@ -186,20 +194,5 @@ def make_index(spec: Any) -> VectorIndex | None:
     )
 
 
-def check_positive_int(value: Any, name: str) -> int:
-    """Validate a parameter that must be an integer of at least one."""
-    if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 1:
-        raise ValueError(f"{name} must be an integer >= 1, got {value!r}.")
-    return int(value)
-
-
 #: A tail fraction is taken off *each* end, so half of one is the whole distribution.
 MAX_TAIL_FRACTION = 0.5
-
-
-def check_tail_fraction(value: Any, name: str) -> float:
-    """Validate a parameter naming a share of each tail, so under half in total."""
-    in_range = isinstance(value, numbers.Real) and 0.0 <= value < MAX_TAIL_FRACTION
-    if isinstance(value, bool) or not in_range:
-        raise ValueError(f"{name} must be a float in [0, {MAX_TAIL_FRACTION}), got {value!r}.")
-    return float(value)

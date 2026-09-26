@@ -10,11 +10,9 @@ copied out beside them. A fitted model therefore pickles, scores and resumes tra
 without torch being involved in any of it.
 """
 
-import math
-import numbers
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeAlias, TypedDict, TypeVar
 
 import numpy as np
 import scipy.sparse as sp
@@ -26,6 +24,7 @@ from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace
 from skrecsys.recommendation._base import BaseRecommender
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 __all__ = ["ModuleT", "TorchRecommender", "TorchRecommenderModule"]
 
@@ -46,6 +45,18 @@ MIN_LEARNING_RATE = 1e-6
 LEARNING_RATE_SCHEDULES = ("constant", "adaptive")
 
 
+class AdamMoments(TypedDict):
+    """Adam's state for one parameter, held as numpy between fits."""
+
+    step: float
+    exp_avg: NDArray[np.float64]
+    exp_avg_sq: NDArray[np.float64]
+
+
+#: One training batch: a tuple whose first element has one row per training example.
+Batch: TypeAlias = tuple[torch.Tensor, ...]
+
+
 class TorchRecommenderModule(torch.nn.Module):
     """The trainable half of a :class:`TorchRecommender`.
 
@@ -63,7 +74,7 @@ class TorchRecommenderModule(torch.nn.Module):
     #: Set by :meth:`set_training_subset`; ``None`` means every row is in play.
     _train_rows: "torch.Tensor | None" = None
 
-    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Any]:
+    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Batch]:
         """Yield one epoch of training batches, reshuffled on every call.
 
         A batch is a tuple whose first element has one row per training example, which is
@@ -71,7 +82,7 @@ class TorchRecommenderModule(torch.nn.Module):
         """
         raise NotImplementedError
 
-    def batch_loss(self, batch: Any) -> torch.Tensor:
+    def batch_loss(self, batch: Batch) -> torch.Tensor:
         """Return the mean loss of one batch of :meth:`iter_batches`."""
         raise NotImplementedError
 
@@ -408,30 +419,13 @@ class TorchRecommender(IncrementalRecommenderMixin, BaseRecommender, Generic[Mod
         ``n_jobs=-1`` both ask for: torch already spreads across every core.
         """
         for name in ("n_factors", "batch_size"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Integral) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be an integer >= 1, got {value!r}.")
-        if (
-            not isinstance(self.max_iter, numbers.Integral)
-            or isinstance(self.max_iter, bool)
-            or self.max_iter < 0
-        ):
-            raise ValueError(f"max_iter must be an integer >= 0, got {self.max_iter!r}.")
-        if not isinstance(self.learning_rate, numbers.Real) or not self.learning_rate > 0:
-            raise ValueError(
-                f"learning_rate must be a real number > 0, got {self.learning_rate!r}."
-            )
-        if not isinstance(self.regularization, numbers.Real) or not self.regularization >= 0:
-            raise ValueError(
-                f"regularization must be a real number >= 0, got {self.regularization!r}."
-            )
+            check_int(getattr(self, name), name, min_value=1)
+        check_int(self.max_iter, "max_iter", min_value=0)
+        check_real(self.learning_rate, "learning_rate", min_value=0, min_inclusive=False)
+        check_real(self.regularization, "regularization", min_value=0)
         self._check_stopping_params()
         self._resolve_device()
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        return resolve_n_jobs(self.n_jobs)
 
     def _check_stopping_params(self) -> None:
         """Validate the parameters that decide when a fit ends and how the step size moves."""
@@ -440,23 +434,9 @@ class TorchRecommender(IncrementalRecommenderMixin, BaseRecommender, Generic[Mod
                 f"learning_rate_schedule must be one of {LEARNING_RATE_SCHEDULES}, "
                 f"got {self.learning_rate_schedule!r}."
             )
-        if not isinstance(self.early_stopping, bool):
-            raise ValueError(f"early_stopping must be a boolean, got {self.early_stopping!r}.")
-        if (
-            not isinstance(self.tol, numbers.Real)
-            or isinstance(self.tol, bool)
-            or not math.isfinite(float(self.tol))
-            or self.tol < 0
-        ):
-            raise ValueError(f"tol must be a finite real number >= 0, got {self.tol!r}.")
-        if (
-            not isinstance(self.n_iter_no_change, numbers.Integral)
-            or isinstance(self.n_iter_no_change, bool)
-            or self.n_iter_no_change < 1
-        ):
-            raise ValueError(
-                f"n_iter_no_change must be an integer >= 1, got {self.n_iter_no_change!r}."
-            )
+        check_bool(self.early_stopping, "early_stopping")
+        check_real(self.tol, "tol", min_value=0)
+        check_int(self.n_iter_no_change, "n_iter_no_change", min_value=1)
 
     def _check_params(self) -> int:
         """Validate every parameter and return the thread cap for the fit."""
@@ -503,7 +483,7 @@ def _as_perm(perm: NDArray[np.intp] | None, length: int) -> torch.Tensor:
 #: and Adam's moments and step count beside them.
 TrainingState = tuple[
     dict[str, NDArray[np.float64]],
-    dict[str, dict[str, "NDArray[np.float64] | float"]],
+    dict[str, AdamMoments],
 ]
 
 
@@ -522,7 +502,7 @@ def training_state(
         name: parameter.detach().cpu().numpy().copy()
         for name, parameter in module.named_parameters()
     }
-    moments: dict[str, dict[str, Any]] = {}
+    moments: dict[str, AdamMoments] = {}
     for parameter, state in optimizer.state.items():
         name = names.get(id(parameter))
         if name is None:
@@ -569,7 +549,7 @@ def carry_parameters(
 
 
 def carry_optimizer_state(
-    moments: dict[str, dict[str, Any]],
+    moments: dict[str, AdamMoments],
     module: TorchRecommenderModule,
     optimizer: torch.optim.Optimizer,
     user_perm: NDArray[np.intp] | None,
@@ -587,7 +567,7 @@ def carry_optimizer_state(
         state = moments.get(name)
         if state is None:
             continue
-        carried: dict[str, Any] = {"step": torch.tensor(float(state["step"]))}
+        carried: dict[str, torch.Tensor] = {"step": torch.tensor(float(state["step"]))}
         for moment in ("exp_avg", "exp_avg_sq"):
             source = torch.from_numpy(state[moment]).to(parameter.dtype)
             if source.shape == parameter.shape:
@@ -613,6 +593,15 @@ def seeded_normal_(tensor: torch.Tensor, generator: torch.Generator, std: float)
         tensor.copy_(draws)
 
 
+def _bias(linear: torch.nn.Linear) -> torch.Tensor | None:
+    """``linear.bias``, typed as what it holds.
+
+    The stubs type it as a Parameter, but a ``bias=False`` layer really does hold None
+    there, which is how the attention aggregators build theirs.
+    """
+    return linear.bias
+
+
 def seeded_linear_(linear: torch.nn.Linear, generator: torch.Generator) -> None:
     """Re-initialize ``linear`` the way torch does, but from ``generator``."""
     bound = 1.0 / np.sqrt(linear.in_features)
@@ -620,12 +609,11 @@ def seeded_linear_(linear: torch.nn.Linear, generator: torch.Generator) -> None:
         weight = torch.empty(linear.weight.shape, dtype=linear.weight.dtype)
         weight.uniform_(-bound, bound, generator=generator)
         linear.weight.copy_(weight)
-        # The stubs type `bias` as a Parameter, but a `bias=False` layer really does
-        # hold None there, which is how the attention aggregators build theirs.
-        if linear.bias is not None:  # ty: ignore[redundant-condition-strict]
-            bias = torch.empty(linear.bias.shape, dtype=linear.bias.dtype)
+        current = _bias(linear)
+        if current is not None:
+            bias = torch.empty(current.shape, dtype=current.dtype)
             bias.uniform_(-bound, bound, generator=generator)
-            linear.bias.copy_(bias)
+            current.copy_(bias)
 
 
 def seeded_dropout(

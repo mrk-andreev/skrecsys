@@ -1,0 +1,73 @@
+{
+  "key": "6c190c4d95b7076d",
+  "unit": "candidates/movielens-1m/BM25+EASE",
+  "provenance": {
+    "source": "measured",
+    "at": "2026-09-26T08:03:42+00:00"
+  },
+  "host": {
+    "cpu": "Apple M4 Pro",
+    "cores": 12,
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "CPython 3.14.3",
+    "numpy": "2.5.3",
+    "skrecsys": "0.5.0",
+    "build": "release"
+  },
+  "inputs": {
+    "schema": 1,
+    "benchmark": "candidates",
+    "dataset": {
+      "loader": "skrecsys.datasets.fetch_movielens_1m",
+      "subset": "leave-one-out",
+      "load": {
+        "max_sequence_length": 200
+      },
+      "max_eval_users": null
+    },
+    "settings": {
+      "n_retrieved": [
+        10,
+        20,
+        50,
+        100,
+        200
+      ],
+      "latency_repeat": 300,
+      "budget": 2.0,
+      "warmup": {
+        "fit": 0,
+        "rank": 10
+      }
+    },
+    "model": {
+      "package": "candidates",
+      "cls": "generators",
+      "params": {
+        "members": [
+          "BM25Recommender",
+          "EASE"
+        ]
+      },
+      "version": "v1"
+    }
+  },
+  "payload": {
+    "recall": {
+      "Generators": "BM25+EASE",
+      "candidate recall@10": "0.080 (-0.009)",
+      "candidate recall@20": "0.134 (-0.010)",
+      "candidate recall@50": "0.238 (-0.014)",
+      "candidate recall@100": "0.362 (-0.006)",
+      "candidate recall@200": "0.503 (+0.012)"
+    },
+    "latency": {
+      "Generators": "BM25+EASE",
+      "median latency@10": "439 us",
+      "median latency@20": "439 us",
+      "median latency@50": "459 us",
+      "median latency@100": "501 us",
+      "median latency@200": "566 us"
+    }
+  }
+}

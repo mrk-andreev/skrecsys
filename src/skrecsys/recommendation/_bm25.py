@@ -1,7 +1,6 @@
 """Item-based nearest neighbours on BM25-weighted interactions, ported from implicit."""
 
-import numbers
-from typing import Any
+from typing import Annotated
 
 import numpy as np
 import scipy.sparse as sp
@@ -9,13 +8,15 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._typing import override
-from skrecsys.indexing import SparseSpace
+from skrecsys.indexing import IndexSpec, SparseSpace
 from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr, kernel_indices
 from skrecsys.recommendation._incremental import (
     IncrementalRecommenderMixin,
     affected_item_rows,
     replace_rows,
 )
+from skrecsys.tune._space import Float, Int
+from skrecsys.utils._param_validation import check_int, check_real, resolve_n_jobs
 
 
 class BM25Recommender(IncrementalRecommenderMixin, SimilarityRecommender):
@@ -35,9 +36,10 @@ class BM25Recommender(IncrementalRecommenderMixin, SimilarityRecommender):
 
     This is a port of ``implicit.nearest_neighbours.BM25Recommender`` [2]_, and the
     similarity matrix matches it, including which neighbours are kept on tied scores.
-    Recommendations differ in three details: ``exclude_seen`` removes seen items
-    instead of scoring them 0, items with no similarity to the user's items score 0
-    instead of being omitted, and ties rank by fitted item order.
+    Recommendations match it too, tied scores included -- on binary interactions ties
+    are common, and implicit's rule decides a large share of the lists -- except in two
+    details: ``exclude_seen`` removes seen items instead of scoring them 0, and items
+    with no similarity to the user's items score 0 instead of being omitted.
 
     Parameters
     ----------
@@ -92,11 +94,11 @@ class BM25Recommender(IncrementalRecommenderMixin, SimilarityRecommender):
 
     def __init__(
         self,
-        n_neighbors: int = 20,
-        k1: float = 1.2,
-        b: float = 0.75,
+        n_neighbors: Annotated[int, Int(5, 1000, log=True)] = 20,
+        k1: Annotated[float, Float(0.05, 5.0, log=True)] = 1.2,
+        b: Annotated[float, Float(0.0, 1.0)] = 0.75,
         n_jobs: int | None = None,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_neighbors = n_neighbors
         self.k1 = k1
@@ -105,6 +107,7 @@ class BM25Recommender(IncrementalRecommenderMixin, SimilarityRecommender):
         self.index = index
 
     _incremental_state_ = (("similarity_", "item_item"),)
+    _implicit_ties = True
 
     @override
     def _fit(self, interactions: sp.csr_array) -> None:
@@ -186,14 +189,7 @@ class BM25Recommender(IncrementalRecommenderMixin, SimilarityRecommender):
     @override
     def _check_params(self) -> int:
         """Validate parameters and return the thread count for the kernel (0 = all)."""
-        if not isinstance(self.n_neighbors, numbers.Integral) or self.n_neighbors < 1:
-            raise ValueError(f"n_neighbors must be an integer >= 1, got {self.n_neighbors!r}.")
-        if not isinstance(self.k1, numbers.Real) or not self.k1 >= 0:
-            raise ValueError(f"k1 must be a real number >= 0, got {self.k1!r}.")
-        if not isinstance(self.b, numbers.Real) or not 0 <= self.b <= 1:
-            raise ValueError(f"b must be a real number in [0, 1], got {self.b!r}.")
-        if self.n_jobs is None or self.n_jobs == -1:
-            return 0
-        if not isinstance(self.n_jobs, numbers.Integral) or self.n_jobs < 1:
-            raise ValueError(f"n_jobs must be None, -1 or an integer >= 1, got {self.n_jobs!r}.")
-        return int(self.n_jobs)
+        check_int(self.n_neighbors, "n_neighbors", min_value=1)
+        check_real(self.k1, "k1", min_value=0)
+        check_real(self.b, "b", min_value=0, max_value=1)
+        return resolve_n_jobs(self.n_jobs)

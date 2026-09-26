@@ -186,6 +186,7 @@ fn bpr_fit(c: &mut Criterion) {
             use_bias: true,
             n_iter: 1,
             seed: 0xb9c2,
+            negatives: bpr::Negatives::Uniform,
         };
         group.throughput(Throughput::Elements(matrix.nnz() as u64));
         group.bench_function(BenchmarkId::from_parameter(n_factors), |b| {

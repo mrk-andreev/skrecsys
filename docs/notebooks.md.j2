@@ -1,0 +1,23 @@
+{#- Included by README.md.j2 after the installation, so headings start at level two. -#}
+## Notebooks
+
+Explanatory examples live in `notebooks/` as [marimo](https://docs.marimo.io) notebooks, with
+their own dependency group. Read them in order:
+
+1. `01_intro_to_recommendations.py`: feedback types, collaborative filtering, metrics, baselines
+   and evaluation;
+2. `02_model_selection_and_tuning.py`: `GridSearchCV`, `AutoTune`, `Study` and time-aware splits;
+3. `03_candidates_and_ranking.py`: two-stage recommenders with `Cascade`, and cold start with
+   `Switch`;
+4. `04_production.py`: pickled models, `partial_fit`, request-time controls and vector indexes;
+5. `05_sequential_and_neural.py`: next-item prediction with `skrecsys.nn` (needs `--extra nn`);
+6. `06_time_aware_recommendation.py`: time-based evaluation and tuning, recency weighting,
+   point-in-time features with `Cascade(time=True)`, and bitemporal data.
+
+Each notebook ends with self-check questions.
+
+```sh
+uv run --group notebooks marimo edit notebooks/01_intro_to_recommendations.py  # open in the browser
+uv run --group notebooks python notebooks/01_intro_to_recommendations.py       # run as a script
+uv run --group notebooks --extra nn marimo edit notebooks/05_sequential_and_neural.py
+```

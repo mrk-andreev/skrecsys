@@ -73,6 +73,7 @@ fn fused_top_k(c: &mut Criterion) {
                         },
                         &recommend::Exclusions::<usize>::Positions(seen.excluded()),
                         K,
+                        recommend::Ties::LowerPosition,
                     )
                     .map_err(|e| e.row)
                 })

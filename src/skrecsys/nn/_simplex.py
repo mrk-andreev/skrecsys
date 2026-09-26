@@ -1,8 +1,7 @@
 """SimpleX: cosine contrastive learning over a user's interacted items."""
 
-import numbers
 from collections.abc import Iterator
-from typing import Any, ClassVar
+from typing import Annotated, ClassVar
 
 import numpy as np
 import scipy.sparse as sp
@@ -11,12 +10,16 @@ from numpy.typing import NDArray
 from torch import nn
 
 from skrecsys._typing import override
+from skrecsys.indexing import IndexSpec
 from skrecsys.nn._base import (
+    Batch,
     TorchRecommender,
     TorchRecommenderModule,
     seeded_linear_,
     seeded_normal_,
 )
+from skrecsys.tune._space import Categorical, Float, Int
+from skrecsys.utils._param_validation import check_int, check_real
 
 #: Behaviour aggregators, in the order the paper introduces them.
 AGGREGATORS = ("mean", "self_attention", "user_attention")
@@ -166,9 +169,7 @@ class _SimpleXModule(TorchRecommenderModule):
         self.pair_items = pair_items.to(device)
 
     @override
-    def iter_batches(
-        self, batch_size: int, generator: torch.Generator
-    ) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def iter_batches(self, batch_size: int, generator: torch.Generator) -> Iterator[Batch]:
         device = self.pair_users.device
         order = torch.randperm(len(self.pair_users), generator=generator)
         for start in range(0, len(order), batch_size):
@@ -182,7 +183,7 @@ class _SimpleXModule(TorchRecommenderModule):
             yield self.pair_users[rows], self.pair_items[rows], negatives.to(device)
 
     @override
-    def batch_loss(self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    def batch_loss(self, batch: Batch) -> torch.Tensor:
         users, items, negatives = batch
         vectors = self.user_vectors(users)
         positive = (vectors * self.item_vectors(items)).sum(dim=-1)
@@ -320,16 +321,16 @@ class SimpleX(TorchRecommender[_SimpleXModule]):
 
     def __init__(
         self,
-        n_factors: int = 64,
-        n_negatives: int = 100,
-        negative_weight: float = 10.0,
-        margin: float = 0.9,
-        gamma: float = 0.5,
-        aggregator: str = "mean",
+        n_factors: Annotated[int, Int(16, 256, log=True)] = 64,
+        n_negatives: Annotated[int, Int(10, 500, log=True)] = 100,
+        negative_weight: Annotated[float, Float(1.0, 100.0, log=True)] = 10.0,
+        margin: Annotated[float, Float(0.0, 1.0)] = 0.9,
+        gamma: Annotated[float, Float(0.0, 1.0)] = 0.5,
+        aggregator: Annotated[str, Categorical(AGGREGATORS)] = "mean",
         history_size: int = 100,
-        dropout: float = 0.0,
-        learning_rate: float = 1e-4,
-        regularization: float = 1e-9,
+        dropout: Annotated[float, Float(0.0, 0.5)] = 0.0,
+        learning_rate: Annotated[float, Float(1e-5, 1e-2, log=True)] = 1e-4,
+        regularization: Annotated[float, Float(1e-10, 1e-3, log=True)] = 1e-9,
         max_iter: int = 100,
         batch_size: int = 512,
         *,
@@ -340,7 +341,7 @@ class SimpleX(TorchRecommender[_SimpleXModule]):
         early_stopping: bool = True,
         tol: float = 1e-4,
         n_iter_no_change: int = 5,
-        index: Any = None,
+        index: IndexSpec = None,
     ) -> None:
         self.n_factors = n_factors
         self.n_negatives = n_negatives
@@ -443,19 +444,11 @@ class SimpleX(TorchRecommender[_SimpleXModule]):
     def _check_params(self) -> int:
         n_threads = self._check_torch_params()
         for name in ("n_negatives", "history_size"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Integral) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be an integer >= 1, got {value!r}.")
-        if not isinstance(self.negative_weight, numbers.Real) or not self.negative_weight >= 0:
-            raise ValueError(
-                f"negative_weight must be a real number >= 0, got {self.negative_weight!r}."
-            )
+            check_int(getattr(self, name), name, min_value=1)
+        check_real(self.negative_weight, "negative_weight", min_value=0)
         for name in ("margin", "gamma"):
-            value = getattr(self, name)
-            if not isinstance(value, numbers.Real) or not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be a real number in [0, 1], got {value!r}.")
-        if not isinstance(self.dropout, numbers.Real) or not 0.0 <= self.dropout < 1.0:
-            raise ValueError(f"dropout must be a real number in [0, 1), got {self.dropout!r}.")
+            check_real(getattr(self, name), name, min_value=0, max_value=1)
+        check_real(self.dropout, "dropout", min_value=0, max_value=1, max_inclusive=False)
         if self.aggregator not in AGGREGATORS:
             raise ValueError(f"aggregator must be one of {AGGREGATORS}, got {self.aggregator!r}.")
         return n_threads

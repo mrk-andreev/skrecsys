@@ -14,6 +14,7 @@ exactly.
 from skrecsys.indexing._base import (
     MIN_EXPECTED_OVERLAP,
     DenseSpace,
+    IndexSpec,
     SparseSpace,
     VectorIndex,
     VectorSpace,
@@ -30,6 +31,7 @@ __all__ = [
     "HNSW",
     "MIN_EXPECTED_OVERLAP",
     "DenseSpace",
+    "IndexSpec",
     "QuantizedFlatIndex",
     "SparseSpace",
     "VectorIndex",
