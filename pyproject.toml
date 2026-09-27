@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.5.0"
+version = "0.6.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
