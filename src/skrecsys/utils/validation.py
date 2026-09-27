@@ -27,6 +27,7 @@ __all__ = [
     "encode_ids",
     "factorize",
     "lookup_ids",
+    "stack_pairs",
 ]
 
 _N_COLUMNS = 2
@@ -310,6 +311,20 @@ def _factorize_objects(values: NDArray[np.generic]) -> tuple[NDArray[np.generic]
     uniques = np.empty(len(order), dtype=object)
     uniques[:] = order
     return uniques, rank[codes]
+
+
+def stack_pairs(users: NDArray[np.generic], items: NDArray[np.generic]) -> NDArray[np.generic]:
+    """Column-stack identifiers without letting numpy coerce one namespace into the other.
+
+    ``np.column_stack`` of integer users and string items would silently turn the users
+    into strings, which no longer match the fitted ones; an object array keeps both.
+    """
+    if users.dtype == items.dtype:
+        return np.column_stack([users, items])
+    pairs = np.empty((len(users), 2), dtype=object)
+    pairs[:, 0] = users
+    pairs[:, 1] = items
+    return pairs
 
 
 def lookup_ids(

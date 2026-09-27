@@ -7,6 +7,7 @@ import scipy.sparse as sp
 from numpy.typing import NDArray
 
 from skrecsys import _core
+from skrecsys._attribution import Attributions, history_attributions
 from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import (
@@ -229,6 +230,28 @@ class EASE(IncrementalRecommenderMixin, BaseRecommender):
             interactions.shape[1],
             float(self.l2_reg),
             n_threads,
+        )
+
+    @override
+    def _attribute(
+        self, queries: NDArray[np.generic], items: NDArray[np.generic], n_reasons: int
+    ) -> Attributions | None:
+        # The score is the history times the weight matrix, so each term is exact.
+        weights = self.similarity_
+
+        def weight(history: NDArray[np.intp], targets: NDArray[np.intp]) -> NDArray[np.float64]:
+            return np.asarray(weights[history, targets], dtype=np.float64)
+
+        history, rows = self._query_rows(check_ids(queries))
+        return history_attributions(
+            history,
+            rows,
+            encode_ids(items, self.item_ids_, name="item"),
+            weight,
+            self.item_ids_,
+            n_reasons,
+            kind="history",
+            exact=True,
         )
 
     @override

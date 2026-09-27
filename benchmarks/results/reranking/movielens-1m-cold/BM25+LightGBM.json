@@ -1,9 +1,9 @@
 {
-  "key": "5e1cb08698e42fb4",
+  "key": "794e44bcbfc107e3",
   "unit": "reranking/movielens-1m-cold/BM25+LightGBM",
   "provenance": {
     "source": "measured",
-    "at": "2026-09-26T08:25:25+00:00"
+    "at": "2026-09-27T10:28:04+00:00"
   },
   "host": {
     "cpu": "Apple M4 Pro",
@@ -53,7 +53,7 @@
         "min_child_samples": 100,
         "reg_lambda": 10
       },
-      "version": "v1"
+      "version": "v2"
     }
   },
   "payload": {
@@ -106,17 +106,17 @@
         "Pipeline": "BM25+LightGBM",
         "users": "warm",
         "requests": "1,000",
-        "median": "938 us",
-        "q95": "1.53 ms",
-        "q99": "2.08 ms"
+        "median": "779 us",
+        "q95": "1.33 ms",
+        "q99": "1.82 ms"
       },
       {
         "Pipeline": "BM25+LightGBM",
         "users": "cold",
         "requests": "1,000",
-        "median": "639 us",
-        "q95": "944 us",
-        "q99": "1.31 ms"
+        "median": "430 us",
+        "q95": "504 us",
+        "q99": "562 us"
       }
     ],
     "examples": [

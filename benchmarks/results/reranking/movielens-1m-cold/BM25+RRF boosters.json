@@ -1,9 +1,9 @@
 {
-  "key": "5991f513c8eb93fe",
+  "key": "5a093de4f21a1ca7",
   "unit": "reranking/movielens-1m-cold/BM25+RRF boosters",
   "provenance": {
     "source": "measured",
-    "at": "2026-09-26T08:28:11+00:00"
+    "at": "2026-09-27T10:30:48+00:00"
   },
   "host": {
     "cpu": "Apple M4 Pro",
@@ -65,7 +65,7 @@
           "reg_lambda": 10
         }
       },
-      "version": "v1"
+      "version": "v2"
     }
   },
   "payload": {
@@ -74,42 +74,42 @@
         "Pipeline": "BM25+RRF boosters",
         "users": "all",
         "n users": "6,040",
-        "NDCG@10": "0.1922",
-        "P@10": "0.1742",
-        "R@10": "0.0745",
-        "hit rate": "0.6834",
-        "MAP": "0.1072",
-        "MRR": "0.3502",
-        "cat cov": "0.2302",
-        "mean pop": "1445.1213",
-        "novelty": "9.16"
+        "NDCG@10": "0.1924",
+        "P@10": "0.1741",
+        "R@10": "0.0741",
+        "hit rate": "0.6839",
+        "MAP": "0.1073",
+        "MRR": "0.3517",
+        "cat cov": "0.2313",
+        "mean pop": "1439.3425",
+        "novelty": "9.17"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "warm",
         "n users": "5,436",
-        "NDCG@10": "0.1583",
-        "P@10": "0.1405",
-        "R@10": "0.0779",
-        "hit rate": "0.6554",
-        "MAP": "0.0777",
-        "MRR": "0.3103",
-        "cat cov": "0.2302",
-        "mean pop": "1362.1021",
+        "NDCG@10": "0.1585",
+        "P@10": "0.1403",
+        "R@10": "0.0774",
+        "hit rate": "0.6560",
+        "MAP": "0.0778",
+        "MRR": "0.3117",
+        "cat cov": "0.2313",
+        "mean pop": "1355.6555",
         "novelty": "9.25"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "cold",
         "n users": "604",
-        "NDCG@10": "0.4968",
-        "P@10": "0.4778",
-        "R@10": "0.0443",
+        "NDCG@10": "0.4976",
+        "P@10": "0.4781",
+        "R@10": "0.0444",
         "hit rate": "0.9354",
-        "MAP": "0.3727",
-        "MRR": "0.7100",
-        "cat cov": "0.0101",
-        "mean pop": "2192.2937",
+        "MAP": "0.3734",
+        "MRR": "0.7116",
+        "cat cov": "0.0099",
+        "mean pop": "2192.5253",
         "novelty": "8.38"
       }
     ],
@@ -118,17 +118,17 @@
         "Pipeline": "BM25+RRF boosters",
         "users": "warm",
         "requests": "1,000",
-        "median": "1.63 ms",
-        "q95": "2.34 ms",
-        "q99": "2.99 ms"
+        "median": "1.55 ms",
+        "q95": "2.15 ms",
+        "q99": "2.76 ms"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "cold",
         "requests": "1,000",
-        "median": "1.18 ms",
-        "q95": "1.55 ms",
-        "q99": "2.28 ms"
+        "median": "1.16 ms",
+        "q95": "1.27 ms",
+        "q99": "1.34 ms"
       }
     ],
     "examples": [

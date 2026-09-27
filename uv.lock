@@ -2724,7 +2724,7 @@ reference = [
 
 [package.metadata]
 requires-dist = [
-    { name = "catboost", marker = "extra == 'catboost'", specifier = ">=1.2" },
+    { name = "catboost", marker = "extra == 'catboost'", specifier = ">=1.2.8" },
     { name = "joblib", specifier = ">=1.6.0" },
     { name = "lightgbm", marker = "extra == 'lightgbm'", specifier = ">=4.5" },
     { name = "numpy", specifier = ">=2.4.6" },
@@ -2733,8 +2733,8 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "torch", marker = "extra == 'nn'", specifier = ">=2.6" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'", specifier = ">=4.12" },
-    { name = "xgboost", marker = "sys_platform == 'darwin' and extra == 'xgboost'", specifier = ">=2.1" },
-    { name = "xgboost-cpu", marker = "sys_platform != 'darwin' and extra == 'xgboost'", specifier = ">=2.1" },
+    { name = "xgboost", marker = "sys_platform == 'darwin' and extra == 'xgboost'", specifier = ">=2.1.1" },
+    { name = "xgboost-cpu", marker = "sys_platform != 'darwin' and extra == 'xgboost'", specifier = ">=2.1.1" },
 ]
 provides-extras = ["pandas", "nn", "catboost", "xgboost", "lightgbm"]
 

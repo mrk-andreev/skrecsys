@@ -8,6 +8,14 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
 
+from skrecsys._tracing import (
+    Tracer,
+    active_tracer,
+    feature_names,
+    span,
+    traced_recommend,
+    untraced,
+)
 from skrecsys._typing import (
     CrossValidator,
     Features,
@@ -43,6 +51,13 @@ from skrecsys.compose._named import (
     name_components,
     nested_params,
     set_nested_params,
+)
+from skrecsys.compose._rankers import (
+    Candidates,
+    fit_features,
+    fit_ranker,
+    predict_ranker,
+    trace_ranker,
 )
 from skrecsys.utils._param_validation import check_bool, check_component, check_int, check_real
 from skrecsys.utils.validation import (
@@ -356,6 +371,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
         return np.flatnonzero(~held), np.flatnonzero(held)
 
     @override
+    @untraced()
     def fit(self, X: ArrayLike, y: ArrayLike | None = None) -> Self:
         """Fit the generator, the features and the ranker from interactions.
 
@@ -418,8 +434,14 @@ class Cascade(RecommenderMixin, BaseEstimator):
             )
 
         features = clone_as(self.features).fit(X_train, y_train)
-        self.ranker_ = clone_as(self.ranker).fit(
-            features.transform(pairs, scores=scores), labels, groups=groups
+        ranker = clone_as(self.ranker)
+        fit_features(ranker, X_train, y_train)
+        self.ranker_ = fit_ranker(
+            ranker,
+            features.transform(pairs, scores=scores),
+            labels,
+            groups,
+            Candidates(pairs, scores),
         )
         self.n_ranker_groups_ = len(groups)
 
@@ -435,6 +457,8 @@ class Cascade(RecommenderMixin, BaseEstimator):
             self.user_ids_ = self.generator_.user_ids_
             self.item_ids_ = self.generator_.item_ids_
         self.features_ = clone_as(self.features).fit(X_arr, y_arr)
+        # Features a ranker joins itself serve from all of X too, as the shared ones do.
+        fit_features(self.ranker_, X_arr, y_arr)
         if times is not None:
             self.time_dtype_ = times.dtype
         elif hasattr(self, "time_dtype_"):
@@ -456,7 +480,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
     ) -> tuple[NDArray[np.generic], NDArray[np.float64], NDArray[np.int64], NDArray[np.intp]]:
         """Candidates of ``queries``: one generator's, or the merge of several."""
         if isinstance(self.generator, list):
-            return retrieve_union(
+            merged = retrieve_union(
                 generators,
                 queries,
                 n_retrieved=int(self.n_retrieved),
@@ -465,7 +489,11 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 exclude_seen=exclude_seen,
                 exclude_interactions=exclude_interactions,
                 first_query=first_query,
+                names=[name for name, _ in self._generators()],
             )
+            if (tracer := active_tracer()) is not None:
+                tracer.candidates("union", merged[0], merged[1], merged[2])
+            return merged
         return retrieve(
             generators[0],
             queries,
@@ -494,15 +522,32 @@ class Cascade(RecommenderMixin, BaseEstimator):
         return drop_time(arr) if arr.shape[1] == 3 else arr  # noqa: PLR2004
 
     def _score_candidates(
-        self, pairs: NDArray[np.generic], scores: NDArray[np.float64], groups: NDArray[np.int64]
+        self,
+        pairs: NDArray[np.generic],
+        scores: NDArray[np.float64],
+        groups: NDArray[np.int64],
+        tracer: Tracer | None = None,
+        positions: NDArray[np.intp] | None = None,
     ) -> NDArray[np.float64]:
+        """The ranker's score of each candidate; ``tracer`` is told the features and scores.
+
+        The features traced are those the ranker scored from, including any it joined
+        itself; the rankers inside a composite ranker are traced under ``ranker``.
+        ``positions``, the candidates' fitted item order, is traced with the scores so a
+        trace breaks their ties as ``recommend`` does.
+        """
         features = self.features_.transform(pairs, scores=scores)
-        ranked = np.asarray(self.ranker_.predict(features, groups=groups), dtype=np.float64)
+        names = None if tracer is None else feature_names(self.features_)
+        candidates = Candidates(pairs, scores, names, positions)
+        with span("ranker"):
+            ranked = predict_ranker(self.ranker_, features, groups, candidates)
         if ranked.shape != (len(pairs),):
             raise ValueError(
                 f"{type(self.ranker_).__name__}.predict must return one score per row, "
                 f"got shape {ranked.shape} for {len(pairs)} rows."
             )
+        if tracer is not None:
+            trace_ranker(tracer, self.ranker_, features, ranked, groups, candidates)
         return ranked
 
     def _postprocess(
@@ -511,10 +556,12 @@ class Cascade(RecommenderMixin, BaseEstimator):
         scores: NDArray[np.float64],
         groups: NDArray[np.int64],
         n_recommendations: int,
+        tracer: Tracer | None = None,
     ) -> tuple[NDArray[np.generic], NDArray[np.float64]]:
         """The first ``n_recommendations`` of each list ``postprocess`` makes of the ranked ones.
 
-        ``pairs`` and ``scores`` are best first within each group.
+        ``pairs`` and ``scores`` are best first within each group. ``tracer`` is told the
+        lists before and after.
         """
         postprocess = cast(Postprocess, self.postprocess)
         out = postprocess(pairs, scores, groups)
@@ -550,11 +597,16 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 f"fewer than n_recommendations={n_recommendations}; increase n_retrieved "
                 "or make it drop fewer."
             )
+        if tracer is not None:
+            tracer.postprocess(
+                (pairs, scores, groups), (new_pairs, new_scores, new_groups.astype(np.int64))
+            )
         starts = np.concatenate([[0], np.cumsum(new_groups)[:-1]]).astype(np.intp)
         rows = starts[:, None] + np.arange(n_recommendations)
         return new_pairs[rows, 1], new_scores[rows]
 
     @override
+    @traced_recommend
     def recommend(
         self,
         X: ArrayLike,
@@ -622,12 +674,15 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 if query_times is None
                 else with_time(pairs, np.repeat(query_times[start:stop][kept], groups))
             )
-            ranked = self._score_candidates(featurized, scores, groups)
+            tracer = active_tracer()
             positions = lookup_ids(pairs[:, 1], self.item_ids_, name="item")[0]
+            ranked = self._score_candidates(featurized, scores, groups, tracer, positions)
             if self.postprocess is not None:
                 order = rank_within_groups(ranked, groups, positions)
                 served.append(
-                    self._postprocess(featurized[order], ranked[order], groups, n_recommendations)
+                    self._postprocess(
+                        featurized[order], ranked[order], groups, n_recommendations, tracer
+                    )
                 )
                 continue
             best = top_k_per_group(ranked, groups, positions, n_recommendations)
@@ -643,6 +698,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
         return items, top_scores
 
     @override
+    @untraced()
     def _count_eligible(
         self,
         X: ArrayLike,

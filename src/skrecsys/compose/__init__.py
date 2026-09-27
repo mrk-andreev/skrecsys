@@ -16,7 +16,8 @@ part in :class:`~sklearn.model_selection.GridSearchCV` through nested parameters
   :class:`JoinDynamicFeatures`, :class:`GeneratorScores`, :class:`InteractionCounts`,
   :class:`RecommenderScores`, :class:`SegmentPopularity`, :class:`ConcatFeatures`;
 - **rankers** ordering candidates: :class:`PointwiseRanker`, :class:`GroupRanker`,
-  :class:`BlendRanker` (which blends other rankers), :class:`ReciprocalRankRanker` (which
+  :class:`BlendRanker` (which blends other rankers), :class:`AugmentedRanker` (which
+  gives one ranker features the others do not see), :class:`ReciprocalRankRanker` (which
   fuses feature columns or other rankers by rank, with nothing to learn), and
   the third-party rankers of :mod:`skrecsys.integrations` (CatBoost, XGBoost, LightGBM),
   each behind its own extra.
@@ -63,12 +64,13 @@ from skrecsys.compose._features import (
     SegmentPopularity,
 )
 from skrecsys.compose._fusion import ReciprocalRankFusion, ReciprocalRankRanker
-from skrecsys.compose._rankers import BlendRanker, GroupRanker, PointwiseRanker
+from skrecsys.compose._rankers import AugmentedRanker, BlendRanker, GroupRanker, PointwiseRanker
 from skrecsys.compose._switch import Switch
 
 __all__ = [
     "AllOf",
     "AnyOf",
+    "AugmentedRanker",
     "BlendRanker",
     "Cascade",
     "ConcatFeatures",

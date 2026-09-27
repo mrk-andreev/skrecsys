@@ -18,3 +18,12 @@ def test_every_loss_function(loss_function):
     scores = ranker.fit(X, Y, groups=GROUPS).predict(X, groups=GROUPS)
     assert np.isfinite(scores).all()
     assert scores[1] > scores[0]
+
+
+def test_library_chosen_parameters_are_passed_only_when_set():
+    ranker = CatBoostRanker(iterations=5).fit(X, Y, groups=GROUPS)
+    passed = ranker.model_.get_params()
+    assert not {"learning_rate", "subsample", "rsm", "border_count"} & set(passed)
+    ranker.set_params(rsm=0.5, border_count=32).fit(X, Y, groups=GROUPS)
+    passed = ranker.model_.get_params()
+    assert (passed["rsm"], passed["border_count"]) == (0.5, 32)

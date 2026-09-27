@@ -8,7 +8,7 @@ from sklearn.model_selection import BaseCrossValidator
 from skrecsys._typing import override
 from skrecsys.base import RankerMixin, uses_time
 from skrecsys.compose import Cascade, GeneratorScores
-from skrecsys.metrics import make_recommender_scorer, ndcg_at_k, recall_at_k
+from skrecsys.metrics import Recall, make_recommender_scorer, ndcg_at_k, recall_at_k
 from skrecsys.recommendation import BM25Recommender, ItemKNNRecommender, MostPopularRecommender
 from skrecsys.tune import AutoTune, Float, Int
 from tests.estimator_checks import check_numeric_ids, yield_recommender_checks
@@ -132,16 +132,33 @@ def test_a_parameter_added_by_search_space_can_be_frozen_too():
     assert set(tuned.best_params_) == {"shrink"}
 
 
-def test_custom_scoring_and_integer_cv():
-    tuned = AutoTune(
+def _tune_with(scoring):
+    return AutoTune(
         BM25Recommender(),
-        scoring=make_recommender_scorer(recall_at_k, k=5),
+        scoring=scoring,
         cv=2,
         n_trials=3,
         sampler="random",
         random_state=0,
     ).fit(_interactions())
+
+
+def test_custom_scoring_and_integer_cv():
+    tuned = _tune_with(make_recommender_scorer(recall_at_k, k=5))
     assert 0.0 <= tuned.best_score_ <= 1.0
+
+
+@pytest.mark.parametrize("scoring", ["recall@5", Recall(5)], ids=str)
+def test_a_named_metric_scores_as_its_scorer(scoring):
+    expected = _tune_with(make_recommender_scorer(recall_at_k, k=5))
+    tuned = _tune_with(scoring)
+    assert tuned.best_score_ == expected.best_score_
+    assert tuned.best_params_ == expected.best_params_
+
+
+def test_the_default_scoring_is_ndcg_at_10():
+    expected = _tune_with(make_recommender_scorer(ndcg_at_k, k=10))
+    assert _tune_with(None).best_score_ == expected.best_score_
 
 
 def test_an_unannotated_estimator_needs_a_search_space():
@@ -160,6 +177,8 @@ def test_an_unannotated_estimator_needs_a_search_space():
         ({"freeze": "k1"}, TypeError, "sequence of parameter names"),
         ({"freeze": ["n_jobs"]}, ValueError, "not tunable"),
         ({"freeze": ["k1", "b", "n_neighbors"]}, ValueError, "nothing is left"),
+        ({"scoring": "auc@10"}, ValueError, "Unknown metric"),
+        ({"scoring": 10}, TypeError, "scoring must be"),
     ],
 )
 def test_invalid_parameters_raise_at_fit(params, error, match):

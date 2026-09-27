@@ -46,6 +46,10 @@ class SequentialRecommender(TorchRecommender[ModuleT]):
     ordered_history_: "tuple[NDArray[np.generic], NDArray[np.generic]]"
 
     @override
+    def _item_vectors(self) -> NDArray[np.floating] | None:
+        return self.item_embeddings_
+
+    @override
     def _index_space(self) -> DenseSpace:
         # The sequential models name their exported vectors `*_embeddings_` rather than
         # `*_factors_`; both are already materialized per user by `_export`, so a query

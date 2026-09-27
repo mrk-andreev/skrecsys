@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from skrecsys.compose import (
+    AugmentedRanker,
     BlendRanker,
     Cascade,
     ConcatFeatures,
@@ -44,3 +45,32 @@ def test_a_blend_of_boosters_ranks_a_cascade_and_pickles(blender):
     np.testing.assert_array_equal(
         restored.recommend(np.arange(5), n_recommendations=3)[1], scores[:5]
     )
+
+
+def _trending_share(augmented):
+    """Share of trending items served by a blend whose first booster alone may see the table.
+
+    Only that booster can tell trending items apart; the others see generator scores alone.
+    """
+    (name, first), *rest = _boosters()
+    if augmented:
+        first = AugmentedRanker(first, JoinStaticFeatures("item", trending_table()))
+    cascade = Cascade(
+        MostPopularRecommender(),
+        GeneratorScores(),
+        BlendRanker([(name, first), *rest], random_state=0),
+        n_retrieved=30,
+    ).fit(trending_interactions())
+    items, _ = cascade.recommend(np.arange(N_USERS), n_recommendations=3)
+    blend = cascade.ranker_
+    assert isinstance(blend, BlendRanker)
+    return np.isin(items, TRENDING).mean(), dict(blend.rankers_)[name]
+
+
+def test_a_booster_with_features_of_its_own_ranks_a_cascade():
+    # Not an absolute bar: the rank-normalized noise of the other boosters dilutes the one
+    # that knows, by how much depends on which extras are installed.
+    share, first = _trending_share(augmented=True)
+    baseline, _ = _trending_share(augmented=False)
+    assert first.n_injected_features_ == 1
+    assert share > baseline + 0.4

@@ -1,4 +1,5 @@
 import pickle
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -7,15 +8,20 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 
-from skrecsys.base import RankerMixin, is_ranker
+from skrecsys._typing import override
+from skrecsys.base import FeaturesMixin, RankerMixin, is_ranker
 from skrecsys.compose import (
+    AugmentedRanker,
     BlendRanker,
     Cascade,
     ConcatFeatures,
     GeneratorScores,
     GroupRanker,
+    InteractionCounts,
+    JoinDynamicFeatures,
     JoinStaticFeatures,
     PointwiseRanker,
+    ReciprocalRankRanker,
 )
 from skrecsys.compose._rankers import normalize_per_group
 from skrecsys.recommendation import MostPopularRecommender
@@ -282,3 +288,168 @@ def test_blend_checks_the_feature_count():
 
 def test_blend_is_a_ranker():
     assert is_ranker(BlendRanker([PointwiseRanker(LogisticRegression())]))
+
+
+# --- AugmentedRanker ----------------------------------------------------------------------
+
+
+def _trending_flags(items):
+    """Module level, so that a cascade holding it pickles: 1 for a trending item."""
+    return np.isin(items, TRENDING).astype(float)
+
+
+def _augmented(ranker=None):
+    """A ranker seeing the trending flag of each item, which the shared features lack."""
+    return AugmentedRanker(
+        ranker or PointwiseRanker(HistGradientBoostingClassifier(max_iter=20)),
+        JoinDynamicFeatures("item", _trending_flags, n_features=1),
+    )
+
+
+def _generator_scores_cascade(ranker, **params):
+    """Popularity candidates, whose only shared feature cannot tell the trend apart."""
+    return Cascade(MostPopularRecommender(), GeneratorScores(), ranker, n_retrieved=30, **params)
+
+
+def test_injected_features_reach_only_their_ranker():
+    cascade = _generator_scores_cascade(
+        BlendRanker(
+            [("plain", PointwiseRanker(LogisticRegression())), ("augmented", _augmented())],
+            random_state=0,
+        )
+    ).fit(trending_interactions())
+    rankers = dict(cascade.ranker_.rankers_)
+    assert rankers["plain"].estimator_.n_features_in_ == 1
+    augmented = rankers["augmented"]
+    assert (augmented.n_features_in_, augmented.n_injected_features_) == (1, 1)
+    assert augmented.ranker_.estimator_.n_features_in_ == 2
+    items, _ = cascade.recommend(np.arange(N_USERS), n_recommendations=3)
+    assert np.isin(items, TRENDING).mean() > 0.9
+
+
+def test_a_blend_without_the_injected_features_misses_the_trend():
+    cascade = _generator_scores_cascade(
+        BlendRanker([PointwiseRanker(LogisticRegression())], random_state=0)
+    ).fit(trending_interactions())
+    items, _ = cascade.recommend(np.arange(N_USERS), n_recommendations=3)
+    assert np.isin(items, TRENDING).mean() < 0.5
+
+
+@pytest.mark.parametrize(
+    "ranker",
+    [
+        _augmented(),
+        ReciprocalRankRanker([_augmented()]),
+        BlendRanker([_augmented(), _augmented()], blender=None),
+        BlendRanker([_augmented()], blender=_augmented(PointwiseRanker(LogisticRegression()))),
+        _augmented(BlendRanker([_augmented()], blender=None)),
+    ],
+    ids=["alone", "fused", "averaged", "augmented-blender", "nested"],
+)
+def test_an_augmented_ranker_ranks_a_cascade_wherever_it_sits(ranker):
+    cascade = _generator_scores_cascade(ranker).fit(trending_interactions())
+    items, _ = cascade.recommend(np.arange(N_USERS), n_recommendations=3)
+    assert np.isin(items, TRENDING).mean() > 0.9
+    restored = pickle.loads(pickle.dumps(cascade))
+    np.testing.assert_array_equal(
+        restored.recommend(np.arange(5), n_recommendations=3)[1],
+        cascade.recommend(np.arange(5), n_recommendations=3)[1],
+    )
+
+
+class _FitLog(FeaturesMixin, BaseEstimator):
+    """A column of zeros, telling ``fitted`` how many interactions it is fitted on and
+    ``joined`` how many pairs it joins onto -- callables, which a clone keeps."""
+
+    def __init__(self, fitted: Callable[[int], None], joined: Callable[[int], None]):
+        self.fitted = fitted
+        self.joined = joined
+
+    def fit(self, X, y=None):
+        self.fitted(len(X))
+        return self
+
+    @override
+    def transform(self, pairs, *, scores=None):
+        self.joined(len(pairs))
+        return np.zeros((len(pairs), 1))
+
+
+def test_injected_features_are_fitted_once_for_training_and_once_for_serving():
+    fitted, joined = [], []
+    X = trending_interactions()
+    blend = BlendRanker(
+        [
+            AugmentedRanker(
+                PointwiseRanker(LogisticRegression()), _FitLog(fitted.append, joined.append)
+            )
+        ],
+        cv=3,
+        random_state=0,
+    )
+    _generator_scores_cascade(blend, split=0.2).fit(X)
+    # Once on the interactions the ranker is not labelled from, shared by every fold,
+    # then once on all of them for serving.
+    assert fitted == [len(X) - N_USERS, len(X)]
+    # Every fold fits on the other folds' rows and scores its own; then the refit on all.
+    assert len(joined) == 2 * 3 + 1
+    fold_fits, held_out, n_rows = joined[0:6:2], joined[1:6:2], joined[-1]
+    assert sum(held_out) == n_rows
+    assert [fit + held for fit, held in zip(fold_fits, held_out, strict=True)] == [n_rows] * 3
+
+
+def test_injected_features_see_the_time_of_each_pair():
+    X = trending_interactions()
+    X = np.column_stack([X, np.arange(len(X))])
+    calls = []
+
+    def times(keys):
+        calls.append(keys.copy())
+        return np.nan_to_num(keys[:, 1:].astype(float), nan=-1.0)
+
+    ranker = AugmentedRanker(
+        PointwiseRanker(LogisticRegression()), JoinDynamicFeatures("item-time", times)
+    )
+    cascade = _generator_scores_cascade(ranker, split=0.2, time=True).fit(X)
+    assert calls[0].shape[1] == 2
+    assert not np.isnan(calls[0][:, 1].astype(float)).any()
+    cascade.recommend([0], n_recommendations=1)
+    assert np.isnan(calls[-1][:, 1].astype(float)).all()
+
+
+def test_injected_features_serve_from_every_interaction():
+    X = trending_interactions()
+    ranker = AugmentedRanker(PointwiseRanker(LogisticRegression()), InteractionCounts("item"))
+    cascade = _generator_scores_cascade(ranker).fit(X)
+    assert cascade.ranker_.features_.counts_.sum() == len(X)
+
+
+def test_an_augmented_ranker_needs_a_cascade():
+    X, y, groups = _blend_data()
+    ranker = AugmentedRanker(PointwiseRanker(LogisticRegression()), GeneratorScores())
+    with pytest.raises(ValueError, match="only a Cascade supplies"):
+        ranker.fit(X, y, groups=groups)
+    with pytest.raises(ValueError, match="only a Cascade supplies"):
+        BlendRanker([ranker], blender=None).fit(X, y, groups=groups)
+
+
+@pytest.mark.parametrize(
+    ("params", "error", "match"),
+    [
+        ({"ranker": LogisticRegression()}, TypeError, "ranker"),
+        ({"features": PointwiseRanker(LogisticRegression())}, TypeError, "feature component"),
+    ],
+)
+def test_an_augmented_ranker_validates(params, error, match):
+    with pytest.raises(error, match=match):
+        _generator_scores_cascade(_augmented().set_params(**params)).fit(trending_interactions())
+
+
+def test_an_augmented_ranker_exposes_nested_params():
+    blend = BlendRanker([("aug", _augmented())])
+    params = blend.get_params()
+    assert params["aug__features__kind"] == "item"
+    assert params["aug__ranker__estimator__max_iter"] == 20
+    blend.set_params(aug__features__n_features=None)
+    assert clone(blend).rankers[0][1].features.n_features is None
+    assert is_ranker(_augmented())

@@ -76,7 +76,9 @@ their own dependency group. Read them in order:
 4. `04_production.py`: pickled models, `partial_fit`, request-time controls and vector indexes;
 5. `05_sequential_and_neural.py`: next-item prediction with `skrecsys.nn` (needs `--extra nn`);
 6. `06_time_aware_recommendation.py`: time-based evaluation and tuning, recency weighting,
-   point-in-time features with `Cascade(time=True)`, and bitemporal data.
+   point-in-time features with `Cascade(time=True)`, and bitemporal data;
+7. `07_inspecting_recommendations.py`: tracing a pipeline with `trace`, explaining served and
+   missing items with `explain`, and finding the stage that loses relevant items.
 
 Each notebook ends with self-check questions.
 
@@ -381,6 +383,28 @@ With `skrecsys.integrations` it blends gradient-boosting libraries. The
 [reranking benchmark](#reranking-benchmark) measures a blend of CatBoost, XGBoost and LightGBM
 against each of them on their own.
 
+Every ranker of a blend sees the `Cascade`'s `features`. `AugmentedRanker(ranker, features)`
+gives one of them features the others do not see: a `JoinStaticFeatures` table, a
+`JoinDynamicFeatures` lookup or any feature component, joined onto the candidate pairs and
+appended after the shared columns. The `Cascade` fits the injected features the same way as its
+own: on the interactions the ranker is not labelled from, once for all folds, and then on every
+interaction for serving. Because only a `Cascade` supplies the candidate pairs, an
+`AugmentedRanker` must run inside one, as the ranker itself or inside its `BlendRanker` or
+`ReciprocalRankRanker`:
+
+```python
+from skrecsys.compose import AugmentedRanker, JoinDynamicFeatures
+
+blend = BlendRanker(
+    [
+        ("catboost", AugmentedRanker(CatBoostRanker(), JoinDynamicFeatures("user", user_profile))),
+        ("lightgbm", AugmentedRanker(LGBMRanker(), JoinStaticFeatures("item", item_prices))),
+        ("xgboost", XGBRanker()),  # the shared features only
+    ],
+)
+blend.set_params(catboost__features__n_features=8)
+```
+
 `PointwiseRanker` wraps any scikit-learn classifier or regressor and scores every pair on its own,
 ignoring `groups`. `GroupRanker` wraps an estimator whose `fit` takes group sizes, such as
 `LGBMRanker` or `XGBRanker`, and passes them under `group_param` (default `"group"`).
@@ -682,7 +706,7 @@ The parts play five roles, each a small protocol:
 | condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
 | candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
 | features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
-| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
+| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `AugmentedRanker` (gives one ranker features of its own), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
 
 On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
 business rules that turn each query's ranked candidate list into the list to serve (see
@@ -1030,6 +1054,137 @@ A model object ranks and scores. These parts of a deployment belong to the servi
 - **Concurrency.** A model is updated as a snapshot and swapped in, never mutated while it
   serves.
 - **Versioning.** The model store records each version and the window it was fitted on.
+
+## Inspecting recommendations
+
+`recommend` returns items and scores, which say nothing about how a pipeline arrived at them.
+`skrecsys.inspection` answers two questions from the pipeline itself, without changing it:
+why an item was recommended exactly this way, and where a relevant item was lost.
+[Notebook 07](notebooks/07_inspecting_recommendations.py) walks through both on MovieLens.
+
+### Tracing
+
+Every `recommend` call made inside `with trace()` is recorded, stage by stage, however deeply
+the estimators nest. `t[query]` gives back everything the call did for one query:
+
+```python
+from skrecsys.compose import KnownUser, Switch
+from skrecsys.inspection import trace
+from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "b"], ["u2", "c"], ["u3", "c"]]
+rec = Switch(KnownUser(), ItemKNNRecommender(), MostPopularRecommender()).fit(X)
+
+with trace() as t:
+    rec.recommend(["u3", "new-user"], n_recommendations=1)
+
+print(t["new-user"])
+# query 'new-user', call 0
+#   Switch: request n_recommendations=1
+#   Switch: route KnownUser() -> on_false
+#   Switch/on_false/MostPopularRecommender: request n_recommendations=1
+#   Switch/on_false/MostPopularRecommender: served ['b' 2]
+#   Switch/on_false/MostPopularRecommender: popularity reasons (exact); first item: popularity 2
+#   Switch: served ['b' 2]
+```
+
+Each step names its stage by a path of the estimators and parts it is nested in, such as
+`Switch/on_true/Cascade/ease/EASE`, and holds its numbers as arrays:
+
+| accessor | what the stage did for the query |
+| --- | --- |
+| `routes` | the branch a `Switch` condition sent it down |
+| `candidates` | each generator's candidates, best first, and the merged `"union"` a `Cascade` ranks |
+| `fusion` | what each list of a `ReciprocalRankFusion` added to each item |
+| `features` | the feature row the ranker saw for each candidate, including the columns an `AugmentedRanker` joined |
+| `ranker` | the ranker's score of each candidate, and each feature's contribution to it |
+| `postprocess` | the lists before and after `Cascade(postprocess=...)`: `dropped`, `added` |
+| `attributions` | why each leaf recommender scored the items it served |
+| `served`, `final` | what each estimator returned, and what the outermost one did |
+
+The trace lives in a context variable, not on the estimator: a traced `recommend` returns
+exactly what an untraced one does, the model clones and pickles as before, and outside a
+`with trace()` block a call costs one check that nobody is listening. `fit` and `predict` are
+not traced.
+
+Two parameters make it cheap enough to leave on in a service:
+
+- `level="decisions"` records routes, candidate lists, ranker scores and served lists, and
+  skips the feature matrices and reasons that the default `level="full"` adds;
+- `sample=0.01` records 1% of queries, chosen by a hash of the identifier that is stable
+  across processes, so the same users are traced on every request and every restart. A
+  callable taking the queries and returning a boolean mask chooses them any other way.
+
+Every step, trace and explanation has a `to_dict()` of plain JSON values, ready for a log.
+
+### Explaining
+
+`explain(model, queries)` runs `recommend` under a full trace and explains every served item:
+its route, its rank with each generator, its position with the ranker and the features that
+weighed most, and the **reasons**: which of the user's interactions made each model score it.
+Pass `items=` the items you expected, and each one also gets the stage that let it go:
+
+```python
+from skrecsys.inspection import explain
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = [
+    ["u1", "a"],
+    ["u1", "b"],
+    ["u2", "b"],
+    ["u2", "c"],
+    ["u3", "a"],
+    ["u4", "a"],
+    ["u4", "c"],
+    ["u4", "d"],
+]
+rec = ItemKNNRecommender().fit(X)
+
+for explanation in explain(rec, ["u3"], items=["a", "b"], n_recommendations=1):
+    print(explanation)
+# query 'u3', item 'd': served #1 (score 0.5774)
+#   ItemKNNRecommender (history, exact): 'a' +0.5774; rest +0
+# query 'u3', item 'a': filtered out before scoring by exclude_seen (score 0)
+#   ItemKNNRecommender (history, exact): no history item; rest +0
+# query 'u3', item 'b': scored 0.4082, below the cut-off 0.5774
+#   ItemKNNRecommender (history, exact): 'a' +0.4082; rest +0
+```
+
+An item's `status` is the first stage, from the end of the pipeline back, that let it go:
+
+| status | the item... |
+| --- | --- |
+| `served` | was recommended, at `position` |
+| `unknown_item` | was not in the training data |
+| `excluded` | was removed before scoring; `excluded_by` names the filter: `exclude_seen`, `exclude_interactions` or `candidates` |
+| `not_retrieved` | was never among the candidates, or was cut when several generators' lists merged |
+| `ranked_out` | was scored, but below the served list |
+| `dropped_by_postprocess` | was removed by the business rules |
+
+How exact the reasons are depends on the model:
+
+| recommender | reasons | exact |
+| --- | --- | --- |
+| `ItemKNNRecommender`, `BM25Recommender`, `RP3Beta`, `SLIMElasticNet`, `EASE` | each rated item's term of $\sum_j x_{uj} W_{ji}$; with `rest`, they add up to the score | yes |
+| `AlternatingLeastSquares`, `BayesianPersonalizedRanking`, `skrecsys.nn` models | the rated items whose vectors are most alike the item's | no |
+| `MostPopularRecommender` | the item's popularity | yes |
+
+A ranker explains its score by feature: `PointwiseRanker` around a linear model gives
+coefficient × feature (log-odds for a logistic regression), and the rankers of
+`skrecsys.integrations` give CatBoost's, XGBoost's and LightGBM's own SHAP values. A ranker
+that cannot decompose its score, such as `HistGradientBoostingClassifier`, gives none.
+
+The rankers of a `BlendRanker` or a `ReciprocalRankRanker` are traced too, each at its own path
+under the `Cascade` (for example `Cascade/ranker/catboost`). Each one gets its own `features`
+step, with only the columns that ranker saw, and a `ranker` step with its raw scores (before the
+blend normalizes them) and their contributions. The `Cascade`'s own steps still describe the
+order that was served, and `explain` reads those. A "full" trace joins an `AugmentedRanker`'s
+features a second time to record them, so a `JoinDynamicFeatures` callback runs twice per traced
+call.
+
+Asked about each user's held-out items, `explain` shows whether a pipeline loses relevant
+items at retrieval or at ranking, which one averaged metric cannot: notebook 07 finds most of
+them never reach the ranker.
 
 ## Datasets
 
@@ -1411,31 +1566,31 @@ MovieLens 100K, `ColdStartSplit`: 10% of users held out whole, the latest 20% of
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BM25 | all | 943 | 0.2057 | 0.1832 | 0.1004 | 0.6914 | 0.1154 | 0.3642 | 0.1039 | 270.9265 | 8.18 |
 | BM25+CatBoost | all | 943 | 0.2395 | 0.2121 | 0.1183 | 0.7656 | 0.1365 | 0.4085 | 0.2611 | 227.8753 | 8.53 |
-| BM25+XGBoost | all | 943 | 0.2341 | 0.2036 | 0.1158 | 0.7561 | 0.1302 | 0.4198 | 0.2786 | 214.2264 | 8.65 |
-| BM25+LightGBM | all | 943 | 0.2320 | 0.2040 | 0.1129 | 0.7497 | 0.1302 | 0.4104 | 0.2830 | 215.5760 | 8.65 |
-| BM25+Blend | all | 943 | 0.2367 | 0.2078 | 0.1176 | 0.7625 | 0.1329 | 0.4133 | 0.2780 | 219.8461 | 8.61 |
+| BM25+XGBoost | all | 943 | 0.2326 | 0.2059 | 0.1152 | 0.7593 | 0.1289 | 0.4107 | 0.2780 | 214.6402 | 8.65 |
+| BM25+LightGBM | all | 943 | 0.2315 | 0.2030 | 0.1138 | 0.7476 | 0.1296 | 0.4090 | 0.2837 | 214.7716 | 8.65 |
+| BM25+Blend | all | 943 | 0.2352 | 0.2047 | 0.1153 | 0.7497 | 0.1330 | 0.4132 | 0.2780 | 219.2950 | 8.61 |
 | EASE | all | 943 | 0.2210 | 0.1910 | 0.1070 | 0.7349 | 0.1234 | 0.4038 | 0.3062 | 221.6990 | 8.58 |
 | BM25+EASE RRF | all | 943 | 0.2200 | 0.1945 | 0.1080 | 0.7158 | 0.1245 | 0.3859 | 0.1778 | 252.5215 | 8.32 |
 | BM25+RRF | all | 943 | 0.2205 | 0.1943 | 0.1062 | 0.7126 | 0.1277 | 0.3874 | 0.1653 | 252.2036 | 8.31 |
-| BM25+RRF boosters | all | 943 | 0.2379 | 0.2078 | 0.1169 | 0.7593 | 0.1338 | 0.4174 | 0.2755 | 218.6677 | 8.61 |
+| BM25+RRF boosters | all | 943 | 0.2387 | 0.2092 | 0.1175 | 0.7667 | 0.1341 | 0.4193 | 0.2743 | 219.9035 | 8.60 |
 | BM25 | warm | 849 | 0.1701 | 0.1468 | 0.1010 | 0.6596 | 0.0872 | 0.3242 | 0.1039 | 256.4918 | 8.26 |
 | BM25+CatBoost | warm | 849 | 0.2052 | 0.1775 | 0.1217 | 0.7420 | 0.1068 | 0.3709 | 0.2611 | 209.6465 | 8.64 |
-| BM25+XGBoost | warm | 849 | 0.2004 | 0.1696 | 0.1188 | 0.7314 | 0.1024 | 0.3794 | 0.2786 | 195.0029 | 8.77 |
-| BM25+LightGBM | warm | 849 | 0.1985 | 0.1700 | 0.1159 | 0.7256 | 0.1020 | 0.3724 | 0.2830 | 196.7113 | 8.76 |
-| BM25+Blend | warm | 849 | 0.2029 | 0.1737 | 0.1209 | 0.7385 | 0.1043 | 0.3748 | 0.2780 | 200.7451 | 8.72 |
+| BM25+XGBoost | warm | 849 | 0.1994 | 0.1723 | 0.1185 | 0.7350 | 0.1008 | 0.3719 | 0.2780 | 196.1783 | 8.76 |
+| BM25+LightGBM | warm | 849 | 0.1979 | 0.1688 | 0.1168 | 0.7232 | 0.1013 | 0.3708 | 0.2837 | 195.8178 | 8.77 |
+| BM25+Blend | warm | 849 | 0.2013 | 0.1710 | 0.1187 | 0.7267 | 0.1038 | 0.3739 | 0.2780 | 200.4595 | 8.72 |
 | EASE | warm | 849 | 0.1871 | 0.1554 | 0.1084 | 0.7079 | 0.0961 | 0.3682 | 0.3062 | 201.8139 | 8.70 |
 | BM25+EASE RRF | warm | 849 | 0.1860 | 0.1592 | 0.1095 | 0.6867 | 0.0973 | 0.3483 | 0.1778 | 236.0490 | 8.41 |
 | BM25+RRF | warm | 849 | 0.1847 | 0.1577 | 0.1087 | 0.6867 | 0.0965 | 0.3478 | 0.1653 | 238.6967 | 8.39 |
-| BM25+RRF boosters | warm | 849 | 0.2041 | 0.1742 | 0.1202 | 0.7362 | 0.1053 | 0.3772 | 0.2755 | 199.5106 | 8.73 |
+| BM25+RRF boosters | warm | 849 | 0.2051 | 0.1755 | 0.1209 | 0.7444 | 0.1053 | 0.3816 | 0.2743 | 201.1066 | 8.72 |
 | BM25 | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
 | BM25+CatBoost | cold | 94 | 0.5486 | 0.5245 | 0.0872 | 0.9787 | 0.4048 | 0.7480 | 0.0125 | 392.5160 | 7.58 |
-| BM25+XGBoost | cold | 94 | 0.5382 | 0.5106 | 0.0884 | 0.9787 | 0.3811 | 0.7846 | 0.0188 | 387.8511 | 7.60 |
+| BM25+XGBoost | cold | 94 | 0.5323 | 0.5096 | 0.0854 | 0.9787 | 0.3826 | 0.7612 | 0.0194 | 381.3862 | 7.62 |
 | BM25+LightGBM | cold | 94 | 0.5352 | 0.5117 | 0.0861 | 0.9681 | 0.3854 | 0.7538 | 0.0182 | 385.9606 | 7.61 |
-| BM25+Blend | cold | 94 | 0.5416 | 0.5160 | 0.0874 | 0.9787 | 0.3912 | 0.7611 | 0.0144 | 392.3649 | 7.58 |
+| BM25+Blend | cold | 94 | 0.5411 | 0.5085 | 0.0848 | 0.9574 | 0.3962 | 0.7681 | 0.0144 | 389.4160 | 7.59 |
 | EASE | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
 | BM25+EASE RRF | cold | 94 | 0.5273 | 0.5128 | 0.0945 | 0.9787 | 0.3695 | 0.7252 | 0.0063 | 401.3000 | 7.54 |
 | BM25+RRF | cold | 94 | 0.5440 | 0.5245 | 0.0837 | 0.9468 | 0.4096 | 0.7451 | 0.0244 | 374.1968 | 7.66 |
-| BM25+RRF boosters | cold | 94 | 0.5428 | 0.5117 | 0.0872 | 0.9681 | 0.3915 | 0.7806 | 0.0150 | 391.6926 | 7.58 |
+| BM25+RRF boosters | cold | 94 | 0.5428 | 0.5138 | 0.0868 | 0.9681 | 0.3947 | 0.7602 | 0.0175 | 389.6755 | 7.59 |
 
 Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
 
@@ -1445,30 +1600,30 @@ Each row below is one call of `recommend` for a single user, the way a serving p
 | --- | --- | --- | --- | --- | --- |
 | BM25 | warm | 1,000 | 21 us | 27 us | 34 us |
 | BM25+CatBoost | warm | 1,000 | 666 us | 858 us | 1.00 ms |
-| BM25+XGBoost | warm | 1,000 | 665 us | 915 us | 1.11 ms |
-| BM25+LightGBM | warm | 1,000 | 879 us | 1.14 ms | 1.37 ms |
-| BM25+Blend | warm | 1,000 | 1.58 ms | 1.81 ms | 1.98 ms |
+| BM25+XGBoost | warm | 1,000 | 800 us | 1.07 ms | 1.21 ms |
+| BM25+LightGBM | warm | 1,000 | 682 us | 919 us | 1.07 ms |
+| BM25+Blend | warm | 1,000 | 1.55 ms | 1.77 ms | 1.93 ms |
 | EASE | warm | 1,000 | 32 us | 83 us | 117 us |
 | BM25+EASE RRF | warm | 1,000 | 240 us | 328 us | 387 us |
 | BM25+RRF | warm | 1,000 | 358 us | 573 us | 682 us |
-| BM25+RRF boosters | warm | 1,000 | 1.72 ms | 2.28 ms | 2.68 ms |
+| BM25+RRF boosters | warm | 1,000 | 1.49 ms | 1.74 ms | 1.97 ms |
 | BM25 | cold | 1,000 | 24 us | 26 us | 35 us |
 | BM25+CatBoost | cold | 1,000 | 392 us | 446 us | 486 us |
-| BM25+XGBoost | cold | 1,000 | 432 us | 592 us | 683 us |
-| BM25+LightGBM | cold | 1,000 | 634 us | 868 us | 1.02 ms |
-| BM25+Blend | cold | 1,000 | 1.26 ms | 1.39 ms | 1.50 ms |
+| BM25+XGBoost | cold | 1,000 | 565 us | 751 us | 845 us |
+| BM25+LightGBM | cold | 1,000 | 443 us | 506 us | 567 us |
+| BM25+Blend | cold | 1,000 | 1.28 ms | 1.41 ms | 1.49 ms |
 | EASE | cold | 1,000 | 24 us | 26 us | 34 us |
 | BM25+EASE RRF | cold | 1,000 | 26 us | 33 us | 48 us |
 | BM25+RRF | cold | 1,000 | 314 us | 418 us | 588 us |
-| BM25+RRF boosters | cold | 1,000 | 1.21 ms | 1.47 ms | 1.58 ms |
+| BM25+RRF boosters | cold | 1,000 | 1.20 ms | 1.33 ms | 1.42 ms |
 
 The first 3 cold users by id, and the top 5 of what each pipeline serves them. **Bold** titles are ones the user rated in the held-out set; `held out` is how many they rated in all.
 
 | cold user | age, gender, occupation | held out | BM25 | BM25+CatBoost | BM25+XGBoost | BM25+LightGBM | BM25+Blend | EASE | BM25+EASE RRF | BM25+RRF | BM25+RRF boosters |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 9 | 29, M, student | 22 | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Contact (1997)<br>Return of the Jedi (1983)<br>Fargo (1996)<br>Independence Day (ID4) (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>**English Patient, The (1996)**<br>Godfather, The (1972) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Return of the Jedi (1983)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Twelve Monkeys (1995)**<br>Return of the Jedi (1983)<br>**Star Wars (1977)**<br>Toy Story (1995)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Return of the Jedi (1983)<br>Godfather, The (1972) |
-| 15 | 49, F, educator | 104 | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Contact (1997)** | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>**Contact (1997)**<br>Fargo (1996)<br>**Air Force One (1997)** | **English Patient, The (1996)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>**Star Wars (1977)**<br>Fargo (1996) | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Contact (1997)**<br>**Air Force One (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Full Monty, The (1997)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Star Wars (1977)** | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>Fargo (1996) |
-| 32 | 28, F, student | 41 | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>**Star Wars (1977)**<br>**Scream (1996)**<br>Toy Story (1995) | Contact (1997)<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Liar Liar (1997)**<br>**Star Wars (1977)** | English Patient, The (1996)<br>Contact (1997)<br>**Scream (1996)**<br>**Star Wars (1977)**<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>**Scream (1996)**<br>**Star Wars (1977)**<br>English Patient, The (1996) | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Scream (1996)**<br>**Star Wars (1977)**<br>Toy Story (1995)<br>**Liar Liar (1997)**<br>**Return of the Jedi (1983)** | Contact (1997)<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Liar Liar (1997)**<br>**Star Wars (1977)** |
+| 9 | 29, M, student | 22 | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Contact (1997)<br>Return of the Jedi (1983)<br>Fargo (1996)<br>Independence Day (ID4) (1996) | **Star Wars (1977)**<br>**English Patient, The (1996)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>**Liar Liar (1997)**<br>Fargo (1996) | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>Return of the Jedi (1983)<br>Contact (1997)<br>**Liar Liar (1997)** | **Twelve Monkeys (1995)**<br>Return of the Jedi (1983)<br>**Star Wars (1977)**<br>Toy Story (1995)<br>Scream (1996) | **Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972)<br>**Twelve Monkeys (1995)** |
+| 15 | 49, F, educator | 104 | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Contact (1997)** | **English Patient, The (1996)**<br>**Air Force One (1997)**<br>Fargo (1996)<br>**Contact (1997)**<br>**Star Wars (1977)** | **English Patient, The (1996)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>**Star Wars (1977)**<br>Fargo (1996) | **English Patient, The (1996)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Star Wars (1977)**<br>**Contact (1997)** | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **Star Wars (1977)**<br>Fargo (1996)<br>**Return of the Jedi (1983)**<br>**Contact (1997)**<br>Liar Liar (1997) | **English Patient, The (1996)**<br>**Full Monty, The (1997)**<br>Fargo (1996)<br>**Air Force One (1997)**<br>**Star Wars (1977)** | **English Patient, The (1996)**<br>**Air Force One (1997)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Contact (1997)** |
+| 32 | 28, F, student | 41 | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>**Star Wars (1977)**<br>**Scream (1996)**<br>Toy Story (1995) | English Patient, The (1996)<br>Contact (1997)<br>**Liar Liar (1997)**<br>**Scream (1996)**<br>**Fargo (1996)** | English Patient, The (1996)<br>Contact (1997)<br>**Scream (1996)**<br>**Star Wars (1977)**<br>**Liar Liar (1997)** | Contact (1997)<br>**Liar Liar (1997)**<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Star Wars (1977)** | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Star Wars (1977)**<br>**Fargo (1996)**<br>**Return of the Jedi (1983)**<br>Contact (1997)<br>**Liar Liar (1997)** | **Scream (1996)**<br>**Star Wars (1977)**<br>Toy Story (1995)<br>**Liar Liar (1997)**<br>**Return of the Jedi (1983)** | Contact (1997)<br>English Patient, The (1996)<br>**Liar Liar (1997)**<br>**Scream (1996)**<br>**Star Wars (1977)** |
 
 ### MovieLens 1M
 
@@ -1482,31 +1637,31 @@ MovieLens 1M, `ColdStartSplit`: 10% of users held out whole, the latest 20% of e
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | BM25 | all | 6,040 | 0.1725 | 0.1583 | 0.0613 | 0.6101 | 0.0979 | 0.3090 | 0.1092 | 1596.1259 | 8.94 |
 | BM25+CatBoost | all | 6,040 | 0.1916 | 0.1744 | 0.0734 | 0.6662 | 0.1087 | 0.3431 | 0.2165 | 1492.6599 | 9.09 |
-| BM25+XGBoost | all | 6,040 | 0.1873 | 0.1694 | 0.0725 | 0.6768 | 0.1036 | 0.3453 | 0.2318 | 1433.2288 | 9.19 |
+| BM25+XGBoost | all | 6,040 | 0.1871 | 0.1686 | 0.0726 | 0.6781 | 0.1034 | 0.3469 | 0.2334 | 1411.7101 | 9.21 |
 | BM25+LightGBM | all | 6,040 | 0.1899 | 0.1725 | 0.0740 | 0.6879 | 0.1049 | 0.3476 | 0.2373 | 1386.8866 | 9.24 |
-| BM25+Blend | all | 6,040 | 0.1923 | 0.1748 | 0.0745 | 0.6818 | 0.1080 | 0.3474 | 0.2233 | 1468.2511 | 9.13 |
+| BM25+Blend | all | 6,040 | 0.1927 | 0.1753 | 0.0744 | 0.6815 | 0.1082 | 0.3483 | 0.2239 | 1465.7283 | 9.13 |
 | EASE | all | 6,040 | 0.1670 | 0.1515 | 0.0649 | 0.6333 | 0.0919 | 0.3097 | 0.3519 | 1245.7657 | 9.44 |
 | BM25+EASE RRF | all | 6,040 | 0.1763 | 0.1610 | 0.0661 | 0.6411 | 0.0984 | 0.3213 | 0.1814 | 1444.2125 | 9.13 |
 | BM25+RRF | all | 6,040 | 0.1768 | 0.1628 | 0.0656 | 0.6379 | 0.0993 | 0.3159 | 0.1609 | 1459.5701 | 9.10 |
-| BM25+RRF boosters | all | 6,040 | 0.1922 | 0.1742 | 0.0745 | 0.6834 | 0.1072 | 0.3502 | 0.2302 | 1445.1213 | 9.16 |
+| BM25+RRF boosters | all | 6,040 | 0.1924 | 0.1741 | 0.0741 | 0.6839 | 0.1073 | 0.3517 | 0.2313 | 1439.3425 | 9.17 |
 | BM25 | warm | 5,436 | 0.1379 | 0.1249 | 0.0634 | 0.5747 | 0.0685 | 0.2636 | 0.1092 | 1518.0176 | 9.01 |
 | BM25+CatBoost | warm | 5,436 | 0.1572 | 0.1401 | 0.0766 | 0.6365 | 0.0787 | 0.3027 | 0.2165 | 1412.7076 | 9.17 |
-| BM25+XGBoost | warm | 5,436 | 0.1532 | 0.1353 | 0.0757 | 0.6485 | 0.0740 | 0.3049 | 0.2318 | 1349.2017 | 9.28 |
+| BM25+XGBoost | warm | 5,436 | 0.1529 | 0.1346 | 0.0758 | 0.6501 | 0.0737 | 0.3058 | 0.2334 | 1325.7490 | 9.30 |
 | BM25+LightGBM | warm | 5,436 | 0.1561 | 0.1388 | 0.0773 | 0.6613 | 0.0754 | 0.3066 | 0.2373 | 1300.2331 | 9.33 |
-| BM25+Blend | warm | 5,436 | 0.1580 | 0.1406 | 0.0778 | 0.6540 | 0.0780 | 0.3075 | 0.2233 | 1386.3667 | 9.21 |
+| BM25+Blend | warm | 5,436 | 0.1585 | 0.1411 | 0.0777 | 0.6538 | 0.0783 | 0.3086 | 0.2239 | 1383.5051 | 9.21 |
 | EASE | warm | 5,436 | 0.1318 | 0.1173 | 0.0674 | 0.6004 | 0.0618 | 0.2644 | 0.3519 | 1128.7286 | 9.57 |
 | BM25+EASE RRF | warm | 5,436 | 0.1422 | 0.1279 | 0.0687 | 0.6091 | 0.0690 | 0.2773 | 0.1814 | 1349.2249 | 9.22 |
 | BM25+RRF | warm | 5,436 | 0.1424 | 0.1281 | 0.0680 | 0.6054 | 0.0696 | 0.2777 | 0.1609 | 1379.4854 | 9.18 |
-| BM25+RRF boosters | warm | 5,436 | 0.1583 | 0.1405 | 0.0779 | 0.6554 | 0.0777 | 0.3103 | 0.2302 | 1362.1021 | 9.25 |
+| BM25+RRF boosters | warm | 5,436 | 0.1585 | 0.1403 | 0.0774 | 0.6560 | 0.0778 | 0.3117 | 0.2313 | 1355.6555 | 9.25 |
 | BM25 | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
 | BM25+CatBoost | cold | 604 | 0.5010 | 0.4829 | 0.0452 | 0.9338 | 0.3779 | 0.7065 | 0.0096 | 2212.2300 | 8.37 |
-| BM25+XGBoost | cold | 604 | 0.4946 | 0.4765 | 0.0442 | 0.9321 | 0.3698 | 0.7087 | 0.0112 | 2189.4720 | 8.39 |
+| BM25+XGBoost | cold | 604 | 0.4953 | 0.4750 | 0.0441 | 0.9305 | 0.3708 | 0.7171 | 0.0112 | 2185.3604 | 8.39 |
 | BM25+LightGBM | cold | 604 | 0.4947 | 0.4755 | 0.0443 | 0.9272 | 0.3698 | 0.7165 | 0.0120 | 2166.7677 | 8.40 |
-| BM25+Blend | cold | 604 | 0.5008 | 0.4826 | 0.0451 | 0.9321 | 0.3775 | 0.7065 | 0.0099 | 2205.2111 | 8.37 |
+| BM25+Blend | cold | 604 | 0.5006 | 0.4828 | 0.0450 | 0.9305 | 0.3776 | 0.7050 | 0.0096 | 2205.7369 | 8.37 |
 | EASE | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
 | BM25+EASE RRF | cold | 604 | 0.4833 | 0.4589 | 0.0421 | 0.9288 | 0.3626 | 0.7173 | 0.0027 | 2299.1000 | 8.31 |
 | BM25+RRF | cold | 604 | 0.4858 | 0.4753 | 0.0438 | 0.9305 | 0.3672 | 0.6595 | 0.0107 | 2180.3326 | 8.39 |
-| BM25+RRF boosters | cold | 604 | 0.4968 | 0.4778 | 0.0443 | 0.9354 | 0.3727 | 0.7100 | 0.0101 | 2192.2937 | 8.38 |
+| BM25+RRF boosters | cold | 604 | 0.4976 | 0.4781 | 0.0444 | 0.9354 | 0.3734 | 0.7116 | 0.0099 | 2192.5253 | 8.38 |
 
 Measured on Apple M4 Pro (12 usable cores), macOS-27.0-arm64-arm-64bit-Mach-O, CPython 3.14.3, numpy 2.5.3, skrecsys 0.5.0, `_core` built in release mode. The quality table above is deterministic and portable; the timings below are not comparable across machines or builds.
 
@@ -1516,30 +1671,30 @@ Each row below is one call of `recommend` for a single user, the way a serving p
 | --- | --- | --- | --- | --- | --- |
 | BM25 | warm | 1,000 | 25 us | 44 us | 57 us |
 | BM25+CatBoost | warm | 1,000 | 785 us | 1.38 ms | 1.85 ms |
-| BM25+XGBoost | warm | 1,000 | 810 us | 1.42 ms | 2.00 ms |
-| BM25+LightGBM | warm | 1,000 | 938 us | 1.53 ms | 2.08 ms |
-| BM25+Blend | warm | 1,000 | 1.61 ms | 2.24 ms | 2.80 ms |
+| BM25+XGBoost | warm | 1,000 | 901 us | 1.48 ms | 2.07 ms |
+| BM25+LightGBM | warm | 1,000 | 779 us | 1.33 ms | 1.82 ms |
+| BM25+Blend | warm | 1,000 | 1.63 ms | 2.26 ms | 2.80 ms |
 | EASE | warm | 1,000 | 71 us | 334 us | 542 us |
 | BM25+EASE RRF | warm | 1,000 | 288 us | 617 us | 869 us |
 | BM25+RRF | warm | 1,000 | 388 us | 895 us | 1.41 ms |
-| BM25+RRF boosters | warm | 1,000 | 1.63 ms | 2.34 ms | 2.99 ms |
+| BM25+RRF boosters | warm | 1,000 | 1.55 ms | 2.15 ms | 2.76 ms |
 | BM25 | cold | 1,000 | 28 us | 33 us | 72 us |
 | BM25+CatBoost | cold | 1,000 | 406 us | 465 us | 503 us |
-| BM25+XGBoost | cold | 1,000 | 491 us | 583 us | 648 us |
-| BM25+LightGBM | cold | 1,000 | 639 us | 944 us | 1.31 ms |
-| BM25+Blend | cold | 1,000 | 1.21 ms | 1.33 ms | 1.39 ms |
+| BM25+XGBoost | cold | 1,000 | 592 us | 714 us | 843 us |
+| BM25+LightGBM | cold | 1,000 | 430 us | 504 us | 562 us |
+| BM25+Blend | cold | 1,000 | 1.24 ms | 1.34 ms | 1.48 ms |
 | EASE | cold | 1,000 | 28 us | 29 us | 36 us |
 | BM25+EASE RRF | cold | 1,000 | 28 us | 29 us | 36 us |
 | BM25+RRF | cold | 1,000 | 317 us | 332 us | 379 us |
-| BM25+RRF boosters | cold | 1,000 | 1.18 ms | 1.55 ms | 2.28 ms |
+| BM25+RRF boosters | cold | 1,000 | 1.16 ms | 1.27 ms | 1.34 ms |
 
 The first 3 cold users by id, and the top 5 of what each pipeline serves them. **Bold** titles are ones the user rated in the held-out set; `held out` is how many they rated in all.
 
 | cold user | age, gender, occupation | held out | BM25 | BM25+CatBoost | BM25+XGBoost | BM25+LightGBM | BM25+Blend | EASE | BM25+EASE RRF | BM25+RRF | BM25+RRF boosters |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2 | 56, M, 16 | 129 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | **American Beauty (1999)**<br>Fargo (1996)<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>L.A. Confidential (1997)<br>Fargo (1996)<br>**Silence of the Lambs, The (1991)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>Fargo (1996) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Jurassic Park (1993)**<br>Fargo (1996) | **American Beauty (1999)**<br>Fargo (1996)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)** |
-| 13 | 45, M, 1 | 108 | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Star Wars: Episode IV - A New Hope (1977)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Terminator 2: Judgment Day (1991)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>Back to the Future (1985) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>American Beauty (1999)<br>**Jurassic Park (1993)**<br>Shakespeare in Love (1998) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Fargo (1996) |
-| 15 | 25, M, 7 | 201 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**American Beauty (1999)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Matrix, The (1999)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | Terminator 2: Judgment Day (1991)<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Raiders of the Lost Ark (1981)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Matrix, The (1999)** |
+| 2 | 56, M, 16 | 129 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | **American Beauty (1999)**<br>Fargo (1996)<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>L.A. Confidential (1997)<br>Fargo (1996)<br>**Silence of the Lambs, The (1991)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Fargo (1996) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>Star Wars: Episode IV - A New Hope (1977)<br>**Saving Private Ryan (1998)**<br>**Jurassic Park (1993)**<br>Fargo (1996) | **American Beauty (1999)**<br>Fargo (1996)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Saving Private Ryan (1998)** |
+| 13 | 45, M, 1 | 108 | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Fargo (1996) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Terminator 2: Judgment Day (1991)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>American Beauty (1999)<br>**Jurassic Park (1993)**<br>Shakespeare in Love (1998) | American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Fargo (1996) |
+| 15 | 25, M, 7 | 201 | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Matrix, The (1999)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Matrix, The (1999)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Terminator 2: Judgment Day (1991) | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | **American Beauty (1999)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Jurassic Park (1993)** | Terminator 2: Judgment Day (1991)<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Raiders of the Lost Ark (1981)** | **American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Matrix, The (1999)** |
 
 ### What the rankers buy
 
@@ -1566,9 +1721,9 @@ candidates have their own history removed, the same features scored *below* the 
 baseline during development: the ranker learned from candidate lists that no cold user ever
 gets.
 
-The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.203
-on warm users against CatBoost's 0.205, and 0.542 on cold users against 0.549. It clearly
-beats XGBoost (0.200, 0.538) and LightGBM (0.199, 0.535). The spread between the three
+The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.201
+on warm users against CatBoost's 0.205, and 0.541 on cold users against 0.549. It is ahead
+of XGBoost (0.199, 0.532) and LightGBM (0.198, 0.535). The spread between the three
 boosters is small, and they learn from identical features, so they mostly agree and there is
 little for a blender to combine. Other variants did no better during tuning. Z-score
 normalization, five folds and a plain average (`blender=None`) came within 0.003 of CatBoost
@@ -2609,7 +2764,7 @@ interaction, roughly what `interactions_` already costs.
 | --- | --- |
 | `skrecsys` | `RecommenderMixin`, `is_recommender`, `supports_partial_fit` |
 | `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
-| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker` |
+| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker`, `AugmentedRanker` |
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
@@ -2620,6 +2775,7 @@ interaction, roughly what `interactions_` already costs.
 | `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
 | `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
 | `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
+| `skrecsys.inspection` | `trace`, `Trace`, `QueryTrace` and its steps, `explain`, `Explanation`, `Retrieval`, `RankerDecision`, `LeafReasons` |
 | `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |
 
 ## Development
@@ -2823,6 +2979,49 @@ specific to this workload and micro-architecture, so the script is there to re-m
   the ranker trains without it while evaluation and tuning measure it.
 - `recommend(exclude_interactions=...)` accepts an empty array, such as a request with no
   events since the fit, and excludes nothing instead of raising.
+
+### 0.6.0
+
+- `skrecsys.inspection`: `trace()` records every stage of the `recommend` calls made inside a
+  `with` block -- requests, `Switch` routes, each generator's candidates and the merged list,
+  fusion contributions, ranker features and scores, `postprocess` changes and served lists --
+  and gives them back per query as a `QueryTrace` of typed steps, each named by its path in
+  the pipeline. The trace is not stored on the estimator, so results, cloning and pickling are
+  unchanged, and an untraced call costs one context-variable lookup. `level="decisions"` and a
+  `sample=` fraction chosen by a process-stable hash of the query keep it cheap enough to leave
+  on; every step has a JSON-ready `to_dict()`.
+- `explain()` says why each served item was recommended, and, for `items=` that were not, the
+  stage that let each go: `unknown_item`, `excluded` (naming the filter), `not_retrieved`,
+  `ranked_out` or `dropped_by_postprocess`.
+- Reasons behind a leaf's score: exact per-item terms of the history for `ItemKNNRecommender`,
+  `BM25Recommender`, `RP3Beta`, `SLIMElasticNet` and `EASE`; the most alike history items,
+  approximately, for the factor and neural models; popularity for `MostPopularRecommender`.
+- Rankers report each feature's contribution to a score: coefficient × feature for a linear
+  `PointwiseRanker`, and native SHAP values for `CatBoostRanker`, `XGBRanker` and `LGBMRanker`.
+- Notebook `07_inspecting_recommendations.py`.
+- `AugmentedRanker` injects features that only one ranker sees, such as a
+  `JoinStaticFeatures` or `JoinDynamicFeatures`, so that the rankers of a `BlendRanker` or a
+  `ReciprocalRankRanker` can learn from different features. The `Cascade` fits the injected
+  features the same way as its own and hands the candidate pairs to rankers that ask for them.
+  A trace records the injected columns among the ranker's features and contributions, and
+  traces each ranker of a blend or fusion at its own path, `Cascade/ranker/<name>`.
+- `AutoTune(scoring=...)` also takes a metric name such as `"recall@20"` or a metric such as
+  `Recall(20)`; `skrecsys.metrics` adds `NDCG`, `Recall`, `Precision`, `MAP`, `MRR` and
+  `HitRate`, each a scorer at its cutoff, and `get_scorer` to resolve any of these.
+- `LGBMRanker`, `XGBRanker` and `CatBoostRanker` declare search ranges, so `AutoTune` tunes them
+  as `ranker__<name>` of a `Cascade`, and expose the usual regularization and sampling
+  parameters (`reg_alpha`, `subsample`, `colsample_bytree`, `gamma`, `random_strength`,
+  `lambdarank_pair_method` and more). `extra_params` passes any other library parameter.
+  `XGBRanker`'s `learning_rate`, `max_depth`, `min_child_weight` and `reg_lambda` default to
+  XGBoost's own values rather than `None`, which fits the same model.
+- `LGBMRanker` and `XGBRanker` train through the libraries' core APIs (`lightgbm.train`,
+  `xgboost.train`) rather than their scikit-learn wrappers, as `CatBoostRanker` already did,
+  so they work with any release of the library whatever scikit-learn is installed; LightGBM
+  4.5 no longer fails against scikit-learn 1.8+. `model_` is now a `lightgbm.Booster` or an
+  `xgboost.Booster`.
+- The integration extras' floors are each library's release from two years back:
+  `catboost>=1.2.8` (1.2.7 needs numpy<2), `xgboost>=2.1.1` and `lightgbm>=4.5`. CI tests
+  the integrations at those floors and at the latest releases.
 
 ## License
 

@@ -10,6 +10,7 @@ from sklearn.base import BaseEstimator
 from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys import _core
+from skrecsys._attribution import Attributions, cosine_weight, history_attributions
 from skrecsys._typing import override
 from skrecsys.base import RecommenderMixin, seen_among
 from skrecsys.indexing import VectorIndexMixin
@@ -123,6 +124,31 @@ class BaseRecommender(VectorIndexMixin, RecommenderMixin, BaseEstimator):
         if not exclude_seen:
             return sp.csr_array((len(user_idx), len(item_indices)), dtype=bool)
         return seen_among(interactions, user_idx, item_indices)
+
+    def _item_vectors(self) -> NDArray[np.floating] | None:
+        """The fitted item vectors a factor model scores with; None for other models."""
+        return getattr(self, "item_factors_", None)
+
+    @override
+    def _attribute(
+        self, queries: NDArray[np.generic], items: NDArray[np.generic], n_reasons: int
+    ) -> Attributions | None:
+        # A factor model: the history items most alike the target, approximately.
+        vectors = self._item_vectors()
+        if vectors is None:
+            return None
+        history, rows = self._query_rows(check_ids(queries))
+        targets = encode_ids(items, self.item_ids_, name="item")
+        return history_attributions(
+            history,
+            rows,
+            targets,
+            cosine_weight(vectors),
+            self.item_ids_,
+            n_reasons,
+            kind="similar_history",
+            exact=False,
+        )
 
     def _query_rows(self, queries: NDArray[np.generic]) -> tuple[sp.csr_array, NDArray[np.intp]]:
         """The interaction matrix to read the queries' history from, and their rows in it.
@@ -248,6 +274,28 @@ class SimilarityRecommender(BaseRecommender):
             cached = (self.similarity_, sp.csr_array(self.similarity_.T))
             self._similarity_t = cached
         return cached[1]
+
+    @override
+    def _attribute(
+        self, queries: NDArray[np.generic], items: NDArray[np.generic], n_reasons: int
+    ) -> Attributions | None:
+        # Row i of the neighbours holds what each history item adds to the score of i.
+        neighbors = self._neighbors_of_items()
+
+        def weight(history: NDArray[np.intp], targets: NDArray[np.intp]) -> NDArray[np.float64]:
+            return np.asarray(neighbors[targets, history], dtype=np.float64).ravel()
+
+        history, rows = self._query_rows(check_ids(queries))
+        return history_attributions(
+            history,
+            rows,
+            encode_ids(items, self.item_ids_, name="item"),
+            weight,
+            self.item_ids_,
+            n_reasons,
+            kind="history",
+            exact=True,
+        )
 
     @override
     def _score_users(

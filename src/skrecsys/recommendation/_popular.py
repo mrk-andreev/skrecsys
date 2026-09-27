@@ -4,10 +4,11 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 
+from skrecsys._attribution import Attributions, popularity_attributions
 from skrecsys._typing import override
 from skrecsys.recommendation._base import BaseRecommender
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
-from skrecsys.utils.validation import lookup_ids
+from skrecsys.utils.validation import encode_ids, lookup_ids
 
 
 class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
@@ -112,6 +113,14 @@ class MostPopularRecommender(IncrementalRecommenderMixin, BaseRecommender):
             shape=(self.n_users_ + 1, self.n_items_),
         )
         return padded, rows
+
+    @override
+    def _attribute(
+        self, queries: NDArray[np.generic], items: NDArray[np.generic], n_reasons: int
+    ) -> Attributions | None:
+        del queries, n_reasons
+        positions = encode_ids(items, self.item_ids_, name="item")
+        return popularity_attributions(self.item_popularity_[positions])
 
     @override
     def _score_users(

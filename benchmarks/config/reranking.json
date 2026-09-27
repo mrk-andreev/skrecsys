@@ -48,7 +48,7 @@
         "max_depth": 4,
         "min_child_weight": 5
       },
-      "version": "v1",
+      "version": "v2",
       "comment": "The BM25+CatBoost switch with XGBoost rank:ndcg rankers, regularized: at the defaults (300 trees, learning rate 0.1) it overfits the ranker's few hundred groups"
     },
     {
@@ -64,7 +64,7 @@
         "min_child_samples": 100,
         "reg_lambda": 10
       },
-      "version": "v1",
+      "version": "v2",
       "comment": "The BM25+CatBoost switch with LightGBM lambdarank rankers, regularized for the same reason as XGBoost"
     },
     {
@@ -93,7 +93,7 @@
           "reg_lambda": 10
         }
       },
-      "version": "v1",
+      "version": "v2",
       "comment": "BlendRanker at its defaults (logistic stacking on out-of-fold, rank-normalized scores) over the three boosters of the rows above"
     },
     {
@@ -153,7 +153,7 @@
           "reg_lambda": 10
         }
       },
-      "version": "v1",
+      "version": "v2",
       "comment": "ReciprocalRankRanker over the three boosters of the Blend row: their ranks fused, with no out-of-fold refits or blender"
     }
   ]

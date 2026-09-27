@@ -57,29 +57,64 @@ jobs:
       - name: Type-check the subpackage the root config excludes
         run: uv run --no-sync ty check --config-file ty.nn.toml
 
-  # The third-party integrations run in one job with every integration extra installed
-  # (catboost, xgboost, lightgbm). Like `nn` it runs once, and the matrix above stays free
-  # of those libraries so the import guards in skrecsys/integrations stay honest.
+  # The third-party integrations run with every integration extra installed (catboost,
+  # xgboost, lightgbm), once per pinned set of their versions. Like `nn` they run apart from
+  # the matrix above, which stays free of those libraries so the import guards in
+  # skrecsys/integrations stay honest.
+  #
+  # The versions are pinned by hand, and bumped by hand:
+  # - `floor` is each library's release from two years back and must match the floors of
+  #   the extras in pyproject.toml; move both forward together. CatBoost's two-year-old
+  #   1.2.7 needs numpy<2, so it is 1.2.8, as in pyproject.toml.
+  # - `latest-<date>` is each library's newest release on that date; on a bump, update the
+  #   versions and the date in its name.
   integrations:
-    name: Third-party integrations
+    name: Third-party integrations (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: floor
+            python: "3.11"
+            catboost: "1.2.8"
+            xgboost: "2.1.1"
+            lightgbm: "4.5.0"
+          - name: latest-20260927
+            python: "3.14"
+            catboost: "1.2.10"
+            xgboost: "3.4.1"
+            lightgbm: "4.7.0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: integrations
+          key: integrations-${{ matrix.name }}
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - name: Sync the environment
-        run: uv sync --locked --group dev --extra catboost --extra xgboost --extra lightgbm
+        run: uv sync --locked --group dev
+      - name: Install the pinned integration libraries
+        run: >-
+          uv pip install
+          "catboost==${{ matrix.catboost }}"
+          "xgboost-cpu==${{ matrix.xgboost }}"
+          "lightgbm==${{ matrix.lightgbm }}"
+      - name: Report the versions under test
+        run: >-
+          uv run --no-sync python -c "import catboost, lightgbm, xgboost;
+          print('catboost', catboost.__version__, 'xgboost', xgboost.__version__,
+          'lightgbm', lightgbm.__version__)"
       - name: Run the tests
         run: uv run --no-sync pytest tests/integrations --no-cov
       - name: Run the examples
         run: uv run --no-sync pytest --doctest-modules src/skrecsys/integrations --no-cov
+      # Type stubs follow the newest releases.
       - name: Type-check the modules the root config excludes
+        if: matrix.name == 'latest-20260927'
         run: uv run --no-sync ty check --config-file ty.integrations.toml
 
   lint:
