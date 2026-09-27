@@ -10,6 +10,8 @@ from sklearn.utils import Tags, get_tags
 from sklearn.utils.validation import check_is_fitted
 
 from skrecsys import _core
+from skrecsys._attribution import Attributions
+from skrecsys._tracing import traced_recommend
 from skrecsys._typing import (
     Condition,
     Features,
@@ -29,6 +31,9 @@ from skrecsys.utils.validation import (
     factorize,
     lookup_ids,
 )
+
+if TYPE_CHECKING:
+    from skrecsys.compose._rankers import Candidates
 
 __all__ = [
     "AllOf",
@@ -112,6 +117,20 @@ class RecommenderMixin(_TagsMixin):
         """
         raise NotImplementedError
 
+    def _attribute(
+        self, queries: NDArray[np.generic], items: NDArray[np.generic], n_reasons: int
+    ) -> Attributions | None:
+        """Why each aligned pair ``(queries[p], items[p])`` scores as it does.
+
+        The ``n_reasons`` history items that weigh most in each pair's score, as
+        :class:`skrecsys._attribution.Attributions`; see that module for the kinds of
+        answer. None when the recommender cannot say, which is the default: a composite
+        is explained through its parts. Read by :mod:`skrecsys.inspection`.
+        """
+        del queries, items, n_reasons
+        return None
+
+    @traced_recommend
     def recommend(
         self,
         X: ArrayLike,
@@ -512,6 +531,50 @@ class RankerMixin(_TagsMixin):
         tags = super().__sklearn_tags__()
         tags.estimator_type = "ranker"
         return tags
+
+    def _contributions(self, X: NDArray[np.float64]) -> NDArray[np.float64] | None:
+        """What each feature adds to each row's score, or None when the ranker cannot say.
+
+        Shape ``(n_rows, n_features + 1)``; the last column is what no feature owns, a
+        bias or an expected value, and a row adds up to the ranker's score in its own
+        space -- log-odds for a logistic model, the raw margin for a boosted one. Read by
+        :mod:`skrecsys.inspection`.
+
+        ``X`` is the matrix the ranker scores from: its input, unless it joins features
+        of its own, when it is what :meth:`_ranker_input` returns.
+        """
+        del X
+        return None
+
+    def _takes_candidates(self) -> bool:
+        """Whether ``fit`` and ``predict`` take the keyword ``candidates``.
+
+        A ranker joining features of its own, such as
+        :class:`~skrecsys.compose.AugmentedRanker`, needs the candidate pairs behind the
+        rows of ``X``, and a composite of rankers passes them on; a
+        :class:`~skrecsys.compose.Cascade` gives them to a ranker that says so.
+        """
+        return False
+
+    def _ranker_input(
+        self, X: NDArray[np.float64], candidates: "Candidates"
+    ) -> tuple[NDArray[np.float64], tuple[str, ...] | None]:
+        """The matrix the fitted ranker scores ``candidates`` from, and its column names.
+
+        ``X`` and ``candidates.names`` themselves, unless the ranker joins features of
+        its own onto the candidates. Read by :mod:`skrecsys.inspection`, which reports
+        this matrix as the ranker's features.
+        """
+        return X, candidates.names
+
+    def _fit_features(self, X: ArrayLike, y: ArrayLike | None) -> None:
+        """Fit the features this ranker joins itself on the interactions ``X``.
+
+        Called by a :class:`~skrecsys.compose.Cascade` on a clone before ``fit``, with
+        the interactions the ranker is not labelled from, then on the fitted ranker with
+        all of them, for serving. A ranker joining nothing does nothing.
+        """
+        del X, y
 
 
 def is_recommender(estimator: object) -> TypeIs[Recommender]:

@@ -1,9 +1,9 @@
 {
-  "key": "73c2fec7e184ff11",
+  "key": "16cbb349e0c9e9b9",
   "unit": "reranking/movielens-100k-cold/BM25+RRF boosters",
   "provenance": {
     "source": "measured",
-    "at": "2026-09-26T08:15:55+00:00"
+    "at": "2026-09-27T10:27:44+00:00"
   },
   "host": {
     "cpu": "Apple M4 Pro",
@@ -65,7 +65,7 @@
           "reg_lambda": 10
         }
       },
-      "version": "v1"
+      "version": "v2"
     }
   },
   "payload": {
@@ -74,43 +74,43 @@
         "Pipeline": "BM25+RRF boosters",
         "users": "all",
         "n users": "943",
-        "NDCG@10": "0.2379",
-        "P@10": "0.2078",
-        "R@10": "0.1169",
-        "hit rate": "0.7593",
-        "MAP": "0.1338",
-        "MRR": "0.4174",
-        "cat cov": "0.2755",
-        "mean pop": "218.6677",
-        "novelty": "8.61"
+        "NDCG@10": "0.2387",
+        "P@10": "0.2092",
+        "R@10": "0.1175",
+        "hit rate": "0.7667",
+        "MAP": "0.1341",
+        "MRR": "0.4193",
+        "cat cov": "0.2743",
+        "mean pop": "219.9035",
+        "novelty": "8.60"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "warm",
         "n users": "849",
-        "NDCG@10": "0.2041",
-        "P@10": "0.1742",
-        "R@10": "0.1202",
-        "hit rate": "0.7362",
+        "NDCG@10": "0.2051",
+        "P@10": "0.1755",
+        "R@10": "0.1209",
+        "hit rate": "0.7444",
         "MAP": "0.1053",
-        "MRR": "0.3772",
-        "cat cov": "0.2755",
-        "mean pop": "199.5106",
-        "novelty": "8.73"
+        "MRR": "0.3816",
+        "cat cov": "0.2743",
+        "mean pop": "201.1066",
+        "novelty": "8.72"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "cold",
         "n users": "94",
         "NDCG@10": "0.5428",
-        "P@10": "0.5117",
-        "R@10": "0.0872",
+        "P@10": "0.5138",
+        "R@10": "0.0868",
         "hit rate": "0.9681",
-        "MAP": "0.3915",
-        "MRR": "0.7806",
-        "cat cov": "0.0150",
-        "mean pop": "391.6926",
-        "novelty": "7.58"
+        "MAP": "0.3947",
+        "MRR": "0.7602",
+        "cat cov": "0.0175",
+        "mean pop": "389.6755",
+        "novelty": "7.59"
       }
     ],
     "latency": [
@@ -118,17 +118,17 @@
         "Pipeline": "BM25+RRF boosters",
         "users": "warm",
         "requests": "1,000",
-        "median": "1.72 ms",
-        "q95": "2.28 ms",
-        "q99": "2.68 ms"
+        "median": "1.49 ms",
+        "q95": "1.74 ms",
+        "q99": "1.97 ms"
       },
       {
         "Pipeline": "BM25+RRF boosters",
         "users": "cold",
         "requests": "1,000",
-        "median": "1.21 ms",
-        "q95": "1.47 ms",
-        "q99": "1.58 ms"
+        "median": "1.20 ms",
+        "q95": "1.33 ms",
+        "q99": "1.42 ms"
       }
     ],
     "examples": [
@@ -136,19 +136,19 @@
         "user": "9",
         "profile": "29, M, student",
         "held out": "22",
-        "top": "**Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Return of the Jedi (1983)<br>Godfather, The (1972)"
+        "top": "**Star Wars (1977)**<br>Contact (1997)<br>Independence Day (ID4) (1996)<br>Godfather, The (1972)<br>**Twelve Monkeys (1995)**"
       },
       {
         "user": "15",
         "profile": "49, F, educator",
         "held out": "104",
-        "top": "**English Patient, The (1996)**<br>**Star Wars (1977)**<br>**Air Force One (1997)**<br>**Contact (1997)**<br>Fargo (1996)"
+        "top": "**English Patient, The (1996)**<br>**Air Force One (1997)**<br>**Star Wars (1977)**<br>Fargo (1996)<br>**Contact (1997)**"
       },
       {
         "user": "32",
         "profile": "28, F, student",
         "held out": "41",
-        "top": "Contact (1997)<br>English Patient, The (1996)<br>**Scream (1996)**<br>**Liar Liar (1997)**<br>**Star Wars (1977)**"
+        "top": "Contact (1997)<br>English Patient, The (1996)<br>**Liar Liar (1997)**<br>**Scream (1996)**<br>**Star Wars (1977)**"
       }
     ]
   }

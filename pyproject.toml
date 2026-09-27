@@ -42,13 +42,18 @@ pandas = ["pandas>=3.0.5"]
 nn = ["torch>=2.6"]
 # Third-party integrations, one extra per library: rankers for skrecsys.compose.Cascade in
 # skrecsys.integrations.<extra>. Opt-in like `nn`: nothing else in the package imports them.
-catboost = ["catboost>=1.2"]
+# Each floor is the library's release from two years back: the rankers call the libraries'
+# core APIs, which keep their shape across those releases, and the `integrations` job in
+# .github/workflows/tests.yml tests the floors and the latest releases. CatBoost's release
+# from two years back, 1.2.7, needs numpy<2, so its floor is 1.2.8, the oldest to install
+# beside the numpy floor above.
+catboost = ["catboost>=1.2.8"]
 # The CPU-only build, which skips the CUDA libraries (NCCL) the Linux `xgboost` wheel pulls
 # in. It ships no macOS wheel; the macOS `xgboost` wheel is CPU-only anyway. Both provide
 # the same `xgboost` module, so do not install `xgboost` alongside on Linux or Windows.
 xgboost = [
-    'xgboost-cpu>=2.1; sys_platform != "darwin"',
-    'xgboost>=2.1; sys_platform == "darwin"',
+    'xgboost-cpu>=2.1.1; sys_platform != "darwin"',
+    'xgboost>=2.1.1; sys_platform == "darwin"',
 ]
 lightgbm = ["lightgbm>=4.5"]
 

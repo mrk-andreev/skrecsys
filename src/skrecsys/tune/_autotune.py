@@ -1,6 +1,6 @@
 """A recommender that tunes the hyperparameters of another before fitting it."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal, Self
 
 import numpy as np
@@ -9,6 +9,7 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import check_cv, cross_val_score
 from sklearn.utils.validation import check_is_fitted
 
+from skrecsys._tracing import span, traced_recommend, untraced
 from skrecsys._typing import (
     CrossValidator,
     FittedRecommender,
@@ -19,16 +20,14 @@ from skrecsys._typing import (
 )
 from skrecsys.base import RecommenderMixin, fit_clone, is_recommender, predict_pairs, uses_time
 from skrecsys.base import serves_unknown_users as _serves_unknown_users
-from skrecsys.metrics import make_recommender_scorer, ndcg_at_k
+from skrecsys.metrics import get_scorer
+from skrecsys.metrics._named import Scorer
 from skrecsys.model_selection import WarmStartKFold
 from skrecsys.tune._space import Categorical, Distribution, Float, Int, search_space
 from skrecsys.tune._study import Study, Trial
 from skrecsys.utils._param_validation import check_component, check_int
 
 __all__ = ["AutoTune"]
-
-#: What ``scoring`` accepts: ``scorer(estimator, X, y) -> float``, higher is better.
-Scorer = Callable[[Recommender, ArrayLike, ArrayLike | None], float]
 
 
 class AutoTune(RecommenderMixin, BaseEstimator):
@@ -53,9 +52,11 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         Parameters to hold at the value ``estimator`` already has, by ``set_params``
         name. Each must be tunable, declared or in ``search_space``; freezing all of
         them leaves nothing to search and raises.
-    scoring : callable, default=None
-        ``scorer(estimator, X, y) -> float``, higher being better, as made by
-        :func:`skrecsys.metrics.make_recommender_scorer`. ``None`` is NDCG@10.
+    scoring : str, metric or callable, default=None
+        What to maximize: a metric name such as ``"recall@20"``, a metric such as
+        ``Recall(20)``, or any ``scorer(estimator, X, y) -> float``, higher being
+        better, such as :func:`skrecsys.metrics.make_recommender_scorer` makes. See
+        :func:`skrecsys.metrics.get_scorer`. ``None`` is NDCG@10.
     cv : int, cross-validation generator or iterable, default=None
         How the training interactions are split for scoring. ``None`` is a shuffled
         :class:`~skrecsys.model_selection.WarmStartKFold` with 3 folds, and an integer
@@ -98,6 +99,11 @@ class AutoTune(RecommenderMixin, BaseEstimator):
     >>> held = AutoTune(BM25Recommender(k1=0.5), freeze=["k1"], n_trials=5, random_state=0)
     >>> held.fit(X).best_estimator_.k1, sorted(held.best_params_)
     (0.5, ['b', 'n_neighbors'])
+
+    The metric to maximize can be named:
+
+    >>> AutoTune(BM25Recommender(), scoring="recall@5", n_trials=3).fit(X).best_score_ >= 0
+    True
     """
 
     def __init__(
@@ -106,7 +112,7 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         *,
         search_space: Mapping[str, Distribution] | None = None,
         freeze: Sequence[str] | None = None,
-        scoring: Scorer | None = None,
+        scoring: str | Scorer | None = None,
         cv: int | CrossValidator | None = None,
         n_trials: int = 50,
         sampler: Literal["tpe", "random"] = "tpe",
@@ -183,6 +189,7 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         return set(self.freeze)
 
     @override
+    @untraced()
     def fit(self, X: ArrayLike, y: ArrayLike | None = None) -> Self:
         """Tune ``estimator`` on the interactions ``X`` and fit the best configuration.
 
@@ -200,7 +207,7 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         check_component(self.estimator, "estimator", is_recommender, "a recommender")
         n_trials = check_int(self.n_trials, "n_trials", min_value=1)
         space = self._space()
-        scoring = self.scoring or make_recommender_scorer(ndcg_at_k, k=10)
+        scoring = get_scorer(self.scoring)
         cv = self.cv
         if cv is None or isinstance(cv, int):
             cv = WarmStartKFold(
@@ -246,6 +253,7 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         return self
 
     @override
+    @traced_recommend
     def recommend(
         self,
         X: ArrayLike,
@@ -263,24 +271,25 @@ class AutoTune(RecommenderMixin, BaseEstimator):
         """
         check_is_fitted(self)
         best = self.best_estimator_
-        if uses_time(best):
+        if as_of is not None and not uses_time(best):
+            raise ValueError("as_of needs an estimator constructed with time=True.")
+        with span("best_estimator"):
+            if uses_time(best):
+                return best.recommend(
+                    X,
+                    n_recommendations=n_recommendations,
+                    candidates=candidates,
+                    exclude_seen=exclude_seen,
+                    exclude_interactions=exclude_interactions,
+                    as_of=as_of,
+                )
             return best.recommend(
                 X,
                 n_recommendations=n_recommendations,
                 candidates=candidates,
                 exclude_seen=exclude_seen,
                 exclude_interactions=exclude_interactions,
-                as_of=as_of,
             )
-        if as_of is not None:
-            raise ValueError("as_of needs an estimator constructed with time=True.")
-        return best.recommend(
-            X,
-            n_recommendations=n_recommendations,
-            candidates=candidates,
-            exclude_seen=exclude_seen,
-            exclude_interactions=exclude_interactions,
-        )
 
     @override
     def _count_eligible(

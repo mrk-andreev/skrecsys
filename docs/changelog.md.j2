@@ -77,3 +77,46 @@
   the ranker trains without it while evaluation and tuning measure it.
 - `recommend(exclude_interactions=...)` accepts an empty array, such as a request with no
   events since the fit, and excludes nothing instead of raising.
+
+### 0.6.0
+
+- `skrecsys.inspection`: `trace()` records every stage of the `recommend` calls made inside a
+  `with` block -- requests, `Switch` routes, each generator's candidates and the merged list,
+  fusion contributions, ranker features and scores, `postprocess` changes and served lists --
+  and gives them back per query as a `QueryTrace` of typed steps, each named by its path in
+  the pipeline. The trace is not stored on the estimator, so results, cloning and pickling are
+  unchanged, and an untraced call costs one context-variable lookup. `level="decisions"` and a
+  `sample=` fraction chosen by a process-stable hash of the query keep it cheap enough to leave
+  on; every step has a JSON-ready `to_dict()`.
+- `explain()` says why each served item was recommended, and, for `items=` that were not, the
+  stage that let each go: `unknown_item`, `excluded` (naming the filter), `not_retrieved`,
+  `ranked_out` or `dropped_by_postprocess`.
+- Reasons behind a leaf's score: exact per-item terms of the history for `ItemKNNRecommender`,
+  `BM25Recommender`, `RP3Beta`, `SLIMElasticNet` and `EASE`; the most alike history items,
+  approximately, for the factor and neural models; popularity for `MostPopularRecommender`.
+- Rankers report each feature's contribution to a score: coefficient × feature for a linear
+  `PointwiseRanker`, and native SHAP values for `CatBoostRanker`, `XGBRanker` and `LGBMRanker`.
+- Notebook `07_inspecting_recommendations.py`.
+- `AugmentedRanker` injects features that only one ranker sees, such as a
+  `JoinStaticFeatures` or `JoinDynamicFeatures`, so that the rankers of a `BlendRanker` or a
+  `ReciprocalRankRanker` can learn from different features. The `Cascade` fits the injected
+  features the same way as its own and hands the candidate pairs to rankers that ask for them.
+  A trace records the injected columns among the ranker's features and contributions, and
+  traces each ranker of a blend or fusion at its own path, `Cascade/ranker/<name>`.
+- `AutoTune(scoring=...)` also takes a metric name such as `"recall@20"` or a metric such as
+  `Recall(20)`; `skrecsys.metrics` adds `NDCG`, `Recall`, `Precision`, `MAP`, `MRR` and
+  `HitRate`, each a scorer at its cutoff, and `get_scorer` to resolve any of these.
+- `LGBMRanker`, `XGBRanker` and `CatBoostRanker` declare search ranges, so `AutoTune` tunes them
+  as `ranker__<name>` of a `Cascade`, and expose the usual regularization and sampling
+  parameters (`reg_alpha`, `subsample`, `colsample_bytree`, `gamma`, `random_strength`,
+  `lambdarank_pair_method` and more). `extra_params` passes any other library parameter.
+  `XGBRanker`'s `learning_rate`, `max_depth`, `min_child_weight` and `reg_lambda` default to
+  XGBoost's own values rather than `None`, which fits the same model.
+- `LGBMRanker` and `XGBRanker` train through the libraries' core APIs (`lightgbm.train`,
+  `xgboost.train`) rather than their scikit-learn wrappers, as `CatBoostRanker` already did,
+  so they work with any release of the library whatever scikit-learn is installed; LightGBM
+  4.5 no longer fails against scikit-learn 1.8+. `model_` is now a `lightgbm.Booster` or an
+  `xgboost.Booster`.
+- The integration extras' floors are each library's release from two years back:
+  `catboost>=1.2.8` (1.2.7 needs numpy<2), `xgboost>=2.1.1` and `lightgbm>=4.5`. CI tests
+  the integrations at those floors and at the latest releases.

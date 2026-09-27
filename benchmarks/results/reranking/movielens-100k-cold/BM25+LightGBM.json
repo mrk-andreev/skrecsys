@@ -1,9 +1,9 @@
 {
-  "key": "f7383ba8b8d36e26",
+  "key": "7efcd7ca15347349",
   "unit": "reranking/movielens-100k-cold/BM25+LightGBM",
   "provenance": {
     "source": "measured",
-    "at": "2026-09-25T22:00:00+00:00"
+    "at": "2026-09-27T10:26:58+00:00"
   },
   "host": {
     "cpu": "Apple M4 Pro",
@@ -53,7 +53,7 @@
         "min_child_samples": 100,
         "reg_lambda": 10
       },
-      "version": "v1"
+      "version": "v2"
     }
   },
   "payload": {
@@ -62,29 +62,29 @@
         "Pipeline": "BM25+LightGBM",
         "users": "all",
         "n users": "943",
-        "NDCG@10": "0.2320",
-        "P@10": "0.2040",
-        "R@10": "0.1129",
-        "hit rate": "0.7497",
-        "MAP": "0.1302",
-        "MRR": "0.4104",
-        "cat cov": "0.2830",
-        "mean pop": "215.5760",
+        "NDCG@10": "0.2315",
+        "P@10": "0.2030",
+        "R@10": "0.1138",
+        "hit rate": "0.7476",
+        "MAP": "0.1296",
+        "MRR": "0.4090",
+        "cat cov": "0.2837",
+        "mean pop": "214.7716",
         "novelty": "8.65"
       },
       {
         "Pipeline": "BM25+LightGBM",
         "users": "warm",
         "n users": "849",
-        "NDCG@10": "0.1985",
-        "P@10": "0.1700",
-        "R@10": "0.1159",
-        "hit rate": "0.7256",
-        "MAP": "0.1020",
-        "MRR": "0.3724",
-        "cat cov": "0.2830",
-        "mean pop": "196.7113",
-        "novelty": "8.76"
+        "NDCG@10": "0.1979",
+        "P@10": "0.1688",
+        "R@10": "0.1168",
+        "hit rate": "0.7232",
+        "MAP": "0.1013",
+        "MRR": "0.3708",
+        "cat cov": "0.2837",
+        "mean pop": "195.8178",
+        "novelty": "8.77"
       },
       {
         "Pipeline": "BM25+LightGBM",
@@ -106,17 +106,17 @@
         "Pipeline": "BM25+LightGBM",
         "users": "warm",
         "requests": "1,000",
-        "median": "879 us",
-        "q95": "1.14 ms",
-        "q99": "1.37 ms"
+        "median": "682 us",
+        "q95": "919 us",
+        "q99": "1.07 ms"
       },
       {
         "Pipeline": "BM25+LightGBM",
         "users": "cold",
         "requests": "1,000",
-        "median": "634 us",
-        "q95": "868 us",
-        "q99": "1.02 ms"
+        "median": "443 us",
+        "q95": "506 us",
+        "q99": "567 us"
       }
     ],
     "examples": [

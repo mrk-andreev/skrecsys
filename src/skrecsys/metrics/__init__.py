@@ -7,6 +7,7 @@ from skrecsys.metrics._beyond_accuracy import (
     novelty_at_k,
     user_coverage_at_k,
 )
+from skrecsys.metrics._named import MAP, MRR, NDCG, HitRate, Precision, Recall, get_scorer
 from skrecsys.metrics._ranking import (
     average_precision_at_k,
     hit_rate_at_k,
@@ -18,9 +19,16 @@ from skrecsys.metrics._ranking import (
 from skrecsys.metrics._scorer import evaluate_recommender, make_recommender_scorer
 
 __all__ = [
+    "MAP",
+    "MRR",
+    "NDCG",
+    "HitRate",
+    "Precision",
+    "Recall",
     "average_precision_at_k",
     "catalog_coverage_at_k",
     "evaluate_recommender",
+    "get_scorer",
     "hit_rate_at_k",
     "item_popularity",
     "make_recommender_scorer",

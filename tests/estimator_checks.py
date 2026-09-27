@@ -26,6 +26,7 @@ from sklearn.base import clone
 from sklearn.utils.validation import check_is_fitted
 
 from skrecsys.base import is_recommender
+from skrecsys.inspection import trace
 
 _USERS = ["u0", "u0", "u1", "u1", "u1", "u2", "u2", "u3", "u3", "u3"]
 _ITEMS = ["i0", "i1", "i1", "i2", "i3", "i0", "i4", "i2", "i4", "i5"]
@@ -90,6 +91,34 @@ def check_recommend_output(name: str, estimator: Any) -> None:
     assert np.all(np.diff(positions, axis=1)[ties] > 0), (
         f"{name} does not break ties by fitted item order."
     )
+
+
+def check_recommend_unchanged_by_trace(name: str, estimator: Any) -> None:
+    """Tracing observes: a traced recommend returns what an untraced one does.
+
+    Compared on one fitted model, because a model without a seed may fit differently
+    twice; a traced ``fit`` must record nothing, since the trace is of serving.
+    """
+    X = _interactions()
+    queries = np.array(["u0", "u3", "u1"], dtype=object)
+    with trace() as t:
+        est = clone(estimator).fit(X)
+    assert not t.events, f"{name}.fit reported to the trace; only recommend should."
+    want_items, want_scores = est.recommend(queries, n_recommendations=3)
+
+    with trace() as t:
+        items, scores = est.recommend(queries, n_recommendations=3)
+        pickle.loads(pickle.dumps(est))
+    np.testing.assert_array_equal(items, want_items, err_msg=f"Tracing changed {name}.")
+    np.testing.assert_array_equal(scores, want_scores, err_msg=f"Tracing changed {name}.")
+
+    assert t.queries == queries.tolist()
+    for row, query in enumerate(queries.tolist()):
+        final = t[query].final
+        assert final is not None, f"{name} served {query!r} nothing the trace saw."
+        assert final.path == type(estimator).__name__
+        np.testing.assert_array_equal(final.items, items[row])
+        np.testing.assert_array_equal(final.scores, scores[row])
 
 
 def check_recommend_exclude_seen(name: str, estimator: Any) -> None:
@@ -436,6 +465,7 @@ _CHECKS: tuple[Callable[[str, Any], None], ...] = (
     check_is_recommender,
     check_fit_attributes,
     check_recommend_output,
+    check_recommend_unchanged_by_trace,
     check_recommend_exclude_seen,
     check_recommend_candidates,
     check_recommend_exclude_interactions,

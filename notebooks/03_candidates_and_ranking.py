@@ -391,7 +391,10 @@ def _(warm_results):
     Gradient-boosting libraries plug in the same way:
     `skrecsys.integrations` provides `CatBoostRanker`, `XGBRanker` and `LGBMRanker`
     (each behind its own extra, e.g. `pip install skrecsys[catboost]`), and `BlendRanker`
-    stacks several rankers on out-of-fold scores.
+    stacks several rankers on out-of-fold scores. The three declare search ranges for
+    their main knobs (learning rate, tree size, regularization, row and column sampling),
+    so `AutoTune(Cascade(EASE(), features, LGBMRanker()))` tunes them as `ranker__<name>`
+    without a `search_space=`; any other library parameter goes through `extra_params=`.
     """)
     return
 

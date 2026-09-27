@@ -20,7 +20,9 @@ the files in reading order, and link each notebook to the next:
    (`uv run --group notebooks --extra nn ...`) and imports `skrecsys.nn` in a `try` so that
    everything but the training still runs without torch;
 6. `06_time_aware_recommendation.py` — backtests, time-based `cv=`, decay weights,
-   `Cascade(time=True)`, bitemporal lookups, `as_of`.
+   `Cascade(time=True)`, bitemporal lookups, `as_of`;
+7. `07_inspecting_recommendations.py` — `trace`, `level=`/`sample=`, `explain` and its
+   statuses, exact and approximate reasons, ranker contributions, where relevant items are lost.
 
 Every notebook ends with a "Check yourself" cell: 5–7 questions in an `mo.accordion`, each
 answer hidden until opened. Ask about the concepts and the API the notebook teaches, and make

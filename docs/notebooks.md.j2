@@ -12,7 +12,9 @@ their own dependency group. Read them in order:
 4. `04_production.py`: pickled models, `partial_fit`, request-time controls and vector indexes;
 5. `05_sequential_and_neural.py`: next-item prediction with `skrecsys.nn` (needs `--extra nn`);
 6. `06_time_aware_recommendation.py`: time-based evaluation and tuning, recency weighting,
-   point-in-time features with `Cascade(time=True)`, and bitemporal data.
+   point-in-time features with `Cascade(time=True)`, and bitemporal data;
+7. `07_inspecting_recommendations.py`: tracing a pipeline with `trace`, explaining served and
+   missing items with `explain`, and finding the stage that loses relevant items.
 
 Each notebook ends with self-check questions.
 

@@ -26,7 +26,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
 
-from skrecsys._typing import FittedRecommender, Ranker, Recommender, clone_as, override
+from skrecsys._tracing import active_tracer, traced_recommend, untraced
+from skrecsys._typing import FittedRecommender, Ranker, Recommender, override
 from skrecsys.base import (
     RankerMixin,
     RecommenderMixin,
@@ -38,7 +39,16 @@ from skrecsys.base import (
 )
 from skrecsys.compose._candidates import concat_ids, retrieve, top_k_per_group
 from skrecsys.compose._named import ComponentList, NamedComponentsEstimator
-from skrecsys.compose._rankers import check_groups, mean_positions
+from skrecsys.compose._rankers import (
+    Candidates,
+    check_groups,
+    fit_features,
+    fit_ranker,
+    fresh,
+    mean_positions,
+    member_scores,
+    prepare,
+)
 from skrecsys.tune._space import Float
 from skrecsys.utils._param_validation import check_int, check_real
 from skrecsys.utils.validation import (
@@ -243,7 +253,8 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         k = float(self.k)
         weights = check_fusion_weights(self.weights, len(self.recommenders_))
         rows, items, contributions = [], [], []
-        for (_, recommender), weight in zip(self.recommenders_, weights, strict=True):
+        tracer = active_tracer()
+        for (name, recommender), weight in zip(self.recommenders_, weights, strict=True):
             served = self._served(recommender, queries)
             if not len(served):
                 continue
@@ -255,11 +266,14 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
                 candidates=candidates,
                 exclude_seen=exclude_seen,
                 exclude_interactions=exclude_interactions,
+                source=name,
             )
             rank = np.arange(len(pairs)) - np.repeat(np.cumsum(groups) - groups, groups) + 1
             rows.append(np.repeat(served[kept], groups))
             items.append(pairs[:, 1])
             contributions.append(weight / (k + rank))
+            if tracer is not None:
+                tracer.fusion(name, pairs, rank.astype(np.int64), contributions[-1], groups)
         if not rows:
             return (
                 np.empty(0, dtype=np.intp),
@@ -274,6 +288,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         return (distinct // n_items).astype(np.intp), item_ids[distinct % n_items], fused
 
     @override
+    @traced_recommend
     def recommend(
         self,
         X: ArrayLike,
@@ -351,6 +366,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
             counts[served] = np.maximum(counts[served], eligible)
         return np.minimum(counts, int(self.n_retrieved))
 
+    @untraced()
     def predict(self, X: ArrayLike) -> NDArray[np.floating]:
         """Score user-item pairs with the fused score of the item in the user's lists.
 
@@ -456,14 +472,38 @@ class ReciprocalRankRanker(RankerMixin, NamedComponentsEstimator[Ranker]):
     def _components(self) -> RankerList | None:
         return self.rankers
 
-    def fit(self, X: ArrayLike, y: ArrayLike, *, groups: ArrayLike | None = None) -> Self:
-        """Fit every ranker on all rows; with ``rankers=None``, only check the input."""
+    @override
+    def _takes_candidates(self) -> bool:
+        return True
+
+    @override
+    def _fit_features(self, X: ArrayLike, y: ArrayLike | None) -> None:
+        if hasattr(self, "rankers_"):
+            for _, ranker in self.rankers_:
+                fit_features(ranker, X, y)
+        else:
+            self._prepared = {name: prepare(ranker, X, y) for name, ranker in self._named()}
+
+    def fit(
+        self,
+        X: ArrayLike,
+        y: ArrayLike,
+        *,
+        groups: ArrayLike | None = None,
+        candidates: Candidates | None = None,
+    ) -> Self:
+        """Fit every ranker on all rows; with ``rankers=None``, only check the input.
+
+        ``candidates`` reach the rankers that join features of their own, as in
+        :class:`BlendRanker`.
+        """
         if self.rankers is not None and not self.rankers:
             raise ValueError("rankers must be None or hold at least one ranker.")
         named = self._named()
         for _, ranker in named:
             if not is_ranker(ranker):
                 raise TypeError(f"{type(ranker).__name__} is not a ranker.")
+        prepared = self.__dict__.pop("_prepared", {})
         check_real(self.k, "k", min_value=0)
         X = check_array(X, dtype=np.float64, ensure_all_finite="allow-nan")
         sizes = check_groups(groups, len(X))
@@ -471,14 +511,21 @@ class ReciprocalRankRanker(RankerMixin, NamedComponentsEstimator[Ranker]):
         if named:
             labels = check_array(y, ensure_2d=False, dtype=np.float64)
             self.rankers_ = [
-                (name, clone_as(ranker).fit(X, labels, groups=sizes)) for name, ranker in named
+                (name, fit_ranker(fresh(ranker, prepared.get(name)), X, labels, sizes, candidates))
+                for name, ranker in named
             ]
         else:
             self.rankers_ = []
         self.n_features_in_ = X.shape[1]
         return self
 
-    def predict(self, X: ArrayLike, *, groups: ArrayLike | None = None) -> NDArray[np.float64]:
+    def predict(
+        self,
+        X: ArrayLike,
+        *,
+        groups: ArrayLike | None = None,
+        candidates: Candidates | None = None,
+    ) -> NDArray[np.float64]:
         """Score every row with the fused reciprocal ranks of its sources."""
         check_is_fitted(self)
         X = check_array(X, dtype=np.float64, ensure_all_finite="allow-nan")
@@ -488,14 +535,6 @@ class ReciprocalRankRanker(RankerMixin, NamedComponentsEstimator[Ranker]):
                 f"X has {X.shape[1]} features, but the ranker was fitted with "
                 f"{self.n_features_in_}."
             )
-        if self.rankers_:
-            scores = np.column_stack(
-                [
-                    np.asarray(ranker.predict(X, groups=sizes), dtype=np.float64)
-                    for _, ranker in self.rankers_
-                ]
-            )
-        else:
-            scores = X
+        scores = member_scores(self.rankers_, X, sizes, candidates) if self.rankers_ else X
         weights = check_fusion_weights(self.weights, scores.shape[1])
         return reciprocal_rank_scores(ranks_per_group(scores, sizes), float(self.k), weights)

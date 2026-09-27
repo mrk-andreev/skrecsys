@@ -19,31 +19,19 @@ the number asked for, because ``recommend`` raises rather than padding.
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from skrecsys._tracing import active_tracer, span
 from skrecsys._typing import FittedRecommender, PairScorer
 from skrecsys.base import predict_pairs, serves_unknown_users
-from skrecsys.utils.validation import factorize, lookup_ids
-
-
-def stack_pairs(users: NDArray[np.generic], items: NDArray[np.generic]) -> NDArray[np.generic]:
-    """Column-stack identifiers without letting numpy coerce one namespace into the other.
-
-    ``np.column_stack`` of integer users and string items would silently turn the users
-    into strings, which no longer match the fitted ones; an object array keeps both.
-    """
-    if users.dtype == items.dtype:
-        return np.column_stack([users, items])
-    pairs = np.empty((len(users), 2), dtype=object)
-    pairs[:, 0] = users
-    pairs[:, 1] = items
-    return pairs
+from skrecsys.utils.validation import factorize, lookup_ids, stack_pairs
 
 
 def stack_columns(columns: list[NDArray[np.generic]]) -> NDArray[np.generic]:
     """Columns side by side, each keeping what it holds.
 
     Columns of one dtype stack as they are. Otherwise the result is ``object``, as in
-    :func:`stack_pairs`, and a ``datetime64`` column is stored as ``datetime`` objects --
-    ``None`` where missing -- because numpy would store its values as bare integers.
+    :func:`~skrecsys.utils.validation.stack_pairs`, and a ``datetime64`` column is
+    stored as ``datetime`` objects -- ``None`` where missing -- because numpy would store
+    its values as bare integers.
     """
     if all(c.dtype == columns[0].dtype for c in columns):
         return np.column_stack(columns)
@@ -70,13 +58,14 @@ def retrieve(
     exclude_seen: bool = True,
     exclude_interactions: ArrayLike | None = None,
     first_query: int = 0,
+    source: str = "generator",
 ) -> tuple[NDArray[np.generic], NDArray[np.float64], NDArray[np.int64], NDArray[np.intp]]:
     """Ask ``generator`` for up to ``n_retrieved`` items per query.
 
     Each query gets ``min(n_retrieved, eligible)`` candidates, where ``eligible`` is
     what ``recommend`` could return to it under the same filters. A query with fewer than
     ``min_retrieved`` raises, as ``recommend`` would; with ``min_retrieved=0`` a query
-    left with nothing is dropped instead.
+    left with nothing is dropped instead. ``source`` names the generator to a tracer.
 
     Returns
     -------
@@ -109,27 +98,32 @@ def retrieve(
     scores = np.empty(n_pairs, dtype=np.float64)
     # One generator call per distinct group size: nearly every query has the full
     # `n_retrieved`, and only the few with a short history need a call of their own.
-    for size in np.unique(groups):
-        members = np.flatnonzero(groups == size)
-        found, found_scores = generator.recommend(
-            queries[kept[members]],
-            n_recommendations=int(size),
-            candidates=candidates,
-            exclude_seen=exclude_seen,
-            exclude_interactions=exclude_interactions,
-        )
-        rows = (starts[members][:, None] + np.arange(size)).ravel()
-        users[rows] = np.repeat(queries[kept[members]], size)
-        items[rows] = found.ravel()
-        scores[rows] = found_scores.ravel()
-    return stack_pairs(users, items), scores, groups, kept
+    with span(source):
+        for size in np.unique(groups):
+            members = np.flatnonzero(groups == size)
+            found, found_scores = generator.recommend(
+                queries[kept[members]],
+                n_recommendations=int(size),
+                candidates=candidates,
+                exclude_seen=exclude_seen,
+                exclude_interactions=exclude_interactions,
+            )
+            rows = (starts[members][:, None] + np.arange(size)).ravel()
+            users[rows] = np.repeat(queries[kept[members]], size)
+            items[rows] = found.ravel()
+            scores[rows] = found_scores.ravel()
+    pairs = stack_pairs(users, items)
+    if (tracer := active_tracer()) is not None:
+        tracer.candidates(source, pairs, scores, groups)
+    return pairs, scores, groups, kept
 
 
 def concat_ids(parts: list[NDArray[np.generic]]) -> NDArray[np.generic]:
     """Concatenate identifier arrays, as an object array when their dtypes differ.
 
-    The reason is that of :func:`stack_pairs`: ``np.concatenate`` of integer and string
-    identifiers would turn the integers into strings.
+    The reason is that of :func:`~skrecsys.utils.validation.stack_pairs`:
+    ``np.concatenate`` of integer and string identifiers would turn the integers into
+    strings.
     """
     if len({part.dtype for part in parts}) <= 1:
         return np.concatenate(parts)
@@ -162,6 +156,7 @@ def retrieve_union(
     exclude_seen: bool = True,
     exclude_interactions: ArrayLike | None = None,
     first_query: int = 0,
+    names: list[str] | None = None,
 ) -> tuple[NDArray[np.generic], NDArray[np.float64], NDArray[np.int64], NDArray[np.intp]]:
     """Merge the candidates of several generators into up to ``n_retrieved`` per query.
 
@@ -175,6 +170,7 @@ def retrieve_union(
     Returns what :func:`retrieve` does, except that ``scores`` has one column per
     generator: the score a generator gave a candidate it retrieved, and otherwise its
     ``predict`` of the pair, NaN where it cannot score it (see :func:`score_pairs`).
+    ``names`` names the generators to a tracer.
     """
     n_queries = len(queries)
     rows, ranks, sources, items, scores = [], [], [], [], []
@@ -193,6 +189,7 @@ def retrieve_union(
             candidates=candidates,
             exclude_seen=exclude_seen,
             exclude_interactions=exclude_interactions,
+            source=f"generator{source}" if names is None else names[source],
         )
         starts = np.repeat(np.cumsum(groups) - groups, groups)
         rows.append(np.repeat(served[kept], groups))

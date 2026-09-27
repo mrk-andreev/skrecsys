@@ -612,6 +612,9 @@ def _():
     - **Late data** goes into the training window and the `partial_fit` batch of when it
       *arrived*.
     - If a feature makes offline results jump, suspect a leak before celebrating.
+
+    Next: [notebook 07](07_inspecting_recommendations.py) looks inside a fitted pipeline:
+    why it recommends what it does, and where it loses the items a user went on to watch.
     """)
     return
 

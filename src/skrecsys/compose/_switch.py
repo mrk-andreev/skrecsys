@@ -8,6 +8,7 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
 
+from skrecsys._tracing import active_tracer, span, traced_recommend
 from skrecsys._typing import Condition, FittedRecommender, Recommender, clone_as, override
 from skrecsys.base import (
     RecommenderMixin,
@@ -129,15 +130,24 @@ class Switch(RecommenderMixin, BaseEstimator):
         return drop_time(arr) if arr.shape[1] == _N_TIMED_COLUMNS else arr
 
     def _routes(
-        self, queries: NDArray[np.generic]
-    ) -> Iterator[tuple[FittedRecommender, NDArray[np.bool_]]]:
-        """Each branch with the mask of the queries it serves, skipping idle branches."""
+        self, queries: NDArray[np.generic], *, report: bool = False
+    ) -> Iterator[tuple[str, FittedRecommender, NDArray[np.bool_]]]:
+        """Each branch, named, with the mask of the queries it serves; idle ones skipped.
+
+        With ``report``, a tracer listening to ``recommend`` is told the route taken.
+        """
         mask = evaluate_condition(self.condition_, queries)
-        for branch, rows in ((self.on_true_, mask), (self.on_false_, ~mask)):
+        if report and (tracer := active_tracer()) is not None:
+            tracer.route(self.condition_, queries, mask)
+        for name, branch, rows in (
+            ("on_true", self.on_true_, mask),
+            ("on_false", self.on_false_, ~mask),
+        ):
             if rows.any():
-                yield branch, rows
+                yield name, branch, rows
 
     @override
+    @traced_recommend
     def recommend(
         self,
         X: ArrayLike,
@@ -165,25 +175,26 @@ class Switch(RecommenderMixin, BaseEstimator):
         query_times = check_as_of(as_of, len(queries), self.time_dtype_) if self.time else None
         items = np.empty((len(queries), n_recommendations), dtype=self.item_ids_.dtype)
         scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
-        for branch, rows in self._routes(queries):
+        for name, branch, rows in self._routes(queries, report=True):
             excluded = self._for_branch(branch, exclude_interactions)
-            if query_times is not None and uses_time(branch):
-                items[rows], scores[rows] = branch.recommend(
-                    queries[rows],
-                    n_recommendations=n_recommendations,
-                    candidates=candidates,
-                    exclude_seen=exclude_seen,
-                    exclude_interactions=excluded,
-                    as_of=query_times[rows],
-                )
-            else:
-                items[rows], scores[rows] = branch.recommend(
-                    queries[rows],
-                    n_recommendations=n_recommendations,
-                    candidates=candidates,
-                    exclude_seen=exclude_seen,
-                    exclude_interactions=excluded,
-                )
+            with span(name):
+                if query_times is not None and uses_time(branch):
+                    items[rows], scores[rows] = branch.recommend(
+                        queries[rows],
+                        n_recommendations=n_recommendations,
+                        candidates=candidates,
+                        exclude_seen=exclude_seen,
+                        exclude_interactions=excluded,
+                        as_of=query_times[rows],
+                    )
+                else:
+                    items[rows], scores[rows] = branch.recommend(
+                        queries[rows],
+                        n_recommendations=n_recommendations,
+                        candidates=candidates,
+                        exclude_seen=exclude_seen,
+                        exclude_interactions=excluded,
+                    )
         return items, scores
 
     @override
@@ -198,7 +209,7 @@ class Switch(RecommenderMixin, BaseEstimator):
         check_is_fitted(self)
         queries = check_ids(X)
         counts = np.zeros(len(queries), dtype=np.int64)
-        for branch, rows in self._routes(queries):
+        for _, branch, rows in self._routes(queries):
             counts[rows] = branch._count_eligible(
                 queries[rows],
                 candidates=candidates,
@@ -230,7 +241,7 @@ class Switch(RecommenderMixin, BaseEstimator):
         users = check_interactions(drop_time(pairs) if self.time else pairs)[0]
         _check_feature_names(self, X, reset=False)
         scores = np.empty(len(users), dtype=np.float64)
-        for branch, rows in self._routes(users):
+        for _, branch, rows in self._routes(users):
             routed = pairs[rows] if uses_time(branch) or not self.time else drop_time(pairs[rows])
             scores[rows] = predict_pairs(branch, routed)
         return scores

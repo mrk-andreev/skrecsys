@@ -14,10 +14,13 @@ with app.setup:
 
     from skrecsys.datasets import fetch_movielens_100k
     from skrecsys.metrics import (
+        Recall,
         catalog_coverage_at_k,
         evaluate_recommender,
+        get_scorer,
         make_recommender_scorer,
         ndcg_at_k,
+        recall_at_k,
     )
     from skrecsys.model_selection import WarmStartKFold
     from skrecsys.recommendation import (
@@ -245,7 +248,32 @@ def _():
     Everything is configurable: `search_space=` overrides ranges, `freeze=` holds
     parameters at their current value, `scoring=` and `cv=` change the objective, and
     `n_trials=` the budget.
+
+    `scoring=` takes the metric in whichever form is handiest: a name such as
+    `"recall@20"` (a bare `"ndcg"` means cutoff 10), a metric object such as `Recall(20)`,
+    or any scorer, such as `make_recommender_scorer` builds. `skrecsys.metrics.get_scorer`
+    shows what each resolves to; the named forms are the same scorer as the long one, so
+    they tune to the same result.
     """)
+    return
+
+
+@app.cell
+def _():
+    _forms = [
+        None,
+        "ndcg",
+        "recall@20",
+        "MAP@10",
+        Recall(20),
+        make_recommender_scorer(recall_at_k, k=20),
+    ]
+    pd.DataFrame(
+        {
+            "scoring=": [repr(_form) for _form in _forms],
+            "resolves to": [repr(get_scorer(_form)) for _form in _forms],
+        }
+    )
     return
 
 
@@ -610,7 +638,10 @@ def _():
                     "5. Why does the study in section 5 enqueue each family's defaults first?": mo.md(
                         'TPE spends its budget where good scores appeared early, so a family that is unlucky in its first random draws can be starved. `study.enqueue(params)` guarantees known-good starting points are evaluated, so the study can only improve on them.'
                     ),
-                    '6. You hold out the latest 20% of every user\'s interactions. Can the model still see the future?': mo.md(
+                    '6. How do you make `AutoTune` maximize Recall@20 instead of NDCG@10?': mo.md(
+                        'Pass `scoring="recall@20"`, `scoring=Recall(20)` or `scoring=make_recommender_scorer(recall_at_k, k=20)`: the three are the same scorer, and `get_scorer` shows what a name resolves to. Leaving `scoring` out is NDCG@10.'
+                    ),
+                    '7. You hold out the latest 20% of every user\'s interactions. Can the model still see the future?': mo.md(
                         "Yes. The split is per user: the training set keeps other users' interactions from after a test interaction, so the model knows what became popular later. Only a global cutoff in time — everything after one moment held out — matches a deployed model fitted on the past and serving the future. See notebook 06."
                     ),
                 }

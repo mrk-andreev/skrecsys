@@ -182,6 +182,28 @@ With `skrecsys.integrations` it blends gradient-boosting libraries. The
 [reranking benchmark](#reranking-benchmark) measures a blend of CatBoost, XGBoost and LightGBM
 against each of them on their own.
 
+Every ranker of a blend sees the `Cascade`'s `features`. `AugmentedRanker(ranker, features)`
+gives one of them features the others do not see: a `JoinStaticFeatures` table, a
+`JoinDynamicFeatures` lookup or any feature component, joined onto the candidate pairs and
+appended after the shared columns. The `Cascade` fits the injected features the same way as its
+own: on the interactions the ranker is not labelled from, once for all folds, and then on every
+interaction for serving. Because only a `Cascade` supplies the candidate pairs, an
+`AugmentedRanker` must run inside one, as the ranker itself or inside its `BlendRanker` or
+`ReciprocalRankRanker`:
+
+```python
+from skrecsys.compose import AugmentedRanker, JoinDynamicFeatures
+
+blend = BlendRanker(
+    [
+        ("catboost", AugmentedRanker(CatBoostRanker(), JoinDynamicFeatures("user", user_profile))),
+        ("lightgbm", AugmentedRanker(LGBMRanker(), JoinStaticFeatures("item", item_prices))),
+        ("xgboost", XGBRanker()),  # the shared features only
+    ],
+)
+blend.set_params(catboost__features__n_features=8)
+```
+
 `PointwiseRanker` wraps any scikit-learn classifier or regressor and scores every pair on its own,
 ignoring `groups`. `GroupRanker` wraps an estimator whose `fit` takes group sizes, such as
 `LGBMRanker` or `XGBRanker`, and passes them under `group_param` (default `"group"`).
@@ -483,7 +505,7 @@ The parts play five roles, each a small protocol:
 | condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
 | candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
 | features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
-| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
+| ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `AugmentedRanker` (gives one ranker features of its own), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
 
 On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
 business rules that turn each query's ranked candidate list into the list to serve (see

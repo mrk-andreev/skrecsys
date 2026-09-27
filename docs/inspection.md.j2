@@ -1,0 +1,132 @@
+{#- Included by README.md.j2 right after "Production lifecycle", so headings start at level two
+    and relative links resolve from the repository root. -#}
+## Inspecting recommendations
+
+`recommend` returns items and scores, which say nothing about how a pipeline arrived at them.
+`skrecsys.inspection` answers two questions from the pipeline itself, without changing it:
+why an item was recommended exactly this way, and where a relevant item was lost.
+[Notebook 07](notebooks/07_inspecting_recommendations.py) walks through both on MovieLens.
+
+### Tracing
+
+Every `recommend` call made inside `with trace()` is recorded, stage by stage, however deeply
+the estimators nest. `t[query]` gives back everything the call did for one query:
+
+```python
+from skrecsys.compose import KnownUser, Switch
+from skrecsys.inspection import trace
+from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "b"], ["u2", "c"], ["u3", "c"]]
+rec = Switch(KnownUser(), ItemKNNRecommender(), MostPopularRecommender()).fit(X)
+
+with trace() as t:
+    rec.recommend(["u3", "new-user"], n_recommendations=1)
+
+print(t["new-user"])
+# query 'new-user', call 0
+#   Switch: request n_recommendations=1
+#   Switch: route KnownUser() -> on_false
+#   Switch/on_false/MostPopularRecommender: request n_recommendations=1
+#   Switch/on_false/MostPopularRecommender: served ['b' 2]
+#   Switch/on_false/MostPopularRecommender: popularity reasons (exact); first item: popularity 2
+#   Switch: served ['b' 2]
+```
+
+Each step names its stage by a path of the estimators and parts it is nested in, such as
+`Switch/on_true/Cascade/ease/EASE`, and holds its numbers as arrays:
+
+| accessor | what the stage did for the query |
+| --- | --- |
+| `routes` | the branch a `Switch` condition sent it down |
+| `candidates` | each generator's candidates, best first, and the merged `"union"` a `Cascade` ranks |
+| `fusion` | what each list of a `ReciprocalRankFusion` added to each item |
+| `features` | the feature row the ranker saw for each candidate, including the columns an `AugmentedRanker` joined |
+| `ranker` | the ranker's score of each candidate, and each feature's contribution to it |
+| `postprocess` | the lists before and after `Cascade(postprocess=...)`: `dropped`, `added` |
+| `attributions` | why each leaf recommender scored the items it served |
+| `served`, `final` | what each estimator returned, and what the outermost one did |
+
+The trace lives in a context variable, not on the estimator: a traced `recommend` returns
+exactly what an untraced one does, the model clones and pickles as before, and outside a
+`with trace()` block a call costs one check that nobody is listening. `fit` and `predict` are
+not traced.
+
+Two parameters make it cheap enough to leave on in a service:
+
+- `level="decisions"` records routes, candidate lists, ranker scores and served lists, and
+  skips the feature matrices and reasons that the default `level="full"` adds;
+- `sample=0.01` records 1% of queries, chosen by a hash of the identifier that is stable
+  across processes, so the same users are traced on every request and every restart. A
+  callable taking the queries and returning a boolean mask chooses them any other way.
+
+Every step, trace and explanation has a `to_dict()` of plain JSON values, ready for a log.
+
+### Explaining
+
+`explain(model, queries)` runs `recommend` under a full trace and explains every served item:
+its route, its rank with each generator, its position with the ranker and the features that
+weighed most, and the **reasons**: which of the user's interactions made each model score it.
+Pass `items=` the items you expected, and each one also gets the stage that let it go:
+
+```python
+from skrecsys.inspection import explain
+from skrecsys.recommendation import ItemKNNRecommender
+
+X = [
+    ["u1", "a"],
+    ["u1", "b"],
+    ["u2", "b"],
+    ["u2", "c"],
+    ["u3", "a"],
+    ["u4", "a"],
+    ["u4", "c"],
+    ["u4", "d"],
+]
+rec = ItemKNNRecommender().fit(X)
+
+for explanation in explain(rec, ["u3"], items=["a", "b"], n_recommendations=1):
+    print(explanation)
+# query 'u3', item 'd': served #1 (score 0.5774)
+#   ItemKNNRecommender (history, exact): 'a' +0.5774; rest +0
+# query 'u3', item 'a': filtered out before scoring by exclude_seen (score 0)
+#   ItemKNNRecommender (history, exact): no history item; rest +0
+# query 'u3', item 'b': scored 0.4082, below the cut-off 0.5774
+#   ItemKNNRecommender (history, exact): 'a' +0.4082; rest +0
+```
+
+An item's `status` is the first stage, from the end of the pipeline back, that let it go:
+
+| status | the item... |
+| --- | --- |
+| `served` | was recommended, at `position` |
+| `unknown_item` | was not in the training data |
+| `excluded` | was removed before scoring; `excluded_by` names the filter: `exclude_seen`, `exclude_interactions` or `candidates` |
+| `not_retrieved` | was never among the candidates, or was cut when several generators' lists merged |
+| `ranked_out` | was scored, but below the served list |
+| `dropped_by_postprocess` | was removed by the business rules |
+
+How exact the reasons are depends on the model:
+
+| recommender | reasons | exact |
+| --- | --- | --- |
+| `ItemKNNRecommender`, `BM25Recommender`, `RP3Beta`, `SLIMElasticNet`, `EASE` | each rated item's term of $\sum_j x_{uj} W_{ji}$; with `rest`, they add up to the score | yes |
+| `AlternatingLeastSquares`, `BayesianPersonalizedRanking`, `skrecsys.nn` models | the rated items whose vectors are most alike the item's | no |
+| `MostPopularRecommender` | the item's popularity | yes |
+
+A ranker explains its score by feature: `PointwiseRanker` around a linear model gives
+coefficient × feature (log-odds for a logistic regression), and the rankers of
+`skrecsys.integrations` give CatBoost's, XGBoost's and LightGBM's own SHAP values. A ranker
+that cannot decompose its score, such as `HistGradientBoostingClassifier`, gives none.
+
+The rankers of a `BlendRanker` or a `ReciprocalRankRanker` are traced too, each at its own path
+under the `Cascade` (for example `Cascade/ranker/catboost`). Each one gets its own `features`
+step, with only the columns that ranker saw, and a `ranker` step with its raw scores (before the
+blend normalizes them) and their contributions. The `Cascade`'s own steps still describe the
+order that was served, and `explain` reads those. A "full" trace joins an `AugmentedRanker`'s
+features a second time to record them, so a `JoinDynamicFeatures` callback runs twice per traced
+call.
+
+Asked about each user's held-out items, `explain` shows whether a pipeline loses relevant
+items at retrieval or at ranking, which one averaged metric cannot: notebook 07 finds most of
+them never reach the ranker.

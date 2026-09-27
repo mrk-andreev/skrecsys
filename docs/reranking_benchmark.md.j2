@@ -88,9 +88,9 @@ candidates have their own history removed, the same features scored *below* the 
 baseline during development: the ranker learned from candidate lists that no cold user ever
 gets.
 
-The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.203
-on warm users against CatBoost's 0.205, and 0.542 on cold users against 0.549. It clearly
-beats XGBoost (0.200, 0.538) and LightGBM (0.199, 0.535). The spread between the three
+The blend does not beat CatBoost here. It comes second on NDCG@10 in every segment: 0.201
+on warm users against CatBoost's 0.205, and 0.541 on cold users against 0.549. It is ahead
+of XGBoost (0.199, 0.532) and LightGBM (0.198, 0.535). The spread between the three
 boosters is small, and they learn from identical features, so they mostly agree and there is
 little for a blender to combine. Other variants did no better during tuning. Z-score
 normalization, five folds and a plain average (`blender=None`) came within 0.003 of CatBoost

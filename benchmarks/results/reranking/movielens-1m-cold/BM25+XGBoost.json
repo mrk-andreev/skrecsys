@@ -1,9 +1,9 @@
 {
-  "key": "e06b9cbc717c95a4",
+  "key": "a1112022daa9928f",
   "unit": "reranking/movielens-1m-cold/BM25+XGBoost",
   "provenance": {
     "source": "measured",
-    "at": "2026-09-26T08:25:14+00:00"
+    "at": "2026-09-27T10:27:54+00:00"
   },
   "host": {
     "cpu": "Apple M4 Pro",
@@ -53,7 +53,7 @@
         "max_depth": 4,
         "min_child_weight": 5
       },
-      "version": "v1"
+      "version": "v2"
     }
   },
   "payload": {
@@ -62,42 +62,42 @@
         "Pipeline": "BM25+XGBoost",
         "users": "all",
         "n users": "6,040",
-        "NDCG@10": "0.1873",
-        "P@10": "0.1694",
-        "R@10": "0.0725",
-        "hit rate": "0.6768",
-        "MAP": "0.1036",
-        "MRR": "0.3453",
-        "cat cov": "0.2318",
-        "mean pop": "1433.2288",
-        "novelty": "9.19"
+        "NDCG@10": "0.1871",
+        "P@10": "0.1686",
+        "R@10": "0.0726",
+        "hit rate": "0.6781",
+        "MAP": "0.1034",
+        "MRR": "0.3469",
+        "cat cov": "0.2334",
+        "mean pop": "1411.7101",
+        "novelty": "9.21"
       },
       {
         "Pipeline": "BM25+XGBoost",
         "users": "warm",
         "n users": "5,436",
-        "NDCG@10": "0.1532",
-        "P@10": "0.1353",
-        "R@10": "0.0757",
-        "hit rate": "0.6485",
-        "MAP": "0.0740",
-        "MRR": "0.3049",
-        "cat cov": "0.2318",
-        "mean pop": "1349.2017",
-        "novelty": "9.28"
+        "NDCG@10": "0.1529",
+        "P@10": "0.1346",
+        "R@10": "0.0758",
+        "hit rate": "0.6501",
+        "MAP": "0.0737",
+        "MRR": "0.3058",
+        "cat cov": "0.2334",
+        "mean pop": "1325.7490",
+        "novelty": "9.30"
       },
       {
         "Pipeline": "BM25+XGBoost",
         "users": "cold",
         "n users": "604",
-        "NDCG@10": "0.4946",
-        "P@10": "0.4765",
-        "R@10": "0.0442",
-        "hit rate": "0.9321",
-        "MAP": "0.3698",
-        "MRR": "0.7087",
+        "NDCG@10": "0.4953",
+        "P@10": "0.4750",
+        "R@10": "0.0441",
+        "hit rate": "0.9305",
+        "MAP": "0.3708",
+        "MRR": "0.7171",
         "cat cov": "0.0112",
-        "mean pop": "2189.4720",
+        "mean pop": "2185.3604",
         "novelty": "8.39"
       }
     ],
@@ -106,17 +106,17 @@
         "Pipeline": "BM25+XGBoost",
         "users": "warm",
         "requests": "1,000",
-        "median": "810 us",
-        "q95": "1.42 ms",
-        "q99": "2.00 ms"
+        "median": "901 us",
+        "q95": "1.48 ms",
+        "q99": "2.07 ms"
       },
       {
         "Pipeline": "BM25+XGBoost",
         "users": "cold",
         "requests": "1,000",
-        "median": "491 us",
-        "q95": "583 us",
-        "q99": "648 us"
+        "median": "592 us",
+        "q95": "714 us",
+        "q99": "843 us"
       }
     ],
     "examples": [
@@ -130,13 +130,13 @@
         "user": "13",
         "profile": "45, M, 1",
         "held out": "108",
-        "top": "American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>Fargo (1996)<br>**Star Wars: Episode IV - A New Hope (1977)**"
+        "top": "American Beauty (1999)<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Jurassic Park (1993)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>Fargo (1996)"
       },
       {
         "user": "15",
         "profile": "25, M, 7",
         "held out": "201",
-        "top": "**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**American Beauty (1999)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Jurassic Park (1993)**"
+        "top": "**American Beauty (1999)**<br>**Star Wars: Episode VI - Return of the Jedi (1983)**<br>**Star Wars: Episode V - The Empire Strikes Back (1980)**<br>**Star Wars: Episode IV - A New Hope (1977)**<br>**Matrix, The (1999)**"
       }
     ]
   }
