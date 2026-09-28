@@ -22,25 +22,7 @@ from numpy.typing import ArrayLike, NDArray
 from skrecsys._tracing import active_tracer, span
 from skrecsys._typing import FittedRecommender, PairScorer
 from skrecsys.base import predict_pairs, serves_unknown_users
-from skrecsys.utils.validation import factorize, lookup_ids, stack_pairs
-
-
-def stack_columns(columns: list[NDArray[np.generic]]) -> NDArray[np.generic]:
-    """Columns side by side, each keeping what it holds.
-
-    Columns of one dtype stack as they are. Otherwise the result is ``object``, as in
-    :func:`~skrecsys.utils.validation.stack_pairs`, and a ``datetime64`` column is
-    stored as ``datetime`` objects -- ``None`` where missing -- because numpy would store
-    its values as bare integers.
-    """
-    if all(c.dtype == columns[0].dtype for c in columns):
-        return np.column_stack(columns)
-    out = np.empty((len(columns[0]), len(columns)), dtype=object)
-    for j, column in enumerate(columns):
-        out[:, j] = (
-            column.astype("datetime64[us]").astype(object) if column.dtype.kind == "M" else column
-        )
-    return out
+from skrecsys.utils.validation import factorize, lookup_ids, stack_columns, stack_pairs
 
 
 def with_time(pairs: NDArray[np.generic], times: NDArray[np.generic]) -> NDArray[np.generic]:

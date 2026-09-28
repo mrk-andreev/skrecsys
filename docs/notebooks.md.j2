@@ -15,6 +15,8 @@ their own dependency group. Read them in order:
    point-in-time features with `Cascade(time=True)`, and bitemporal data;
 7. `07_inspecting_recommendations.py`: tracing a pipeline with `trace`, explaining served and
    missing items with `explain`, and finding the stage that loses relevant items.
+8. `08_query_context.py`: request-time context in `fit` and `recommend`, and a `Cascade`
+   ranker that learns from it with `JoinDynamicFeatures("item-context")`.
 
 Each notebook ends with self-check questions.
 

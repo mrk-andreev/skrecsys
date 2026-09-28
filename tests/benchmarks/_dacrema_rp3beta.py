@@ -15,8 +15,7 @@ import numpy as np
 import scipy.sparse as sp
 
 # The framework predates the removal of the `np.int` alias in NumPy 1.24.
-if not hasattr(np, "int"):
-    np.int = int  # noqa: NPY001
+vars(np).setdefault("int", int)
 
 
 def main(repo: str, input_path: str, output_path: str, alpha: float, beta: float, top_k: int):

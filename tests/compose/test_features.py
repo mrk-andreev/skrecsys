@@ -420,10 +420,14 @@ def test_dynamic_join_keyed_by_time_calls_back_with_distinct_keys(kind, expected
         np.testing.assert_array_equal(keys.reshape(len(keys), -1)[int(row)], key)
 
 
-def test_dynamic_join_passes_datetimes_beside_string_ids_as_datetime_objects():
-    pairs = np.empty((2, 3), dtype=object)
-    pairs[:, 0], pairs[:, 1] = ["u1", "u1"], ["a", "b"]
-    pairs[:, 2] = [datetime.datetime(2024, 1, 2), None]
+def test_dynamic_join_passes_datetimes_beside_string_ids_as_datetime64_scalars():
+    pairs = np.empty((3, 3), dtype=object)
+    pairs[:, 0], pairs[:, 1] = ["u1", "u1", "u1"], ["a", "b", "c"]
+    pairs[:, 2] = [
+        datetime.datetime(2024, 1, 2),
+        None,
+        np.datetime64("2024-01-02T00:00:00.000000001"),
+    ]
     calls = []
 
     def recording(keys):
@@ -431,7 +435,12 @@ def test_dynamic_join_passes_datetimes_beside_string_ids_as_datetime_objects():
         return np.zeros(len(keys))
 
     JoinDynamicFeatures("item-time", recording).fit().transform(pairs)
-    assert calls == [[["a", datetime.datetime(2024, 1, 2)], ["b", None]]]
+    [(a, a_time), (b, b_time), (c, c_time)] = calls[0]
+    assert (a, b, c) == ("a", "b", "c")
+    assert a_time == np.datetime64("2024-01-02", "ns")
+    assert np.isnat(b_time)
+    # The nanoseconds are kept.
+    assert c_time == np.datetime64("2024-01-02T00:00:00.000000001")
 
 
 def test_dynamic_join_keyed_by_time_needs_pairs_with_time():

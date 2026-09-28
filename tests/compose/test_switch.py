@@ -156,10 +156,8 @@ def test_timed_switch_gives_the_time_only_to_a_branch_that_uses_it():
     assert switch._count_eligible(queries, exclude_interactions=[[0, 0, 1]]).shape == (3,)
 
 
-def test_switch_without_time_refuses_as_of_and_timed_x():
+def test_switch_without_time_refuses_as_of():
     X = _timed_interactions()
-    with pytest.raises(ValueError, match="time=True"):
-        Switch(KnownUser(), MostPopularRecommender(), MostPopularRecommender()).fit(X)
     switch = Switch(KnownUser(), MostPopularRecommender(), MostPopularRecommender()).fit(X[:, :2])
     with pytest.raises(ValueError, match="as_of needs"):
         switch.recommend([0], n_recommendations=1, as_of=3)

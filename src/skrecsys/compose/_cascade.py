@@ -6,7 +6,7 @@ from typing import Self, TypeAlias, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
-from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
+from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys._tracing import (
     Tracer,
@@ -28,7 +28,7 @@ from skrecsys._typing import (
 from skrecsys.base import (
     RecommenderMixin,
     check_n_recommendations,
-    first_time_of,
+    first_row_of,
     fit_clone,
     is_features,
     is_ranker,
@@ -62,13 +62,19 @@ from skrecsys.compose._rankers import (
 from skrecsys.utils._param_validation import check_bool, check_component, check_int, check_real
 from skrecsys.utils.validation import (
     check_as_of,
-    check_ids,
     check_interactions,
+    check_queries,
+    check_rows,
     drop_time,
     encode_ids,
     factorize,
+    interaction_context,
     lookup_ids,
 )
+
+#: The system columns of ``X``: identifiers, and the time with ``time=True``.
+_N_COLUMNS = 2
+_N_TIMED_COLUMNS = 3
 
 #: Candidate pairs featurized and ranked at once by ``recommend``: the feature matrix of
 #: a block is this many rows, whatever the number of queries asked about.
@@ -79,6 +85,12 @@ _REAL = (int, float, np.integer, np.floating)
 
 #: How an error names what ``generator`` holds.
 _GENERATOR_KIND = "a recommender"
+
+#: What ``postprocess`` returns: ``(pairs, scores, groups)``.
+_N_POSTPROCESS_OUTPUTS = 3
+
+#: The ``pairs`` of ``postprocess``: one row per pair.
+_MATRIX_NDIM = 2
 
 #: The ``generator`` of :class:`Cascade`: one recommender, or a list of them.
 Generators: TypeAlias = Recommender | ComponentList[Recommender]
@@ -124,6 +136,20 @@ class Cascade(RecommenderMixin, BaseEstimator):
     3. ``features`` fitted on the first part describe the candidates, and ``ranker`` is
        fitted on them, one group per user.
     4. The generator and the features are fitted again on all of ``X`` for serving.
+
+    Columns of ``X`` after the system ones are the *query context* of each interaction
+    -- ``[user, item, context...]``, or ``[user, item, time, context...]`` with ``time``
+    -- such as the page or the device a request came from. The generators never see it:
+    they retrieve by user. The features do, as the ``context`` of each candidate pair,
+    and a :class:`~skrecsys.compose.JoinDynamicFeatures` keyed by ``"context"`` turns it
+    into ranker inputs. In ``fit``, a held-out user's candidates carry the context of their
+    first held-out interaction -- the earliest by time with ``time``, otherwise the first
+    by row -- which is the request they are ranked for. ``recommend`` takes queries as a
+    matrix ``[user, context...]``; a vector of users asks without context, which the
+    features see as NaN. What they make of the NaN reaches the ranker, and a ranker that
+    does not accept missing values, such as :class:`~sklearn.linear_model.LogisticRegression`,
+    then raises. Without ``time``, a third column of ``X`` is context like any further one,
+    not a time.
 
     Parameters
     ----------
@@ -190,6 +216,9 @@ class Cascade(RecommenderMixin, BaseEstimator):
     time_dtype_ : numpy.dtype
         Only when ``time`` is true: the dtype of the fitted times, which ``as_of`` must
         match in kind -- numbers or datetimes.
+    n_context_ : int
+        Context columns of the fitted ``X``, 0 without any. The context of a query
+        passed to ``recommend`` must have as many.
 
     Examples
     --------
@@ -241,6 +270,24 @@ class Cascade(RecommenderMixin, BaseEstimator):
     ... ).fit(X)
     >>> bool((rec.recommend(range(20), n_recommendations=2)[0] != 3).all())
     True
+
+    Query context: each interaction carries the shelf it was made from, 0 or 1, and shelf
+    ``s`` holds the items of parity ``s``. A feature of the item and the context together
+    tells the ranker whether a candidate is on the shelf the query comes from:
+
+    >>> from skrecsys.compose import ConcatFeatures, JoinDynamicFeatures
+    >>> X = [[u, i, u % 2] for u in range(60) for i in range(8) if i % 2 == u % 2 and i != u % 5]
+    >>> def on_shelf(keys):
+    ...     return np.array([[item % 2 == shelf] for item, shelf in keys], dtype=float)
+    >>> rec = Cascade(
+    ...     MostPopularRecommender(),
+    ...     ConcatFeatures([GeneratorScores(), JoinDynamicFeatures("item-context", on_shelf)]),
+    ...     PointwiseRanker(LogisticRegression()),
+    ...     n_retrieved=8,
+    ...     split=0.5,
+    ... ).fit(X)
+    >>> rec.recommend([[0, 0], [0, 1]], n_recommendations=2, exclude_seen=False)[0].tolist()
+    [[0, 2], [1, 3]]
     """
 
     def __init__(
@@ -377,9 +424,10 @@ class Cascade(RecommenderMixin, BaseEstimator):
 
         Parameters
         ----------
-        X : array-like of shape (n_interactions, 2) or (n_interactions, 3)
+        X : array-like of shape (n_interactions, n_system + n_context)
             ``X[:, 0]`` contains user identifiers, ``X[:, 1]`` item identifiers and, when
-            ``time`` is true, ``X[:, 2]`` the time of each interaction.
+            ``time`` is true, ``X[:, 2]`` the time of each interaction. Any further
+            columns are the query context of each interaction.
         y : array-like of shape (n_interactions,), default=None
             Interaction values; ``None`` gives every interaction weight 1. A held-out
             interaction is relevant when its value is positive.
@@ -391,9 +439,12 @@ class Cascade(RecommenderMixin, BaseEstimator):
         self._check_params()
         users, items, weights, times = self._check_interactions(X, y)
         _check_feature_names(self, X, reset=True)
-        X_arr = check_array(X, dtype=None, ensure_all_finite=False)
-        # The generators never see the time; the features see all of X.
-        X_ids = drop_time(X_arr) if self.time else X_arr
+        X_arr = check_rows(X)
+        # The generators see neither the time nor the context. The features see the
+        # time in X, and the context beside the pairs they describe.
+        X_ids = drop_time(X_arr)
+        context = interaction_context(X_arr, time=self.time)
+        X_features = X_arr[:, :_N_TIMED_COLUMNS] if self.time else X_ids
         y_arr = None if y is None else weights
         train, held = self._split_rows(X_arr, y_arr, users, times)
         if not len(train) or not len(held):
@@ -401,7 +452,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 f"split left {len(train)} interactions to fit on and {len(held)} to hold "
                 "out; the ranker needs both."
             )
-        X_train, y_train = X_arr[train], None if y_arr is None else y_arr[train]
+        X_train, y_train = X_features[train], None if y_arr is None else y_arr[train]
 
         generators = [fit_clone(rec, X_ids[train], y_train) for _, rec in self._generators()]
         relevant = held[weights[held] > 0]
@@ -415,12 +466,17 @@ class Cascade(RecommenderMixin, BaseEstimator):
             raise ValueError("No held-out interaction belongs to a user with training rows.")
         pairs, scores, groups, kept = self._retrieve(generators, queries, min_retrieved=0)
         labels = _is_held_out(pairs, users[relevant], items[relevant], queries)
-        if times is not None:
-            # A user is ranked as of the start of their held-out interactions: the
-            # features then are what the ranker could have known at the time.
-            as_of = first_time_of(users[held], times[held], queries)
-            pairs = with_time(pairs, np.repeat(as_of[kept], groups))
-        pairs, scores, labels, groups = _groups_with_a_positive(pairs, scores, labels, groups)
+        pairs, pair_context = _as_requested(
+            pairs,
+            groups,
+            queries[kept],
+            users[held],
+            None if times is None else times[held],
+            None if context is None else context[held],
+        )
+        pairs, scores, labels, groups, pair_context = _groups_with_a_positive(
+            pairs, scores, labels, groups, pair_context
+        )
         if not len(groups):
             raise ValueError(
                 "No held-out interaction was among the generated candidates, so the ranker "
@@ -438,16 +494,29 @@ class Cascade(RecommenderMixin, BaseEstimator):
         fit_features(ranker, X_train, y_train)
         self.ranker_ = fit_ranker(
             ranker,
-            features.transform(pairs, scores=scores),
+            features.transform(pairs, scores=scores, context=pair_context),
             labels,
             groups,
-            Candidates(pairs, scores),
+            Candidates(pairs, scores, context=pair_context),
         )
         self.n_ranker_groups_ = len(groups)
 
-        self.generators_ = [
-            (name, fit_clone(rec, X_ids, y_arr)) for name, rec in self._generators()
-        ]
+        self._fit_generators(X_ids, y_arr)
+        self.features_ = clone_as(self.features).fit(X_features, y_arr)
+        # Features a ranker joins itself serve from all of X too, as the shared ones do.
+        fit_features(self.ranker_, X_features, y_arr)
+        if times is not None:
+            self.time_dtype_ = times.dtype
+        elif hasattr(self, "time_dtype_"):
+            del self.time_dtype_
+        self.n_context_ = 0 if context is None else context.shape[1]
+        self.n_users_ = len(self.user_ids_)
+        self.n_items_ = len(self.item_ids_)
+        return self
+
+    def _fit_generators(self, X: NDArray[np.generic], y: ArrayLike | None) -> None:
+        """Fit the generators for serving, and take the identifiers they know."""
+        self.generators_ = [(name, fit_clone(rec, X, y)) for name, rec in self._generators()]
         fitted = [rec for _, rec in self.generators_]
         if isinstance(self.generator, list):
             self.user_ids_ = factorize(concat_ids([rec.user_ids_ for rec in fitted]))[0]
@@ -456,16 +525,6 @@ class Cascade(RecommenderMixin, BaseEstimator):
             self.generator_ = fitted[0]
             self.user_ids_ = self.generator_.user_ids_
             self.item_ids_ = self.generator_.item_ids_
-        self.features_ = clone_as(self.features).fit(X_arr, y_arr)
-        # Features a ranker joins itself serve from all of X too, as the shared ones do.
-        fit_features(self.ranker_, X_arr, y_arr)
-        if times is not None:
-            self.time_dtype_ = times.dtype
-        elif hasattr(self, "time_dtype_"):
-            del self.time_dtype_
-        self.n_users_ = len(self.user_ids_)
-        self.n_items_ = len(self.item_ids_)
-        return self
 
     def _retrieve(
         self,
@@ -508,18 +567,36 @@ class Cascade(RecommenderMixin, BaseEstimator):
     def _fitted_generators(self) -> list[FittedRecommender]:
         return [rec for _, rec in self.generators_]
 
-    def _untimed(self, exclude_interactions: ArrayLike | None) -> ArrayLike | None:
-        """``exclude_interactions`` as the generators take them, without a time column.
+    def _id_pairs(self, exclude_interactions: ArrayLike | None) -> ArrayLike | None:
+        """``exclude_interactions`` as the generators take them: identifiers only.
 
-        With ``time``, the rows may be laid out like ``X`` -- the events since ``fit``,
-        timed -- or as bare pairs.
+        The rows may be laid out like ``X`` -- the events since ``fit``, with their time
+        and context -- or as bare pairs.
         """
-        if not self.time or exclude_interactions is None:
-            return exclude_interactions
-        arr = check_array(
-            exclude_interactions, dtype=None, ensure_all_finite=False, ensure_min_samples=0
-        )
-        return drop_time(arr) if arr.shape[1] == 3 else arr  # noqa: PLR2004
+        if exclude_interactions is None:
+            return None
+        arr = check_rows(exclude_interactions, ensure_min_samples=0)
+        return drop_time(arr) if arr.shape[1] > _N_COLUMNS else arr
+
+    def _query_context(
+        self, context: NDArray[np.generic] | None, n_queries: int
+    ) -> NDArray[np.generic] | None:
+        """The context of each query as the features take it, or None if fitted without.
+
+        A query asked without context gets NaN in every column. A cascade fitted without
+        context ignores one, as every recommender that cannot use it does.
+        """
+        n_context = getattr(self, "n_context_", 0)
+        if not n_context:
+            return None
+        if context is None:
+            return np.full((n_queries, n_context), np.nan)
+        if context.shape[1] != n_context:
+            raise ValueError(
+                f"The queries carry {context.shape[1]} context column(s), but the Cascade "
+                f"was fitted with {n_context}."
+            )
+        return context
 
     def _score_candidates(
         self,
@@ -528,17 +605,19 @@ class Cascade(RecommenderMixin, BaseEstimator):
         groups: NDArray[np.int64],
         tracer: Tracer | None = None,
         positions: NDArray[np.intp] | None = None,
+        context: NDArray[np.generic] | None = None,
     ) -> NDArray[np.float64]:
         """The ranker's score of each candidate; ``tracer`` is told the features and scores.
 
         The features traced are those the ranker scored from, including any it joined
         itself; the rankers inside a composite ranker are traced under ``ranker``.
         ``positions``, the candidates' fitted item order, is traced with the scores so a
-        trace breaks their ties as ``recommend`` does.
+        trace breaks their ties as ``recommend`` does. ``context`` is the query context
+        of each candidate.
         """
-        features = self.features_.transform(pairs, scores=scores)
+        features = self.features_.transform(pairs, scores=scores, context=context)
         names = None if tracer is None else feature_names(self.features_)
-        candidates = Candidates(pairs, scores, names, positions)
+        candidates = Candidates(pairs, scores, names, positions, context)
         with span("ranker"):
             ranked = predict_ranker(self.ranker_, features, groups, candidates)
         if ranked.shape != (len(pairs),):
@@ -565,7 +644,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
         """
         postprocess = cast(Postprocess, self.postprocess)
         out = postprocess(pairs, scores, groups)
-        if not isinstance(out, tuple) or len(out) != 3:  # noqa: PLR2004
+        if not isinstance(out, tuple) or len(out) != _N_POSTPROCESS_OUTPUTS:
             raise TypeError("postprocess must return a (pairs, scores, groups) tuple.")
         new_pairs = np.asarray(out[0])
         new_scores = np.asarray(out[1], dtype=np.float64)
@@ -576,7 +655,11 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 f"here, got {new_groups.dtype} of shape {new_groups.shape}."
             )
         n_rows = int(new_groups.sum())
-        if new_pairs.ndim != 2 or len(new_pairs) != n_rows or new_scores.shape != (n_rows,):  # noqa: PLR2004
+        if (
+            new_pairs.ndim != _MATRIX_NDIM
+            or len(new_pairs) != n_rows
+            or new_scores.shape != (n_rows,)
+        ):
             raise ValueError(
                 f"postprocess returned group sizes summing to {n_rows}, pairs of shape "
                 f"{new_pairs.shape} and scores of shape {new_scores.shape}; they must agree."
@@ -622,8 +705,10 @@ class Cascade(RecommenderMixin, BaseEstimator):
         Parameters are those of :meth:`skrecsys.base.RecommenderMixin.recommend`; the
         filters apply to the generator, so an excluded item is never a candidate.
         Scores are the ranker's, or those ``postprocess`` returns when there is one. Ties
-        are resolved by fitted item order. With ``time``,
-        ``exclude_interactions`` may be laid out like ``X``, time included, and:
+        are resolved by fitted item order. ``X`` may be a matrix ``[user, context...]``
+        with as many context columns as the fitted ``X`` had; a vector of users asks
+        without context, which the features see as NaN. ``exclude_interactions`` may be
+        laid out like ``X`` of ``fit``, time and context included. With ``time``:
 
         as_of : scalar or array-like of shape (n_queries,), default=None
             Only with ``time``: the time the queries are ranked as of, one for all or
@@ -637,7 +722,8 @@ class Cascade(RecommenderMixin, BaseEstimator):
         ValueError
             If ``n_recommendations`` exceeds ``n_retrieved``, or a query has fewer than
             ``n_recommendations`` eligible items, or ``postprocess`` leaves it fewer, or
-            ``as_of`` is given without ``time``.
+            ``as_of`` is given without ``time``, or the queries carry a number of context
+            columns other than the fitted one.
         """
         check_is_fitted(self)
         check_n_recommendations(n_recommendations)
@@ -647,9 +733,10 @@ class Cascade(RecommenderMixin, BaseEstimator):
             )
         if as_of is not None and not self.time:
             raise ValueError("as_of needs a Cascade constructed with time=True.")
-        queries = check_ids(X)
+        queries, query_context = check_queries(X)
+        query_context = self._query_context(query_context, len(queries))
         query_times = check_as_of(as_of, len(queries), self.time_dtype_) if self.time else None
-        exclude_interactions = self._untimed(exclude_interactions)
+        exclude_interactions = self._id_pairs(exclude_interactions)
         items = np.empty((len(queries), n_recommendations), dtype=self.item_ids_.dtype)
         top_scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
         # What postprocess serves may be any item, so its blocks are joined at the end:
@@ -674,9 +761,16 @@ class Cascade(RecommenderMixin, BaseEstimator):
                 if query_times is None
                 else with_time(pairs, np.repeat(query_times[start:stop][kept], groups))
             )
+            pair_context = (
+                None
+                if query_context is None
+                else np.repeat(query_context[start:stop][kept], groups, axis=0)
+            )
             tracer = active_tracer()
             positions = lookup_ids(pairs[:, 1], self.item_ids_, name="item")[0]
-            ranked = self._score_candidates(featurized, scores, groups, tracer, positions)
+            ranked = self._score_candidates(
+                featurized, scores, groups, tracer, positions, pair_context
+            )
             if self.postprocess is not None:
                 order = rank_within_groups(ranked, groups, positions)
                 served.append(
@@ -708,7 +802,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
         exclude_interactions: ArrayLike | None = None,
     ) -> NDArray[np.int64]:
         check_is_fitted(self)
-        exclude_interactions = self._untimed(exclude_interactions)
+        exclude_interactions = self._id_pairs(exclude_interactions)
         if not isinstance(self.generator, list):
             counts = self.generator_._count_eligible(
                 X,
@@ -718,7 +812,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
             )
             return np.minimum(counts, int(self.n_retrieved))
         # What the union holds is known only by merging the generators' candidates.
-        queries = check_ids(X)
+        queries, _ = check_queries(X)
         counts = np.zeros(len(queries), dtype=np.int64)
         generators = self._fitted_generators()
         size = max(1, _PAIRS_PER_BLOCK // (int(self.n_retrieved) * len(generators)))
@@ -745,21 +839,23 @@ class Cascade(RecommenderMixin, BaseEstimator):
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, 2) or (n_samples, 3)
+        X : array-like of shape (n_samples, n_system + n_context)
             User-item pairs; with a single generator, both identifiers must be known to it.
             With ``time``, a third column holds the time each pair is scored as of,
-            missing for the latest data.
+            missing for the latest data. Further columns are the query context of each
+            pair, laid out like the context of the fitted ``X``; without them the
+            features see NaN.
 
         Returns
         -------
         scores : ndarray of shape (n_samples,)
         """
         check_is_fitted(self)
+        X_arr = check_rows(X)
         if self.time:
-            X_arr = check_array(X, dtype=None, ensure_all_finite=False)
-            if X_arr.shape[1] != 3:  # noqa: PLR2004
+            if X_arr.shape[1] < _N_TIMED_COLUMNS:
                 raise ValueError(
-                    "X must have exactly 3 columns (user identifiers, item identifiers, "
+                    "X must have at least 3 columns (user identifiers, item identifiers, "
                     f"times), got {X_arr.shape[1]}."
                 )
             pairs = drop_time(X_arr)
@@ -767,9 +863,10 @@ class Cascade(RecommenderMixin, BaseEstimator):
             times = check_as_of(X_arr[:, 2], len(pairs), self.time_dtype_)
             featurized = with_time(pairs, times)
         else:
-            users, _, _ = check_interactions(X)
-            pairs = check_array(X, dtype=None, ensure_all_finite=False)
+            users, _, _ = check_interactions(X_arr)
+            pairs = drop_time(X_arr)
             featurized = pairs
+        context = self._query_context(interaction_context(X_arr, time=self.time), len(pairs))
         _check_feature_names(self, X, reset=False)
         if isinstance(self.generator, list):
             # Each generator scores what it can; a pair none of them can is an error, as
@@ -786,7 +883,12 @@ class Cascade(RecommenderMixin, BaseEstimator):
         order = np.argsort(codes, kind="stable")
         groups = np.bincount(codes).astype(np.int64)
         out = np.empty(len(users), dtype=np.float64)
-        out[order] = self._score_candidates(featurized[order], generated[order], groups)
+        out[order] = self._score_candidates(
+            featurized[order],
+            generated[order],
+            groups,
+            context=None if context is None else context[order],
+        )
         return out
 
 
@@ -812,14 +914,47 @@ def _is_held_out(
     return np.isin(candidate_keys, held_keys).astype(np.float64)
 
 
+def _as_requested(
+    pairs: NDArray[np.generic],
+    groups: NDArray[np.int64],
+    queries: NDArray[np.generic],
+    held_users: NDArray[np.generic],
+    held_times: NDArray[np.generic] | None,
+    held_context: NDArray[np.generic] | None,
+) -> tuple[NDArray[np.generic], NDArray[np.generic] | None]:
+    """The candidates of held-out users as the request their held-out items answer.
+
+    A user is ranked as of their first held-out interaction -- the earliest by time,
+    otherwise the first by row -- so the features are what the ranker could have known
+    then, and with the context of that interaction. Returns ``pairs`` with the time of
+    that interaction when there are times, and the context of each pair, if any.
+    """
+    if held_times is None and held_context is None:
+        return pairs, None
+    first = first_row_of(held_users, held_times, queries)
+    if held_times is not None:
+        pairs = with_time(pairs, np.repeat(held_times[first], groups))
+    if held_context is None:
+        return pairs, None
+    return pairs, np.repeat(held_context[first], groups, axis=0)
+
+
 def _groups_with_a_positive(
     pairs: NDArray[np.generic],
     scores: NDArray[np.float64],
     labels: NDArray[np.float64],
     groups: NDArray[np.int64],
-) -> tuple[NDArray[np.generic], NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
+    context: NDArray[np.generic] | None,
+) -> tuple[
+    NDArray[np.generic],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.int64],
+    NDArray[np.generic] | None,
+]:
     """Drop the groups without a relevant candidate: they rank nothing above anything."""
     group_of_row = np.repeat(np.arange(len(groups)), groups)
     has_positive = np.bincount(group_of_row, weights=labels, minlength=len(groups)) > 0
     rows = has_positive[group_of_row]
-    return pairs[rows], scores[rows], labels[rows], groups[has_positive]
+    kept_context = None if context is None else context[rows]
+    return pairs[rows], scores[rows], labels[rows], groups[has_positive], kept_context

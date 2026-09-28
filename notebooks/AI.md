@@ -23,6 +23,8 @@ the files in reading order, and link each notebook to the next:
    `Cascade(time=True)`, bitemporal lookups, `as_of`;
 7. `07_inspecting_recommendations.py` — `trace`, `level=`/`sample=`, `explain` and its
    statuses, exact and approximate reasons, ranker contributions, where relevant items are lost.
+8. `08_query_context.py` — context columns in `fit` and `recommend`, context features with
+   `JoinDynamicFeatures("context")` and `("item-context")`, per-request evaluation against the per-user scorers.
 
 Every notebook ends with a "Check yourself" cell: 5–7 questions in an `mo.accordion`, each
 answer hidden until opened. Ask about the concepts and the API the notebook teaches, and make

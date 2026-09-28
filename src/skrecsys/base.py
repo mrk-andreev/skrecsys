@@ -27,6 +27,7 @@ from skrecsys._typing import (
 from skrecsys.utils.validation import (
     check_ids,
     check_interactions,
+    check_queries,
     encode_ids,
     factorize,
     lookup_ids,
@@ -44,6 +45,7 @@ __all__ = [
     "RankerMixin",
     "RecommenderMixin",
     "excluded_among",
+    "first_row_of",
     "first_time_of",
     "is_condition",
     "is_features",
@@ -144,9 +146,13 @@ class RecommenderMixin(_TagsMixin):
 
         Parameters
         ----------
-        X : array-like of shape (n_queries,)
+        X : array-like of shape (n_queries,) or (n_queries, 1 + n_context)
             Queries. For the estimators in :mod:`skrecsys.recommendation` these are
-            user identifiers seen during ``fit``.
+            user identifiers seen during ``fit``. A matrix holds the user in ``X[:, 0]``
+            and the query context in the other columns, laid out like the context
+            columns of the ``X`` of ``fit``; a vector asks without context. A recommender
+            that cannot use context, such as every one in
+            :mod:`skrecsys.recommendation`, ignores it.
 
         n_recommendations : int, default=10
             Number of items to return per query.
@@ -189,7 +195,7 @@ class RecommenderMixin(_TagsMixin):
 
         # Queries are ranked in blocks: whatever a block scores is reduced to k columns
         # before the next one starts, so peak memory follows the block, not the query.
-        queries = check_ids(X)
+        queries, _ = check_queries(X)
         excluded = (
             None
             if exclude_interactions is None
@@ -237,7 +243,7 @@ class RecommenderMixin(_TagsMixin):
         check_is_fitted(self)
         item_ids = self.item_ids_
         item_indices = self._candidate_indices(candidates)
-        queries = check_ids(X)
+        queries, _ = check_queries(X)
         excluded = (
             None
             if exclude_interactions is None
@@ -477,8 +483,8 @@ def _fitted_condition(condition: ConditionT, X: ArrayLike, y: ArrayLike | None) 
 
 
 def evaluate_condition(condition: Condition, X: ArrayLike) -> NDArray[np.bool_]:
-    """``condition.evaluate(X)``, checked to be one boolean per query."""
-    queries = check_ids(X)
+    """``condition.evaluate(X)``, checked to be one boolean per query; context is dropped."""
+    queries, _ = check_queries(X)
     mask = np.asarray(condition.evaluate(queries))
     if mask.shape != queries.shape or mask.dtype != np.bool_:
         raise ValueError(
@@ -492,11 +498,14 @@ class FeaturesMixin(_TagsMixin):
     """Mixin class for features computed per candidate user-item pair.
 
     Subclasses implement ``fit(X, y=None)`` on the interactions and
-    ``transform(pairs, *, scores=None)``, where ``pairs`` has shape ``(n_pairs, 2)`` laid
-    out like the ``X`` of ``fit`` and ``scores`` holds what the candidate generator scored
-    each pair -- shape ``(n_pairs,)``, or ``(n_pairs, n_generators)`` when several
-    generators propose candidates. ``transform`` returns a float ndarray of shape
-    ``(n_pairs, n_features)``.
+    ``transform(pairs, *, scores=None, context=None)``, where ``pairs`` has shape
+    ``(n_pairs, 2)`` laid out like the ``X`` of ``fit``, ``scores`` holds what the
+    candidate generator scored each pair -- shape ``(n_pairs,)``, or
+    ``(n_pairs, n_generators)`` when several generators propose candidates -- and
+    ``context`` the query context of each pair, shape ``(n_pairs, n_context)``: the context
+    of the query the pair was retrieved for, ``None`` when there is none. Every component
+    takes both keywords, and one that does not read them ignores them. ``transform`` returns a float
+    ndarray of shape ``(n_pairs, n_features)``.
     """
 
     @override
@@ -508,7 +517,11 @@ class FeaturesMixin(_TagsMixin):
         return tags
 
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
         """Return the features of each pair."""
         raise NotImplementedError
@@ -661,19 +674,40 @@ def first_time_of(
     the user was shown then, knowing only what happened before. A query without rows
     gets a missing time, which means "latest".
     """
-    positions, known = lookup_ids(users, queries, name="user")
-    positions, times = positions[known], times[known]
-    order = np.lexsort((times, positions))
-    positions, times = positions[order], times[order]
-    first = np.flatnonzero(np.diff(positions, prepend=-1))
-    if len(first) == len(queries):
+    rows = first_row_of(users, times, queries)
+    found = rows >= 0
+    if found.all():
         # Every query has a time, so integer times need no room for a missing one.
-        return times[first]
+        return times[rows]
     if times.dtype.kind == "M":
         out = np.full(len(queries), "NaT", dtype=times.dtype)
     else:
         out = np.full(len(queries), np.nan)
-    out[positions[first]] = times[first]
+    out[found] = times[rows[found]]
+    return out
+
+
+def first_row_of(
+    users: NDArray[np.generic], times: NDArray[np.generic] | None, queries: NDArray[np.generic]
+) -> NDArray[np.intp]:
+    """The row of each of the sorted, distinct ``queries`` among ``users`` that came first.
+
+    The earliest by ``times``, ties to the earlier row, or the first row when there are no
+    times; -1 for a query without rows. A held-out user's first row is where their
+    held-out interactions begin, and its context is the one they are ranked with.
+    """
+    positions, known = lookup_ids(users, queries, name="user")
+    rows = np.flatnonzero(known)
+    positions = positions[known]
+    order = (
+        np.argsort(positions, kind="stable")
+        if times is None
+        else np.lexsort((rows, times[known], positions))
+    )
+    positions, rows = positions[order], rows[order]
+    first = np.flatnonzero(np.diff(positions, prepend=-1))
+    out = np.full(len(queries), -1, dtype=np.intp)
+    out[positions[first]] = rows[first]
     return out
 
 

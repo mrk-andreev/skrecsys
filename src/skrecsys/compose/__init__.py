@@ -11,7 +11,8 @@ part in :class:`~sklearn.model_selection.GridSearchCV` through nested parameters
 - **candidates**, passed between stages as plain numpy arrays: ``pairs`` of shape
   ``(n_pairs, 2)`` -- ``(n_pairs, 3)``, with the time each is ranked as of, in a
   :class:`Cascade` constructed with ``time=True`` --, the generator ``scores`` and the
-  group sizes ``groups``;
+  group sizes ``groups``; the query context of each pair, when ``X`` has context
+  columns, travels beside them;
 - **features** of candidate pairs: :class:`JoinStaticFeatures`,
   :class:`JoinDynamicFeatures`, :class:`GeneratorScores`, :class:`InteractionCounts`,
   :class:`RecommenderScores`, :class:`SegmentPopularity`, :class:`ConcatFeatures`;

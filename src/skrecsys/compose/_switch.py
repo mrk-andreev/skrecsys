@@ -6,7 +6,7 @@ from typing import Self
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
-from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
+from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys._tracing import active_tracer, span, traced_recommend
 from skrecsys._typing import Condition, FittedRecommender, Recommender, clone_as, override
@@ -20,8 +20,15 @@ from skrecsys.base import (
     predict_pairs,
     uses_time,
 )
+from skrecsys.compose._candidates import stack_columns
 from skrecsys.utils._param_validation import check_bool, check_component
-from skrecsys.utils.validation import check_as_of, check_ids, check_interactions, drop_time
+from skrecsys.utils.validation import (
+    check_as_of,
+    check_interactions,
+    check_queries,
+    check_rows,
+    drop_time,
+)
 
 #: Columns of timed interactions: user, item, time.
 _N_TIMED_COLUMNS = 3
@@ -88,9 +95,10 @@ class Switch(RecommenderMixin, BaseEstimator):
 
         Parameters
         ----------
-        X : array-like of shape (n_interactions, 2) or (n_interactions, 3)
+        X : array-like of shape (n_interactions, n_system + n_context)
             ``X[:, 0]`` contains user identifiers, ``X[:, 1]`` item identifiers and, when
-            ``time`` is true, ``X[:, 2]`` the time of each interaction.
+            ``time`` is true, ``X[:, 2]`` the time of each interaction. Any further
+            columns are the query context, which both branches are fitted with.
         y : array-like of shape (n_interactions,), default=None
             Interaction values; ``None`` gives every interaction weight 1.
 
@@ -111,11 +119,12 @@ class Switch(RecommenderMixin, BaseEstimator):
         _check_feature_names(self, X, reset=True)
         # The branches see plain arrays: the feature names are checked here, once, and
         # `predict` hands each branch a slice that could not carry them anyway.
-        X = check_array(X, dtype=None, ensure_all_finite=False)
-        X_ids = drop_time(X) if self.time else X
-        self.condition_ = clone_as(self.condition).fit(X_ids, y)
-        self.on_true_ = fit_clone(self.on_true, X if uses_time(self.on_true) else X_ids, y)
-        self.on_false_ = fit_clone(self.on_false, X if uses_time(self.on_false) else X_ids, y)
+        X = check_rows(X)
+        # A branch that does not use time gets X without it, context kept.
+        X_untimed = _without_time(X) if self.time else X
+        self.condition_ = clone_as(self.condition).fit(drop_time(X), y)
+        self.on_true_ = fit_clone(self.on_true, X if uses_time(self.on_true) else X_untimed, y)
+        self.on_false_ = fit_clone(self.on_false, X if uses_time(self.on_false) else X_untimed, y)
         self.user_ids_ = self.on_true_.user_ids_
         self.item_ids_ = self.on_true_.item_ids_
         self.n_users_ = len(self.user_ids_)
@@ -126,8 +135,8 @@ class Switch(RecommenderMixin, BaseEstimator):
         """Interactions as ``branch`` takes them: with their time only if it uses time."""
         if not self.time or interactions is None or uses_time(branch):
             return interactions
-        arr = check_array(interactions, dtype=None, ensure_all_finite=False)
-        return drop_time(arr) if arr.shape[1] == _N_TIMED_COLUMNS else arr
+        arr = check_rows(interactions)
+        return _without_time(arr) if arr.shape[1] >= _N_TIMED_COLUMNS else arr
 
     def _routes(
         self, queries: NDArray[np.generic], *, report: bool = False
@@ -161,7 +170,8 @@ class Switch(RecommenderMixin, BaseEstimator):
         """Return recommended item identifiers and their scores, each from its branch.
 
         Parameters are those of :meth:`skrecsys.base.RecommenderMixin.recommend`, and
-        are passed to the branches as they are, and:
+        are passed to the branches as they are -- the query context too, when ``X`` is
+        a matrix ``[user, context...]``; the condition sees the users alone -- and:
 
         as_of : scalar or array-like of shape (n_queries,), default=None
             Only with ``time``: the time the queries are ranked as of, passed to a branch
@@ -171,7 +181,7 @@ class Switch(RecommenderMixin, BaseEstimator):
         check_n_recommendations(n_recommendations)
         if as_of is not None and not self.time:
             raise ValueError("as_of needs a Switch constructed with time=True.")
-        queries = check_ids(X)
+        queries, context = check_queries(X)
         query_times = check_as_of(as_of, len(queries), self.time_dtype_) if self.time else None
         items = np.empty((len(queries), n_recommendations), dtype=self.item_ids_.dtype)
         scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
@@ -180,7 +190,7 @@ class Switch(RecommenderMixin, BaseEstimator):
             with span(name):
                 if query_times is not None and uses_time(branch):
                     items[rows], scores[rows] = branch.recommend(
-                        queries[rows],
+                        _with_context(queries, context, rows),
                         n_recommendations=n_recommendations,
                         candidates=candidates,
                         exclude_seen=exclude_seen,
@@ -189,7 +199,7 @@ class Switch(RecommenderMixin, BaseEstimator):
                     )
                 else:
                     items[rows], scores[rows] = branch.recommend(
-                        queries[rows],
+                        _with_context(queries, context, rows),
                         n_recommendations=n_recommendations,
                         candidates=candidates,
                         exclude_seen=exclude_seen,
@@ -207,11 +217,11 @@ class Switch(RecommenderMixin, BaseEstimator):
         exclude_interactions: ArrayLike | None = None,
     ) -> NDArray[np.int64]:
         check_is_fitted(self)
-        queries = check_ids(X)
+        queries, context = check_queries(X)
         counts = np.zeros(len(queries), dtype=np.int64)
         for _, branch, rows in self._routes(queries):
             counts[rows] = branch._count_eligible(
-                queries[rows],
+                _with_context(queries, context, rows),
                 candidates=candidates,
                 exclude_seen=exclude_seen,
                 exclude_interactions=self._for_branch(branch, exclude_interactions),
@@ -223,25 +233,45 @@ class Switch(RecommenderMixin, BaseEstimator):
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, 2) or (n_samples, 3)
+        X : array-like of shape (n_samples, n_system + n_context)
             User-item pairs; with ``time``, a third column holds the time each is scored
-            as of, which only a branch that uses time reads.
+            as of, which only a branch that uses time reads. Further columns are the
+            query context of each pair, passed to both branches.
 
         Returns
         -------
         scores : ndarray of shape (n_samples,)
         """
         check_is_fitted(self)
-        pairs = check_array(X, dtype=None, ensure_all_finite=False)
-        if self.time and pairs.shape[1] != _N_TIMED_COLUMNS:
+        pairs = check_rows(X)
+        if self.time and pairs.shape[1] < _N_TIMED_COLUMNS:
             raise ValueError(
-                "X must have exactly 3 columns (user identifiers, item identifiers, times), "
+                "X must have at least 3 columns (user identifiers, item identifiers, times), "
                 f"got {pairs.shape[1]}."
             )
-        users = check_interactions(drop_time(pairs) if self.time else pairs)[0]
+        users = check_interactions(drop_time(pairs))[0]
         _check_feature_names(self, X, reset=False)
         scores = np.empty(len(users), dtype=np.float64)
         for _, branch, rows in self._routes(users):
-            routed = pairs[rows] if uses_time(branch) or not self.time else drop_time(pairs[rows])
+            routed = (
+                pairs[rows] if uses_time(branch) or not self.time else _without_time(pairs[rows])
+            )
             scores[rows] = predict_pairs(branch, routed)
         return scores
+
+
+def _without_time(X: NDArray[np.generic]) -> NDArray[np.generic]:
+    """Timed interactions or pairs without their time column, query context kept."""
+    ids = drop_time(X)
+    if X.shape[1] <= _N_TIMED_COLUMNS:
+        return ids
+    return stack_columns([ids[:, 0], ids[:, 1], *X[:, _N_TIMED_COLUMNS:].T])
+
+
+def _with_context(
+    queries: NDArray[np.generic], context: NDArray[np.generic] | None, rows: NDArray[np.bool_]
+) -> NDArray[np.generic]:
+    """The queries of ``rows`` as ``recommend`` takes them: with their context, if any."""
+    if context is None:
+        return queries[rows]
+    return stack_columns([queries[rows], *context[rows].T])

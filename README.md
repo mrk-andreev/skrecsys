@@ -79,6 +79,8 @@ their own dependency group. Read them in order:
    point-in-time features with `Cascade(time=True)`, and bitemporal data;
 7. `07_inspecting_recommendations.py`: tracing a pipeline with `trace`, explaining served and
    missing items with `explain`, and finding the stage that loses relevant items.
+8. `08_query_context.py`: request-time context in `fit` and `recommend`, and a `Cascade`
+   ranker that learns from it with `JoinDynamicFeatures("item-context")`.
 
 Each notebook ends with self-check questions.
 
@@ -90,8 +92,10 @@ uv run --group notebooks --extra nn marimo edit notebooks/05_sequential_and_neur
 
 ## Usage
 
-Training data `X` has exactly two columns: user identifiers in column 0 and item
-identifiers in column 1. Each row is one interaction. For ordinary recommenders the rows
+Training data `X` starts with two columns: user identifiers in column 0 and item
+identifiers in column 1. Each row is one interaction. Any further columns are its
+[query context](#query-context), which the recommenders here accept and ignore; only a
+`Cascade` ranker learns from it. For ordinary recommenders the rows
 are an unordered set of interactions, so their order does not matter. An optional `y`
 array carries the interaction value (such as a rating or confidence) for each row; it is
 separate from `X` and must have the same number of rows. This layout also applies when
@@ -140,7 +144,8 @@ rec.recommend(["dave"], n_recommendations=1, exclude_interactions=[["dave", "bla
 
 - `fit(X, y=None)` learns from scratch. `y` is optional: one rating or weight per row.
 - `recommend(users, n_recommendations=k)` returns two `(n_users, k)` arrays: item IDs
-  and their scores. Only users seen by `fit` or `partial_fit` can be queried.
+  and their scores. Only users seen by `fit` or `partial_fit` can be queried. `users` may
+  also be a matrix `[user, context...]`, one row per query.
   `candidates=` limits the ranking to some items, `exclude_seen=False` keeps a user's own
   items, and `exclude_interactions=` removes further user-item pairs.
 - `predict(pairs)` scores given `(user, item)` pairs, both of which the model has seen.
@@ -241,8 +246,9 @@ known, cohort = KnownUser(), QueryIn(["u2", "new"])
 ### Features
 
 A feature component turns candidate pairs, an array of shape `(n_pairs, 2)` laid out like the `X`
-of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None)`. The
-`scores` are what the candidate generator gave each pair.
+of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None,
+context=None)`. The `scores` are what the candidate generator gave each pair, and `context` the
+[query context](#query-context) of each pair, which most components ignore.
 
 ```python
 import numpy as np
@@ -295,6 +301,22 @@ JoinDynamicFeatures("item-time", price).fit().transform(np.array([[1, 7, 3], [2,
 GeneratorScores().fit().transform([["u1", "a"]], scores=[0.5])  # -> [[0.5]]
 ```
 
+`JoinDynamicFeatures` also reads the query context of each pair (see
+[Query context](#query-context)), which a `Cascade` passes beside the pairs as
+`transform(..., context=...)`:
+
+```python
+# the key part "context" stands for every context column: ("item", "context") passes
+# distinct [item, context_0, ...] rows, for features of a candidate and its request together
+def on_shelf(keys):
+    return np.array([[item[0] == shelf] for item, shelf in keys], dtype=float)
+
+
+JoinDynamicFeatures("item-context", on_shelf).fit().transform(
+    [["u1", "a1"], ["u1", "b1"]], context=[["a"], ["a"]]
+)  # -> [[1.], [0.]]
+```
+
 Three components learn from the interactions they are fitted on, which inside a `Cascade` are
 the rows the generator was fitted on, never the held-out ones:
 
@@ -332,8 +354,8 @@ both.set_params(item__missing="error")
 
 `JoinDynamicFeatures` has to be picklable for the recommender to be: pass a module-level function
 or a callable object, not a lambda. Its features are named after `kind`: `user_feature_0`,
-`item_feature_0`, `user_item_feature_0` for `("user", "item")`, or `item_time_feature_0` for
-`"item-time"`. Tables may be DataFrames, whose column names become the
+`item_feature_0`, `user_item_feature_0` for `("user", "item")`, `item_time_feature_0` for
+`"item-time"`, or `item_context_feature_0` for `"item-context"`. Tables may be DataFrames, whose column names become the
 feature names; pandas is never imported.
 
 ### Rankers
@@ -509,11 +531,29 @@ rec.recommend(users)  # serving: the latest prices
 rec.recommend(users, as_of=last_monday)  # a backtest: the prices then
 ```
 
-A recommender uses time only when it is asked to, so a stray third column -- a rating, say -- is
-an error everywhere else. `Switch(..., time=True)` hands the time to a branch that uses it and
-`[user, item]` to the other one and the condition; `make_recommender_scorer` and
+A recommender uses time only when it is asked to: everywhere else a third column is
+[query context](#query-context), which a recommender that cannot use it ignores.
+`Switch(..., time=True)` hands the time to a branch that uses it and not to the other one or the
+condition; `make_recommender_scorer` and
 `evaluate_recommender` rank a timed recommender as of each user's earliest held-out time, which
 makes cross-validation and `AutoTune` of a timed cascade leak-free too.
+
+#### Query context
+
+Columns of `X` after the system ones are the context of each interaction: `[user, item,
+context...]`, or `[user, item, time, context...]` with `time=True`. The generators never see
+them; the features get, beside each candidate pair, the context of the query it was retrieved
+for, and `recommend` takes queries as a matrix `[user, context...]`. See
+[Query context](#query-context) for the whole contract.
+
+```python
+rec = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), JoinDynamicFeatures("item-context", on_shelf)]),
+    PointwiseRanker(LogisticRegression()),
+).fit(X_with_shelf)  # [user, item, shelf]
+rec.recommend([["u1", "comedy"], ["u1", "drama"]])  # one user, two requests
+```
 
 #### Several generators
 
@@ -704,8 +744,8 @@ The parts play five roles, each a small protocol:
 | --- | --- | --- |
 | recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion` |
 | condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
-| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
-| features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
+| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups`, and the query `context` `(n, n_context)` when `X` has context columns | produced by the generator |
+| features | `fit`, `transform(pairs, *, scores, context) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one, and ignoring `scores` or `context` when it has no use for them | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
 | ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `AugmentedRanker` (gives one ranker features of its own), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
 
 On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
@@ -714,6 +754,147 @@ business rules that turn each query's ranked candidate list into the list to ser
 
 Everything here works on numpy arrays alone: a DataFrame is accepted wherever a table is, but pandas
 is never required.
+
+## Query context
+
+A recommendation answers a request, and the request says more than who is asking: the shelf
+or search the user came from, the device, the hour. That is its *query context*. The same user
+wants comedies on the comedy shelf and dramas on the drama shelf. A model that knows only the
+user serves both requests the same list.
+
+### The layout
+
+Context columns come after the system columns, in `fit` and in `recommend`:
+
+| Call | `X` | Context |
+| --- | --- | --- |
+| `fit(X, y)` | `[user, item, context...]`, or `[user, item, time, context...]` with `time=True` | the request each interaction answered |
+| `recommend(X, ...)` | a vector of users, or a matrix `[user, context...]` | none for a vector; one row per query for a matrix |
+| `predict(X)` | laid out like the `X` of `fit` | the request each pair is scored for |
+| `exclude_interactions=` | pairs, or rows laid out like the `X` of `fit` | ignored |
+
+Every recommender accepts context, and one that cannot use it ignores it, so a dataset with
+context columns fits any model unchanged. `EASE`, `ItemKNNRecommender` and the rest of
+`skrecsys.recommendation` and `skrecsys.nn` score by user alone. `Switch` passes the context on
+to its branches. `ReciprocalRankFusion` and the generators of a `Cascade` retrieve by user. The
+features and the ranker of a `Cascade` read the context.
+
+```python
+import numpy as np
+
+from skrecsys.recommendation import EASE
+
+# each row: user, item, and the shelf the user browsed when they took it
+rng = np.random.default_rng(0)
+X = np.array(
+    [
+        [f"u{u}", f"{shelf}-{i}", shelf]
+        for u in range(100)
+        for shelf in ("comedy", "drama")
+        for i in rng.choice(6, size=3, replace=False)
+    ],
+    dtype=object,
+)
+
+ease = EASE().fit(X)  # the shelf column is accepted and ignored
+ease.recommend(["u0"], n_recommendations=2)[0]  # -> [["drama-3", "drama-2"]], as without it
+```
+
+A third column is time only for a recommender constructed with `time=True`; everywhere else it
+is context. Before 0.7.0 it was an error. This holds for a `Cascade` too: fitted on
+`[user, item, time]` rows without `time=True`, it reads the time as one context column
+(`n_context_ == 1`) and hands it to the features like any other context. Construct it with
+`time=True` for the features to see the time as time.
+
+### A ranker that reads the context
+
+In a `Cascade`, the generator retrieves candidates by user. The ranker then reorders them for
+the request. `JoinDynamicFeatures` with the key part `"context"` gives it the context: the
+callback gets the distinct context rows of a batch of candidates and returns features for
+them. The context may be of any type, such as the shelf names here.
+
+- `"item-context"` passes distinct `[item, context...]` rows. The callback computes a feature
+  of the candidate and the request together, which is what lets even a linear ranker reorder
+  candidates by context.
+- `"context"` alone passes the context rows. A callback such as
+  `lambda keys: keys.astype(float)`, written as a module-level function so the cascade
+  pickles, hands numeric context to the ranker as it is. That helps only a ranker that learns
+  interactions, such as gradient-boosted trees. The value is the same for every candidate of a
+  request, so a linear ranker adds the same amount to all of them.
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+from skrecsys.compose import (
+    Cascade,
+    ConcatFeatures,
+    GeneratorScores,
+    JoinDynamicFeatures,
+    PointwiseRanker,
+)
+from skrecsys.recommendation import MostPopularRecommender
+
+
+def on_shelf(keys):  # rows of [item, shelf]; the shelf is NaN for a query without context
+    return np.array(
+        [[isinstance(shelf, str) and item.startswith(shelf)] for item, shelf in keys], dtype=float
+    )
+
+
+rec = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), JoinDynamicFeatures("item-context", on_shelf)]),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=12,
+    split=0.3,
+).fit(X)
+rec.n_context_  # -> 1
+
+# one user, two requests
+rec.recommend([["u0", "comedy"], ["u0", "drama"]], n_recommendations=2, exclude_seen=False)[0]
+# -> [["comedy-0", "comedy-2"], ["drama-1", "drama-0"]]
+
+# a vector asks without context: the features see NaN, and the ranker falls back on the rest
+rec.recommend(["u0"], n_recommendations=2, exclude_seen=False)[0]  # -> [["drama-1", "comedy-0"]]
+```
+
+To train the ranker, `Cascade.fit` holds out each user's latest interactions and ranks
+candidates for them. It ranks them with the context of the user's **first held-out
+interaction**: the earliest by time with `time=True`, otherwise the first by row. That
+interaction is the request the held-out items answer, and it is the same moment `time=True`
+ranks as of. The features are fitted on the system columns alone. The context never reaches
+`fit`; it travels beside the candidate pairs, as `transform(pairs, *, scores, context)`.
+
+`recommend` checks that a matrix of queries has as many context columns as the fitted `X`. A
+query asked with a vector gets NaN in every column. A `Cascade` fitted without context
+ignores the context of a query.
+
+The NaN reaches the features as it is, and whatever they make of it reaches the ranker. A
+callback that reads context must handle it, as `on_shelf` does above by turning it into 0. A
+feature that passes it through, such as `keys.astype(float)`, hands NaN to the ranker, and a
+ranker that does not accept missing values then raises: scikit-learn's `LogisticRegression`
+does, `HistGradientBoostingClassifier` does not. Ask with context, or give the ranker features
+that are defined without it.
+
+### Evaluation
+
+`evaluate_recommender` and `make_recommender_scorer` read held-out rows laid out like the `X` of
+`fit`, context columns included. They group the rows by user and ask `recommend` once per user,
+with the context of that user's first held-out row. That matches how the ranker was trained, and
+it keeps cross-validation and `AutoTune` working unchanged. When each request should be scored
+with its own context, call `recommend` with one query row per request instead:
+[notebook 08](notebooks/08_query_context.py) does this on MovieLens. `WarmStartKFold` and
+`ColdStartSplit` read only the user and item columns, so they split an `X` with context as they
+split it without.
+
+### Writing a component that reads context
+
+The contract of a feature component is `transform(pairs, *, scores=None, context=None)`, as
+`skrecsys.base.FeaturesMixin` declares it. `context` is an array of shape
+`(n_pairs, n_context)` aligned with `pairs`, or `None` when the cascade was fitted without
+context columns. It is always passed, so every component takes the keyword; one that does not
+read it ignores it, as every built-in component except `JoinDynamicFeatures` does. A
+component written before 0.7.0, without the keyword, needs it added.
 
 ## Hyperparameter tuning
 
@@ -1254,10 +1435,10 @@ slot so the held-out interaction is predicted from a full window.
 ## Sequential recommendation
 
 `skrecsys.nn.HSTU` and `skrecsys.nn.Mamba4Rec` predict what a user does *next* rather
-than what they like. Their `X` still has exactly two columns — user ID first, item ID
-second — but row order is now significant: within a user, row `i` precedes row `j`
-whenever `i < j`. If you have timestamps, sort by user and timestamp before fitting;
-timestamps are not passed as a third column or used by these models. Rows of different
+than what they like. Their `X` still starts with user ID and item ID -- further columns
+are query context, which these models ignore -- but row order is now significant: within a
+user, row `i` precedes row `j` whenever `i < j`. If you have timestamps, sort by user and
+timestamp before fitting; a timestamp column is not read as time by these models. Rows of different
 users may be interleaved. Every loader here already sorts its rows by user and then by
 time, so its output is ready to fit, but shuffling the rows first trains the models on
 an incorrect sequence they cannot detect.
@@ -3022,6 +3203,44 @@ specific to this workload and micro-architecture, so the script is there to re-m
 - The integration extras' floors are each library's release from two years back:
   `catboost>=1.2.8` (1.2.7 needs numpy<2), `xgboost>=2.1.1` and `lightgbm>=4.5`. CI tests
   the integrations at those floors and at the latest releases.
+
+### 0.7.0
+
+- Query context: columns after the system ones in `X` are the context of each interaction,
+  `[user, item, context...]` or `[user, item, time, context...]` with `time=True`, such as
+  the shelf, device or search a request came from. `recommend(X)` takes a vector of users, as
+  before, or a matrix `[user, context...]` with one row per query. Every recommender accepts
+  context and ignores what it cannot use; `Switch` passes it on to its branches.
+- `Cascade` hands the context to its features and ranker, beside the candidate pairs. Its
+  generators still retrieve by user. It trains the ranker with the context of each held-out
+  user's first held-out interaction, fills a query asked without context with NaN, and checks
+  the width against `n_context_`. `predict` reads context columns too.
+- `JoinDynamicFeatures` takes the key part `"context"`: `"context"` passes the context rows
+  to the callback, and `"item-context"` computes features of a candidate and its request
+  together, for context of any type.
+- Breaking: the feature component contract is now
+  `transform(pairs, *, scores=None, context=None)`. `Cascade`, `ConcatFeatures` and
+  `AugmentedRanker` always pass `context=`, `None` when there is none, so a custom component
+  must take the keyword, ignoring it if it has no use for it. Every built-in component does.
+  The `Candidates` a ranker receives carry the context too.
+- `evaluate_recommender` and `make_recommender_scorer` ask each user with the context of
+  their first held-out row. `WarmStartKFold` and `ColdStartSplit` split an `X` with context
+  columns as they split it without. `trace` and `explain` take queries with context.
+- `skrecsys.utils.validation` adds `check_queries`, `interaction_context` and
+  `stack_columns`.
+- Behaviour change: without `time=True`, a third column of `X` is context, no longer an
+  error. `check_interactions` accepts any number of columns after the system ones, and
+  `check_optionally_timed` is no longer used where context may be present, since it cannot
+  tell time from context.
+- Identifiers keep their type next to time and context columns. A list or a DataFrame that
+  mixes integer identifiers with float or datetime columns no longer turns the identifiers
+  into floats, which merged identifiers past 2**53. A float array whose identifiers are whole
+  numbers gives them back as integers, and one whose identifiers are past 2**53 is rejected.
+- Times keep their nanoseconds. A `pandas.Timestamp` was read to the microsecond, and a time
+  beside identifiers of another type was stored as a `datetime`. Breaking: a
+  `JoinDynamicFeatures` callback keyed by time now gets such times as `datetime64` scalars,
+  NaT where missing, instead of `datetime` objects and `None`.
+- Notebook 08, `08_query_context.py`: query context on MovieLens 100K.
 
 ## License
 

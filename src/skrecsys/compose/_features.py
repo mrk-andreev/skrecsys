@@ -8,6 +8,12 @@ column names are kept, but pandas is never imported.
 Inside a recommender constructed with ``time=True``, interactions and pairs carry a third
 column, the time: of an interaction, or the time a pair is ranked as of, missing where
 the latest data is wanted. Components that do not read time ignore it.
+
+The query context of each pair -- the request-time columns that follow the system ones in
+the ``X`` of ``fit`` and ``recommend`` -- travels beside the pairs rather than in them, so
+the layout above never changes: a :class:`~skrecsys.compose.Cascade` passes it to every
+component as ``transform(..., context=...)``. Only a :class:`JoinDynamicFeatures` keyed by
+``"context"`` reads it; the others ignore it.
 """
 
 from collections.abc import Callable
@@ -19,7 +25,13 @@ from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from skrecsys._typing import FeatureNamer, Features, Recommender, clone_as, override
-from skrecsys.base import FeaturesMixin, fit_clone, is_features, is_recommender, predict_pairs
+from skrecsys.base import (
+    FeaturesMixin,
+    fit_clone,
+    is_features,
+    is_recommender,
+    predict_pairs,
+)
 from skrecsys.compose._candidates import stack_columns
 from skrecsys.compose._named import (
     ComponentList,
@@ -30,7 +42,8 @@ from skrecsys.compose._named import (
 )
 from skrecsys.utils._param_validation import check_component, check_real
 from skrecsys.utils.validation import (
-    check_optionally_timed,
+    check_interactions,
+    check_rows,
     check_times,
     drop_time,
     factorize,
@@ -39,8 +52,15 @@ from skrecsys.utils.validation import (
 
 _KINDS = ("user", "item")
 
-#: The columns of ``pairs`` a :class:`JoinDynamicFeatures` key may be built from.
-_KEY_PARTS = ("user", "item", "time")
+#: The columns of ``pairs``: identifiers, then the time when there is one.
+_PAIR_COLUMNS = ("user", "item", "time")
+
+#: What a :class:`JoinDynamicFeatures` key may be built from: the columns of ``pairs``,
+#: and the query context, which stands for all of its columns.
+_KEY_PARTS = (*_PAIR_COLUMNS, "context")
+
+#: The part of a key that is the query context rather than a column of ``pairs``.
+_CONTEXT_PART = _KEY_PARTS.index("context")
 
 #: The column of ``pairs`` that holds the time, when there is one.
 _TIME_COLUMN = 2
@@ -58,7 +78,7 @@ _MATRIX_NDIM = 2
 def check_pairs(pairs: ArrayLike) -> NDArray[np.generic]:
     """Validate candidate pairs: ``(n_pairs, 2)`` identifiers, or ``(n_pairs, 3)`` with time."""
     arr = check_array(pairs, dtype=None, ensure_all_finite=False, ensure_min_samples=0)
-    if arr.shape[1] not in (len(_KINDS), len(_KEY_PARTS)):
+    if arr.shape[1] not in (len(_KINDS), len(_PAIR_COLUMNS)):
         raise ValueError(
             "pairs must have 2 columns (user, item identifiers) or 3 (user, item, time), "
             f"got {arr.shape[1]}."
@@ -73,7 +93,7 @@ def pair_ids(pairs: ArrayLike) -> NDArray[np.generic]:
 
 def pair_times(pairs: NDArray[np.generic]) -> NDArray[np.generic]:
     """The times of validated candidate pairs, missing where the latest data is wanted."""
-    if pairs.shape[1] != len(_KEY_PARTS):
+    if pairs.shape[1] != len(_PAIR_COLUMNS):
         raise ValueError(
             "pairs carry no time; construct the recommender with time=True and fit it on "
             "[user, item, time] rows."
@@ -83,8 +103,25 @@ def pair_times(pairs: NDArray[np.generic]) -> NDArray[np.generic]:
 
 def _untimed(X: ArrayLike) -> ArrayLike:
     """Interactions without their time column, for a part that does not read time."""
-    arr = check_array(X, dtype=None, ensure_all_finite=False)
-    return drop_time(arr) if arr.shape[1] == len(_KEY_PARTS) else X
+    arr = check_rows(X)
+    return drop_time(arr) if arr.shape[1] == len(_PAIR_COLUMNS) else X
+
+
+def check_context(context: ArrayLike | None, n_pairs: int, owner: str) -> NDArray[np.generic]:
+    """The query context of ``n_pairs`` pairs, as a matrix with one row per pair."""
+    if context is None:
+        raise ValueError(
+            f"{owner} reads the query context, and these pairs have none: fit the Cascade "
+            "on X with context columns after the system ones."
+        )
+    arr = np.asarray(context)
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    if arr.ndim != _MATRIX_NDIM or len(arr) != n_pairs:
+        raise ValueError(
+            f"context must have shape ({n_pairs}, n_context), got {np.shape(context)}."
+        )
+    return arr
 
 
 def _check_kind(kind: str) -> int:
@@ -98,7 +135,7 @@ def _check_kinds(kind: str | tuple[str, ...]) -> tuple[int, ...]:
     """The columns of ``pairs`` a :class:`JoinDynamicFeatures` key reads, in order.
 
     One part, a tuple of distinct parts, or distinct parts joined by ``"-"``; the parts
-    are ``"user"``, ``"item"`` and ``"time"``.
+    are ``"user"``, ``"item"``, ``"time"`` and ``"context"``.
     """
     parts = tuple(kind.split("-")) if isinstance(kind, str) else kind
     if (
@@ -108,8 +145,9 @@ def _check_kinds(kind: str | tuple[str, ...]) -> tuple[int, ...]:
         or len(set(parts)) != len(parts)
     ):
         raise ValueError(
-            "kind must be 'user', 'item', 'time', or a tuple of distinct ones of them or "
-            f"those joined by '-', such as ('item', 'time') or 'user-item-time'; got {kind!r}."
+            "kind must be 'user', 'item', 'time', 'context', or a tuple of distinct ones of "
+            "them or those joined by '-', such as ('item', 'time') or 'item-context'; "
+            f"got {kind!r}."
         )
     return tuple(_KEY_PARTS.index(p) for p in parts)
 
@@ -200,9 +238,13 @@ class JoinStaticFeatures(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
-        del scores
+        del scores, context
         check_is_fitted(self)
         ids = pair_ids(pairs)[:, _check_kind(self.kind)]
         positions, known = lookup_ids(ids, self.ids_, name=self.kind)
@@ -231,22 +273,26 @@ class JoinDynamicFeatures(FeaturesMixin, BaseEstimator):
     Parameters
     ----------
     kind : str or tuple of str, default="user"
-        What the callback is asked about, from the parts ``"user"``, ``"item"`` and
-        ``"time"``. A single part passes the distinct users, items or times of the pairs,
-        an array of shape ``(n_distinct,)``. A tuple such as ``("user", "item")``, or the
-        same parts joined by ``"-"`` such as ``"item-time"``, passes their distinct
-        combinations, an array of shape ``(n_distinct, n_parts)`` with the columns in the
-        order of ``kind``. A key with ``"time"`` needs pairs with a time column, which a
-        recommender constructed with ``time=True`` supplies.
+        What the callback is asked about, from the parts ``"user"``, ``"item"``,
+        ``"time"`` and ``"context"``. A single part passes the distinct users, items or
+        times of the pairs, an array of shape ``(n_distinct,)``. A tuple such as
+        ``("user", "item")``, or the same parts joined by ``"-"`` such as ``"item-time"``,
+        passes their distinct combinations, an array of shape ``(n_distinct, n_parts)``
+        with the columns in the order of ``kind``. A key with ``"time"`` needs pairs with
+        a time column, which a recommender constructed with ``time=True`` supplies.
+        ``"context"`` stands for every column of the query context, in order -- so
+        ``("item", "context")`` passes ``[item, context_0, context_1, ...]`` rows, and
+        ``"context"`` alone always passes a matrix. A key with ``"context"`` needs a
+        :class:`~skrecsys.compose.Cascade` fitted on ``X`` with context columns.
     callback : callable
         ``callback(keys) -> array-like of shape (len(keys), n_features)``, called once per
         ``transform`` with the distinct keys described by ``kind``. A time is missing --
         NaN, NaT, or ``None`` among objects -- where the latest features are wanted, as
         for ``recommend`` without ``as_of``. The cut-off is the callback's to decide; a
         point-in-time lookup returns the latest value recorded strictly before the time.
-        Times stay numbers or ``datetime64``, except beside identifiers of another type,
-        where they are ``datetime`` objects. To pickle the recommender, it must be a
-        module-level function or a picklable object, not a lambda.
+        Times stay numbers or ``datetime64``; beside identifiers of another type they are
+        ``datetime64`` scalars in an ``object`` array, NaT where missing. To pickle the
+        recommender, it must be a module-level function or a picklable object, not a lambda.
     n_features : int, default=None
         The width ``callback`` returns. When given, it is checked and names the features.
 
@@ -274,6 +320,15 @@ class JoinDynamicFeatures(FeaturesMixin, BaseEstimator):
     >>> join = JoinDynamicFeatures("item-time", price).fit()
     >>> join.transform(np.array([[1, 7, 3], [1, 7, 9], [2, 7, np.nan]])).tolist()
     [[1.0], [2.0], [2.0]]
+
+    Keyed by item and query context, here whether the item is on the shelf the query
+    was made from:
+
+    >>> def on_shelf(keys):
+    ...     return np.array([[item[0] == shelf] for item, shelf in keys], dtype=float)
+    >>> join = JoinDynamicFeatures("item-context", on_shelf).fit()
+    >>> join.transform([["u", "a1"], ["u", "b1"]], context=[["a"], ["a"]]).tolist()
+    [[1.0], [0.0]]
     """
 
     def __init__(
@@ -303,14 +358,24 @@ class JoinDynamicFeatures(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
         del scores
         columns, callback = self._check_params()
         arr = check_pairs(pairs)
         ids = drop_time(arr)
-        keys = [pair_times(arr) if c == _TIME_COLUMN else ids[:, c] for c in columns]
-        if len(keys) == 1 and isinstance(self.kind, str):
+        keys: list[NDArray[np.generic]] = []
+        for c in columns:
+            if c == _CONTEXT_PART:
+                table = check_context(context, len(arr), type(self).__name__)
+                keys.extend(table[:, j] for j in range(table.shape[1]))
+            else:
+                keys.append(pair_times(arr) if c == _TIME_COLUMN else ids[:, c])
+        if len(keys) == 1 and isinstance(self.kind, str) and columns != (_CONTEXT_PART,):
             distinct, rows = factorize(keys[0])
         else:
             distinct, rows = _distinct_rows(keys)
@@ -376,8 +441,13 @@ class GeneratorScores(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
+        del context
         n_pairs = len(check_pairs(pairs))
         if scores is None:
             raise ValueError("GeneratorScores needs the generator scores of the pairs.")
@@ -443,16 +513,20 @@ class InteractionCounts(FeaturesMixin, BaseEstimator):
     def fit(self, X: ArrayLike | None = None, y: ArrayLike | None = None) -> Self:
         """Count the interactions of every user or item in ``X``."""
         column = _check_kind(self.kind)
-        users, items, _, _ = check_optionally_timed(_needs_interactions(self, X), y)
+        users, items, _ = check_interactions(_needs_interactions(self, X), y)
         self.ids_, codes = factorize((users, items)[column])
         self.counts_ = np.bincount(codes, minlength=len(self.ids_)).astype(np.float64)
         return self
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
-        del scores
+        del scores, context
         check_is_fitted(self)
         ids = pair_ids(pairs)[:, _check_kind(self.kind)]
         positions, known = lookup_ids(ids, self.ids_, name=self.kind)
@@ -510,9 +584,13 @@ class RecommenderScores(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
-        del scores
+        del scores, context
         check_is_fitted(self)
         pairs = pair_ids(pairs)
         known = lookup_ids(pairs[:, 0], self.recommender_.user_ids_, name="user")[1]
@@ -594,7 +672,7 @@ class SegmentPopularity(FeaturesMixin, BaseEstimator):
         if len(self.user_ids_) != len(table):
             raise ValueError("segments holds duplicate user identifiers.")
 
-        users, items, _, _ = check_optionally_timed(_needs_interactions(self, X), y)
+        users, items, _ = check_interactions(_needs_interactions(self, X), y)
         self.item_ids_, item_codes = factorize(items)
         fitted_users, user_codes = factorize(users)
         # One count per distinct user-item pair: a share of users, not of interactions.
@@ -636,9 +714,13 @@ class SegmentPopularity(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
-        del scores
+        del scores, context
         check_is_fitted(self)
         pairs = pair_ids(pairs)
         user_rows, user_known = lookup_ids(pairs[:, 0], self.user_ids_, name="user")
@@ -737,11 +819,18 @@ class ConcatFeatures(FeaturesMixin, BaseEstimator):
 
     @override
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]:
         check_is_fitted(self)
         pairs = check_pairs(pairs)
-        blocks = [component.transform(pairs, scores=scores) for _, component in self.features_]
+        blocks = [
+            component.transform(pairs, scores=scores, context=context)
+            for _, component in self.features_
+        ]
         return np.hstack([np.asarray(b, dtype=np.float64).reshape(len(pairs), -1) for b in blocks])
 
     def get_feature_names_out(self, input_features: ArrayLike | None = None) -> NDArray[np.object_]:

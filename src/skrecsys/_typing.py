@@ -7,11 +7,11 @@ runtime.
 """
 
 import sys
-from collections.abc import Callable, Hashable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator
 from typing import Protocol, Self, TypeAlias, TypeVar, cast, runtime_checkable
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike, DTypeLike, NDArray
 from sklearn.base import clone
 from sklearn.utils import Tags
 
@@ -28,6 +28,7 @@ else:  # pragma: no cover - exercised on 3.11 and 3.12 only
 __all__ = [
     "Condition",
     "CrossValidator",
+    "DataFrameLike",
     "DecisionClassifier",
     "Estimator",
     "FeatureNamer",
@@ -147,7 +148,11 @@ class Features(Estimator, Protocol):
     def fit(self, X: ArrayLike | None, y: ArrayLike | None = None) -> Self: ...
 
     def transform(
-        self, pairs: ArrayLike, *, scores: ArrayLike | None = None
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
     ) -> NDArray[np.floating]: ...
 
 
@@ -223,6 +228,27 @@ class CrossValidator(Protocol):
 #: ``metric(y_true, y_pred, k=k, **kwargs)``. The metrics differ in their other keywords,
 #: so the parameters beyond the call convention cannot be spelled as one protocol.
 RankingMetric: TypeAlias = Callable[..., float | NDArray[np.float64]]
+
+
+#: The dtype of a column of a :class:`DataFrameLike`: a numpy dtype, or a pandas
+#: extension dtype.
+DTypeT_co = TypeVar("DTypeT_co", covariant=True)
+
+
+@runtime_checkable
+class DataFrameLike(Protocol[DTypeT_co]):
+    """What input validation reads of a DataFrame, without importing pandas.
+
+    A Series has the same members; ``ndim`` tells the two apart.
+    """
+
+    @property
+    def ndim(self) -> int: ...
+
+    @property
+    def dtypes(self) -> Iterable[DTypeT_co]: ...
+
+    def to_numpy(self, dtype: DTypeLike | None = None) -> NDArray[np.generic]: ...
 
 
 class SortableId(Hashable, Protocol):
