@@ -188,7 +188,7 @@ def measure(
         except UnavailableError as reason:
             log(f"  skipped: {reason}")
             failures.extend((unit, str(reason)) for unit in group)
-        except Exception:  # noqa: BLE001 - keep what the rest of the run measures
+        except Exception:
             detail = traceback.format_exc()
             log(detail)
             failures.extend((unit, detail.strip().splitlines()[-1]) for unit in group)

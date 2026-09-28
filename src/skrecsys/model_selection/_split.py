@@ -9,7 +9,7 @@ from sklearn.utils import check_random_state
 
 from skrecsys._typing import RandomStateLike, override
 from skrecsys.utils._param_validation import check_real
-from skrecsys.utils.validation import check_optionally_timed, factorize
+from skrecsys.utils.validation import check_interactions, factorize
 
 __all__ = ["ColdStartSplit", "WarmStartKFold"]
 
@@ -70,7 +70,7 @@ class WarmStartKFold(BaseCrossValidator):
     ) -> Iterator[NDArray[np.intp]]:
         if X is None:
             raise ValueError("WarmStartKFold.split requires X.")
-        users, items, _, _ = check_optionally_timed(X)
+        users, items, _ = check_interactions(X)
         n_samples = len(users)
         order = np.arange(n_samples)
         if self.shuffle:
@@ -163,7 +163,7 @@ class ColdStartSplit(BaseCrossValidator):
     ) -> Iterator[NDArray[np.intp]]:
         if X is None:
             raise ValueError("ColdStartSplit.split requires X.")
-        users, _, _, _ = check_optionally_timed(X)
+        users, _, _ = check_interactions(X)
         distinct, codes = factorize(users)
         n_cold = int(np.floor(self.cold_users * len(distinct)))
         if n_cold == 0 or n_cold == len(distinct):

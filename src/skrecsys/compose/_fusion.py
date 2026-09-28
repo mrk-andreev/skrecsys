@@ -52,8 +52,9 @@ from skrecsys.compose._rankers import (
 from skrecsys.tune._space import Float
 from skrecsys.utils._param_validation import check_int, check_real
 from skrecsys.utils.validation import (
-    check_ids,
     check_interactions,
+    check_queries,
+    check_rows,
     encode_ids,
     factorize,
     lookup_ids,
@@ -209,8 +210,9 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
 
         Parameters
         ----------
-        X : array-like of shape (n_interactions, 2)
-            ``X[:, 0]`` contains user identifiers, ``X[:, 1]`` item identifiers.
+        X : array-like of shape (n_interactions, 2 + n_context)
+            ``X[:, 0]`` contains user identifiers, ``X[:, 1]`` item identifiers; any
+            further columns are the query context, which every recommender is fitted with.
         y : array-like of shape (n_interactions,), default=None
             Interaction values; ``None`` gives every interaction weight 1.
 
@@ -221,7 +223,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         named = self._check_params()
         check_interactions(X, y)
         _check_feature_names(self, X, reset=True)
-        X = check_array(X, dtype=None, ensure_all_finite=False)
+        X = check_rows(X)
         self.recommenders_ = [(name, fit_clone(rec, X, y)) for name, rec in named]
         fitted = [recommender for _, recommender in self.recommenders_]
         self.user_ids_ = factorize(concat_ids([rec.user_ids_ for rec in fitted]))[0]
@@ -301,7 +303,10 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         """Return the items with the highest fused scores, and those scores.
 
         Parameters are those of :meth:`skrecsys.base.RecommenderMixin.recommend`, and
-        are passed to every recommender. Ties are resolved by fitted item order.
+        are passed to every recommender. Ties are resolved by fitted item order. The
+        recommenders retrieve by user, as the generators of a
+        :class:`~skrecsys.compose.Cascade` do: a query context in ``X`` is accepted and
+        not passed on.
 
         Raises
         ------
@@ -315,7 +320,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
             raise ValueError(
                 f"n_recommendations={n_recommendations} exceeds n_retrieved={self.n_retrieved}."
             )
-        queries = check_ids(X)
+        queries, _ = check_queries(X)
         items = np.empty((len(queries), n_recommendations), dtype=self.item_ids_.dtype)
         top_scores = np.empty((len(queries), n_recommendations), dtype=np.float64)
         size = max(1, _PAIRS_PER_BLOCK // (int(self.n_retrieved) * len(self.recommenders_)))
@@ -351,7 +356,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         exclude_interactions: ArrayLike | None = None,
     ) -> NDArray[np.int64]:
         check_is_fitted(self)
-        queries = check_ids(X)
+        queries, _ = check_queries(X)
         counts = np.zeros(len(queries), dtype=np.int64)
         for _, recommender in self.recommenders_:
             served = self._served(recommender, queries)

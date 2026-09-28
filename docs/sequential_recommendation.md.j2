@@ -2,10 +2,10 @@
 ## Sequential recommendation
 
 `skrecsys.nn.HSTU` and `skrecsys.nn.Mamba4Rec` predict what a user does *next* rather
-than what they like. Their `X` still has exactly two columns — user ID first, item ID
-second — but row order is now significant: within a user, row `i` precedes row `j`
-whenever `i < j`. If you have timestamps, sort by user and timestamp before fitting;
-timestamps are not passed as a third column or used by these models. Rows of different
+than what they like. Their `X` still starts with user ID and item ID -- further columns
+are query context, which these models ignore -- but row order is now significant: within a
+user, row `i` precedes row `j` whenever `i < j`. If you have timestamps, sort by user and
+timestamp before fitting; a timestamp column is not read as time by these models. Rows of different
 users may be interleaved. Every loader here already sorts its rows by user and then by
 time, so its output is ready to fit, but shuffling the rows first trains the models on
 an incorrect sequence they cannot detect.

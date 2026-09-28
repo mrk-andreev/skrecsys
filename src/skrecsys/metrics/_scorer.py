@@ -9,8 +9,13 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from skrecsys._typing import RankingMetric, Recommender, override
-from skrecsys.base import first_time_of, is_recommender, uses_time
-from skrecsys.utils.validation import check_optionally_timed
+from skrecsys.base import first_row_of, first_time_of, is_recommender, uses_time
+from skrecsys.utils.validation import (
+    check_interactions,
+    check_rows,
+    interaction_context,
+    stack_columns,
+)
 
 __all__ = ["evaluate_recommender", "make_recommender_scorer"]
 
@@ -19,14 +24,22 @@ Metrics = RankingMetric | Sequence[RankingMetric] | Mapping[str, RankingMetric]
 
 
 def _held_out_by_user(
-    X: ArrayLike, y: ArrayLike | None
+    X: ArrayLike, y: ArrayLike | None, *, time: bool
 ) -> tuple[NDArray[np.generic], list[set[Hashable]], NDArray[np.generic] | None]:
     """Group the held-out interactions with positive relevance into one item set per user.
 
-    With a time column, also the time each user is ranked as of: when their held-out
-    interactions begin, over all of them, relevant or not.
+    Returns the queries to ask ``recommend`` -- the distinct users, or with context
+    columns in ``X`` a matrix ``[user, context...]`` holding the context of each user's
+    first held-out interaction --, the relevant items of each, and with ``time`` the time
+    each user is ranked as of: when their held-out interactions begin, over all of them,
+    relevant or not.
     """
-    users, items, weights, times = check_optionally_timed(X, y)
+    X_arr = check_rows(X)
+    if time:
+        users, items, weights, times = check_interactions(X_arr, y, time=True)
+    else:
+        users, items, weights = check_interactions(X_arr, y)
+        times = None
     relevant = weights > 0
     if not relevant.any():
         raise ValueError("No held-out interactions with positive relevance to score.")
@@ -36,7 +49,11 @@ def _held_out_by_user(
     boundaries = np.cumsum(np.bincount(codes, minlength=len(query_users)))[:-1]
     y_true = [set(group.tolist()) for group in np.split(items[relevant][order], boundaries)]
     as_of = None if times is None else first_time_of(users, times, query_users)
-    return query_users, y_true, as_of
+    context = interaction_context(X_arr, time=time)
+    if context is None:
+        return query_users, y_true, as_of
+    first = context[first_row_of(users, times, query_users)]
+    return stack_columns([query_users, *first.T]), y_true, as_of
 
 
 def _metric_name(metric: RankingMetric) -> str:
@@ -101,11 +118,14 @@ def evaluate_recommender(
     ----------
     estimator : recommender
         A fitted recommender.
-    X : array-like of shape (n_interactions, 2) or (n_interactions, 3)
-        Held-out ``(user, item)`` pairs, or ``(user, item, time)`` rows. A recommender
-        constructed with ``time=True`` then ranks each user as of their earliest
-        held-out time, as :class:`~skrecsys.compose.Cascade` does when it trains its
-        ranker; any other recommender ignores the times.
+    X : array-like of shape (n_interactions, n_system + n_context)
+        Held-out ``(user, item)`` pairs, laid out like the ``X`` of the estimator's
+        ``fit``: ``(user, item, time)`` rows for a recommender constructed with
+        ``time=True``, which then ranks each user as of their earliest held-out time, as
+        :class:`~skrecsys.compose.Cascade` does when it trains its ranker. Further
+        columns are the query context: each user is asked once, with the context of
+        their first held-out interaction -- again as a Cascade trains its ranker. To
+        score every request with its own context, call ``recommend`` per request.
     y : array-like of shape (n_interactions,), default=None
         Relevance of each pair; pairs with ``y <= 0`` are not relevant. ``None`` makes
         every pair relevant.
@@ -141,10 +161,11 @@ def evaluate_recommender(
         raise TypeError(f"{type(estimator).__name__} is not a recommender.")
     named = _named_metrics(metrics)
     cutoffs = _cutoffs(k)
-    query_users, y_true, as_of = _held_out_by_user(X, y)
-    if uses_time(estimator):
+    timed = uses_time(estimator)
+    queries, y_true, as_of = _held_out_by_user(X, y, time=timed)
+    if timed:
         y_pred, _ = estimator.recommend(
-            query_users,
+            queries,
             n_recommendations=cutoffs[-1],
             candidates=candidates,
             exclude_seen=exclude_seen,
@@ -153,7 +174,7 @@ def evaluate_recommender(
         )
     else:
         y_pred, _ = estimator.recommend(
-            query_users,
+            queries,
             n_recommendations=cutoffs[-1],
             candidates=candidates,
             exclude_seen=exclude_seen,

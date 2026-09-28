@@ -11,11 +11,15 @@ from skrecsys.utils.validation import (
     check_ids,
     check_interactions,
     check_optionally_timed,
+    check_queries,
+    check_rows,
     check_times,
     drop_time,
     encode_ids,
     factorize,
+    interaction_context,
     lookup_ids,
+    stack_columns,
 )
 
 
@@ -32,10 +36,9 @@ def test_check_interactions_with_y():
     np.testing.assert_array_equal(y, [5.0, 0.0])
 
 
-@pytest.mark.parametrize("X", [[[1, 2, 3]], [[1]]])
-def test_check_interactions_requires_two_columns(X):
-    with pytest.raises(ValueError, match="2 columns"):
-        check_interactions(X)
+def test_check_interactions_requires_two_columns():
+    with pytest.raises(ValueError, match="at least 2 columns"):
+        check_interactions([[1]])
 
 
 def test_check_interactions_inconsistent_length():
@@ -216,9 +219,71 @@ def test_check_interactions_with_time_requires_three_columns():
         check_interactions([["u", "a"]], time=True)
 
 
-def test_check_interactions_without_time_rejects_a_time_column_with_a_hint():
-    with pytest.raises(ValueError, match=r"2 columns.*time=True"):
-        check_interactions([[1, 2, 3]])
+def test_check_interactions_reads_further_columns_as_context():
+    X = np.array([["u", "a", "mobile", 1.5], ["v", "b", "web", 0.0]], dtype=object)
+    users, items, y = check_interactions(X)
+    assert users.tolist() == ["u", "v"]
+    assert items.tolist() == ["a", "b"]
+    np.testing.assert_array_equal(y, [1.0, 1.0])
+    context = interaction_context(X, time=False)
+    timed = interaction_context(X, time=True)
+    assert context is not None
+    assert timed is not None
+    assert context.tolist() == [["mobile", 1.5], ["web", 0.0]]
+    assert timed.tolist() == [[1.5], [0.0]]
+    assert interaction_context(X[:, :2], time=False) is None
+
+
+def test_interaction_context_gives_numbers_back_their_dtype():
+    X = np.empty((2, 3), dtype=object)
+    X[:, 0], X[:, 1], X[:, 2] = ["u", "v"], ["a", "b"], [1, 2]
+    context = interaction_context(X, time=False)
+    assert context is not None
+    assert context.dtype.kind == "i"
+    np.testing.assert_array_equal(context, [[1], [2]])
+    assert check_interactions(np.array([[1, 2, 7]]))[0].dtype.kind == "i"
+
+
+def test_check_interactions_with_time_and_context():
+    X = np.array([["u", "a", 5, "web"]], dtype=object)
+    *_, times = check_interactions(X, time=True)
+    np.testing.assert_array_equal(times, [5])
+    context = interaction_context(X, time=True)
+    assert context is not None
+    assert context.tolist() == [["web"]]
+
+
+def test_check_queries_reads_a_vector_as_users_without_context():
+    queries, context = check_queries(np.array(["u", "v"]))
+    assert queries.tolist() == ["u", "v"]
+    assert context is None
+    queries, context = check_queries([1, 2])
+    assert queries.tolist() == [1, 2]
+    assert context is None
+
+
+def test_check_queries_reads_a_matrix_as_users_and_context():
+    X = np.array([[1, "web", 0.5], [2, "app", 1.0]], dtype=object)
+    queries, context = check_queries(X)
+    assert queries.dtype.kind == "i"
+    assert queries.tolist() == [1, 2]
+    assert context is not None
+    assert context.tolist() == [["web", 0.5], ["app", 1.0]]
+    numeric = check_queries([[1, 3], [2, 4]])[1]
+    assert numeric is not None
+    assert numeric.dtype.kind == "i"
+
+
+def test_check_queries_reads_a_single_column_as_users():
+    queries, context = check_queries([[1], [2]])
+    assert queries.tolist() == [1, 2]
+    assert context is None
+
+
+@pytest.mark.parametrize("X", [np.zeros((2, 0)), np.zeros((2, 2, 2))])
+def test_check_queries_rejects_other_shapes(X):
+    with pytest.raises(ValueError):
+        check_queries(X)
 
 
 def test_check_interactions_gives_numeric_ids_back_their_dtype():
@@ -241,6 +306,11 @@ def test_check_interactions_gives_numeric_ids_back_their_dtype():
         (np.array([np.datetime64("2024-01-01"), None], dtype=object), "datetime64[ns]"),
         (np.array([1, 2], dtype=object), np.int64),
         (np.array([1, None], dtype=object), np.float64),
+        (np.array([1, np.nan], dtype=object), np.float64),
+        (
+            np.array([np.datetime64("2024-01-01", "D"), np.datetime64("NaT", "D")], dtype=object),
+            "datetime64[ns]",
+        ),
     ],
     ids=str,
 )
@@ -315,7 +385,9 @@ def test_check_optionally_timed_reads_a_third_column_as_time():
 
 def test_check_interactions_explains_times_turned_into_strings():
     with pytest.raises(TypeError, match="object array or a DataFrame"):
-        check_interactions([["u", "a", 5]], time=True)
+        check_interactions(np.array([["u", "a", 5]]), time=True)
+    # A list keeps its numbers, see check_rows.
+    np.testing.assert_array_equal(check_interactions([["u", "a", 5]], time=True)[3], [5])
 
 
 def test_drop_time_leaves_untimed_identifiers_alone():
@@ -324,3 +396,112 @@ def test_drop_time_leaves_untimed_identifiers_alone():
     np.testing.assert_array_equal(drop_time(X), X)
     mixed = np.array([["u", 1, 5]], dtype=object)
     assert drop_time(mixed).dtype == object
+
+
+def test_a_list_mixing_numbers_and_strings_keeps_numeric_ids():
+    users, items, _ = check_interactions([[1, 2, "web"], [3, 4, "app"]])
+    assert users.dtype.kind == "i"
+    assert items.dtype.kind == "i"
+    queries, context = check_queries([[1, "web", 0], [3, "app", 1]])
+    assert queries.dtype.kind == "i"
+    assert context is not None
+    assert context.tolist() == [["web", 0], ["app", 1]]
+    # Two-column lists are left to numpy, as before.
+    assert check_interactions([[1, "a"]])[0].dtype.kind == "U"
+
+
+_BIG = 2**53
+
+
+def test_a_list_mixing_integer_ids_and_float_context_keeps_them_integers():
+    X = [[_BIG, 1, 0.5], [_BIG + 1, 2, 0.25]]
+    users, items, _ = check_interactions(X)
+    assert users.dtype.kind == "i"
+    assert users.tolist() == [_BIG, _BIG + 1]
+    assert items.dtype.kind == "i"
+    context = interaction_context(check_rows(X), time=False)
+    assert context is not None
+    assert context.dtype == np.float64
+    assert context.ravel().tolist() == [0.5, 0.25]
+    queries, query_context = check_queries([[_BIG + 1, 0.5]])
+    assert queries.tolist() == [_BIG + 1]
+    assert query_context is not None
+    assert query_context.dtype == np.float64
+
+
+def test_a_dataframe_mixing_integer_ids_and_float_context_keeps_them_integers():
+    pd = pytest.importorskip("pandas")
+    X = pd.DataFrame({"user": [_BIG, _BIG + 1], "item": [1, 2], "price": [0.5, 0.25]})
+    users, items, _ = check_interactions(X)
+    assert users.tolist() == [_BIG, _BIG + 1]
+    assert items.dtype.kind == "i"
+    queries, context = check_queries(X[["user", "price"]])
+    assert queries.tolist() == [_BIG, _BIG + 1]
+    assert context is not None
+    assert context.dtype == np.float64
+
+
+def test_a_float_array_gives_whole_number_ids_back_as_integers():
+    X = np.array([[3.0, 1.0, 0.5], [4.0, 2.0, 0.25]])
+    users, items, _ = check_interactions(X)
+    assert users.dtype.kind == "i"
+    assert items.dtype.kind == "i"
+    queries, context = check_queries(np.array([[3.0, 0.5]]))
+    assert queries.dtype.kind == "i"
+    assert context is not None
+    assert context.dtype == np.float64
+    # Identifiers that are not whole numbers are floats on purpose.
+    assert check_interactions(np.array([[0.5, 1.0, 0.5]]))[0].dtype.kind == "f"
+
+
+def test_a_float_array_rejects_ids_a_float_cannot_hold_exactly():
+    with pytest.raises(ValueError, match="too large for a float"):
+        check_interactions(np.array([[_BIG, 1.0, 0.5]]))
+    with pytest.raises(ValueError, match="too large for a float"):
+        check_queries(np.array([[_BIG, 0.5]]))
+
+
+def test_float_context_does_not_merge_or_recast_ids():
+    X = [[_BIG, 1, 0.5], [_BIG + 1, 2, 0.5], [_BIG + 1, 1, 0.5]]
+    rec = MostPopularRecommender().fit(X)
+    assert rec.n_users_ == 2
+    items, _ = rec.recommend([[_BIG, 0.5]], n_recommendations=1)
+    assert items.dtype.kind == "i"
+    assert items.tolist() == [[2]]
+
+
+def test_a_dataframe_of_integer_ids_and_datetimes_reads_as_timed_interactions():
+    pd = pytest.importorskip("pandas")
+    times = pd.to_datetime(["2024-01-01", "2024-01-02"])
+    X = pd.DataFrame({"user": [1, 2], "item": [3, 4], "time": times, "price": [0.5, 0.25]})
+    users, items, _, found = check_interactions(X, time=True)
+    assert users.dtype.kind == "i"
+    assert items.dtype.kind == "i"
+    assert found.dtype.kind == "M"
+    context = interaction_context(check_rows(X), time=True)
+    assert context is not None
+    assert context.dtype == np.float64
+
+
+def test_times_keep_their_nanoseconds():
+    pd = pytest.importorskip("pandas")
+    stamp = "2024-01-01T00:00:00.000000001"
+    X = pd.DataFrame(
+        {"user": [1, 2], "item": [3, 4], "time": pd.to_datetime([stamp, stamp]), "price": [0.5, 1]}
+    )
+    assert check_interactions(X, time=True)[3][0] == np.datetime64(stamp)
+    missing = np.array([pd.Timestamp(stamp), pd.NaT], dtype=object)
+    found = check_times(missing, allow_missing=True)
+    assert found[0] == np.datetime64(stamp)
+    assert np.isnat(found[1])
+    objects = np.array([[1, 3, pd.Timestamp(stamp)]], dtype=object)
+    assert check_interactions(objects, time=True)[3][0] == np.datetime64(stamp)
+
+
+def test_stack_columns_keeps_datetimes_exact():
+    times = np.array(["2024-01-01T00:00:00.000000001", "NaT"], dtype="datetime64[ns]")
+    stacked = stack_columns([np.array(["u", "v"]), times])
+    assert stacked.dtype == object
+    assert stacked[0, 1] == times[0]
+    assert np.isnat(stacked[1, 1])
+    assert check_times(stacked[:, 1], allow_missing=True)[0] == times[0]

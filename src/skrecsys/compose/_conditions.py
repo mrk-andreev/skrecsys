@@ -10,7 +10,13 @@ from sklearn.utils.validation import check_is_fitted
 from skrecsys._typing import override
 from skrecsys.base import ConditionMixin
 from skrecsys.utils._param_validation import check_int
-from skrecsys.utils.validation import check_ids, check_interactions, factorize, lookup_ids
+from skrecsys.utils.validation import (
+    check_ids,
+    check_interactions,
+    check_queries,
+    factorize,
+    lookup_ids,
+)
 
 
 class KnownUser(ConditionMixin, BaseEstimator):
@@ -37,7 +43,7 @@ class KnownUser(ConditionMixin, BaseEstimator):
     @override
     def evaluate(self, X: ArrayLike) -> NDArray[np.bool_]:
         check_is_fitted(self)
-        _, known = lookup_ids(check_ids(X), self.user_ids_, name="user")
+        _, known = lookup_ids(check_queries(X)[0], self.user_ids_, name="user")
         return known
 
 
@@ -74,7 +80,7 @@ class MinInteractions(ConditionMixin, BaseEstimator):
     @override
     def evaluate(self, X: ArrayLike) -> NDArray[np.bool_]:
         check_is_fitted(self)
-        positions, known = lookup_ids(check_ids(X), self.user_ids_, name="user")
+        positions, known = lookup_ids(check_queries(X)[0], self.user_ids_, name="user")
         counts = np.where(known, self.counts_[positions], 0)
         return counts >= self.n_interactions
 
@@ -107,4 +113,4 @@ class QueryIn(ConditionMixin, BaseEstimator):
     @override
     def evaluate(self, X: ArrayLike) -> NDArray[np.bool_]:
         check_is_fitted(self)
-        return lookup_ids(check_ids(X), self.ids_, name="query")[1]
+        return lookup_ids(check_queries(X)[0], self.ids_, name="query")[1]

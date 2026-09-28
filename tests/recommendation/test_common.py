@@ -389,3 +389,28 @@ def test_narrow_index_dtypes_reach_the_kernels(estimator):
 
     np.testing.assert_array_equal(got[0], expected[0])
     np.testing.assert_allclose(got[1], expected[1], rtol=0, atol=1e-12)
+
+
+def _with_context(X):
+    """``X`` with two query context columns: a category and a number."""
+    context = np.empty((len(X), 2), dtype=object)
+    context[:, 0] = np.where(np.arange(len(X)) % 2, "web", "app")
+    context[:, 1] = np.arange(len(X)) / 10
+    return np.column_stack([X, context])
+
+
+@pytest.mark.parametrize("estimator", IMPLEMENTED, ids=repr)
+def test_context_columns_are_accepted_and_ignored(estimator):
+    X = _interactions()
+    plain = clone(estimator).fit(X)
+    contextual = clone(estimator).fit(_with_context(X))
+    users = np.unique(X[:, 0])
+    queries = np.column_stack([users, np.full(len(users), "web"), np.zeros(len(users))])
+    want_items, want_scores = plain.recommend(users, n_recommendations=2)
+    for got in (
+        contextual.recommend(users, n_recommendations=2),
+        plain.recommend(queries, n_recommendations=2),
+    ):
+        np.testing.assert_array_equal(got[0], want_items)
+        np.testing.assert_allclose(got[1], want_scores)
+    np.testing.assert_allclose(contextual.predict(_with_context(X)), plain.predict(X))

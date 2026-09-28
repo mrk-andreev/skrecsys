@@ -19,7 +19,7 @@ from skrecsys.inspection._trace import (
     jsonable,
     trace,
 )
-from skrecsys.utils.validation import check_ids, lookup_ids
+from skrecsys.utils.validation import check_ids, check_queries, lookup_ids
 
 __all__ = ["Explanation", "LeafReasons", "RankerDecision", "Retrieval", "explain"]
 
@@ -250,8 +250,9 @@ def explain(
     ----------
     estimator : recommender
         A fitted recommender or pipeline.
-    X : array-like of shape (n_queries,)
-        The queries.
+    X : array-like of shape (n_queries,) or (n_queries, 1 + n_context)
+        The queries, with their context when ``X`` is a matrix, as ``recommend``
+        takes them.
     items : array-like of shape (n_items,), default=None
         Items to explain for every query on top of those served, typically ones you
         expected to see. Each gets the stage that let it go: see
@@ -287,13 +288,14 @@ def explain(
     query 'u3', item 'b': scored 0.4082, below the cut-off 0.5774
       ItemKNNRecommender (history, exact): 'a' +0.4082; rest +0
     """
-    queries = check_ids(X)
+    # The queries go to recommend as they came, context included.
+    queries, _ = check_queries(X)
     extra = [] if items is None else check_ids(items, name="items").tolist()
     filters = _Filters(candidates, exclude_seen, exclude_interactions)
     with trace(level="full", n_reasons=n_reasons) as traced:
         if uses_time(estimator):
             estimator.recommend(
-                queries,
+                X,
                 n_recommendations=n_recommendations,
                 candidates=candidates,
                 exclude_seen=exclude_seen,
@@ -304,7 +306,7 @@ def explain(
             raise ValueError("as_of needs an estimator constructed with time=True.")
         else:
             estimator.recommend(
-                queries,
+                X,
                 n_recommendations=n_recommendations,
                 candidates=candidates,
                 exclude_seen=exclude_seen,

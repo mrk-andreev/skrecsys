@@ -40,8 +40,9 @@ known, cohort = KnownUser(), QueryIn(["u2", "new"])
 ### Features
 
 A feature component turns candidate pairs, an array of shape `(n_pairs, 2)` laid out like the `X`
-of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None)`. The
-`scores` are what the candidate generator gave each pair.
+of `fit`, into a float matrix with one row per pair: `transform(pairs, *, scores=None,
+context=None)`. The `scores` are what the candidate generator gave each pair, and `context` the
+[query context](#query-context) of each pair, which most components ignore.
 
 ```python
 import numpy as np
@@ -94,6 +95,22 @@ JoinDynamicFeatures("item-time", price).fit().transform(np.array([[1, 7, 3], [2,
 GeneratorScores().fit().transform([["u1", "a"]], scores=[0.5])  # -> [[0.5]]
 ```
 
+`JoinDynamicFeatures` also reads the query context of each pair (see
+[Query context](#query-context)), which a `Cascade` passes beside the pairs as
+`transform(..., context=...)`:
+
+```python
+# the key part "context" stands for every context column: ("item", "context") passes
+# distinct [item, context_0, ...] rows, for features of a candidate and its request together
+def on_shelf(keys):
+    return np.array([[item[0] == shelf] for item, shelf in keys], dtype=float)
+
+
+JoinDynamicFeatures("item-context", on_shelf).fit().transform(
+    [["u1", "a1"], ["u1", "b1"]], context=[["a"], ["a"]]
+)  # -> [[1.], [0.]]
+```
+
 Three components learn from the interactions they are fitted on, which inside a `Cascade` are
 the rows the generator was fitted on, never the held-out ones:
 
@@ -131,8 +148,8 @@ both.set_params(item__missing="error")
 
 `JoinDynamicFeatures` has to be picklable for the recommender to be: pass a module-level function
 or a callable object, not a lambda. Its features are named after `kind`: `user_feature_0`,
-`item_feature_0`, `user_item_feature_0` for `("user", "item")`, or `item_time_feature_0` for
-`"item-time"`. Tables may be DataFrames, whose column names become the
+`item_feature_0`, `user_item_feature_0` for `("user", "item")`, `item_time_feature_0` for
+`"item-time"`, or `item_context_feature_0` for `"item-context"`. Tables may be DataFrames, whose column names become the
 feature names; pandas is never imported.
 
 ### Rankers
@@ -308,11 +325,29 @@ rec.recommend(users)  # serving: the latest prices
 rec.recommend(users, as_of=last_monday)  # a backtest: the prices then
 ```
 
-A recommender uses time only when it is asked to, so a stray third column -- a rating, say -- is
-an error everywhere else. `Switch(..., time=True)` hands the time to a branch that uses it and
-`[user, item]` to the other one and the condition; `make_recommender_scorer` and
+A recommender uses time only when it is asked to: everywhere else a third column is
+[query context](#query-context), which a recommender that cannot use it ignores.
+`Switch(..., time=True)` hands the time to a branch that uses it and not to the other one or the
+condition; `make_recommender_scorer` and
 `evaluate_recommender` rank a timed recommender as of each user's earliest held-out time, which
 makes cross-validation and `AutoTune` of a timed cascade leak-free too.
+
+#### Query context
+
+Columns of `X` after the system ones are the context of each interaction: `[user, item,
+context...]`, or `[user, item, time, context...]` with `time=True`. The generators never see
+them; the features get, beside each candidate pair, the context of the query it was retrieved
+for, and `recommend` takes queries as a matrix `[user, context...]`. See
+[Query context](#query-context) for the whole contract.
+
+```python
+rec = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), JoinDynamicFeatures("item-context", on_shelf)]),
+    PointwiseRanker(LogisticRegression()),
+).fit(X_with_shelf)  # [user, item, shelf]
+rec.recommend([["u1", "comedy"], ["u1", "drama"]])  # one user, two requests
+```
 
 #### Several generators
 
@@ -503,8 +538,8 @@ The parts play five roles, each a small protocol:
 | --- | --- | --- |
 | recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion` |
 | condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
-| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups` | produced by the generator |
-| features | `fit`, `transform(pairs, *, scores) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
+| candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups`, and the query `context` `(n, n_context)` when `X` has context columns | produced by the generator |
+| features | `fit`, `transform(pairs, *, scores, context) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one, and ignoring `scores` or `context` when it has no use for them | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
 | ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `AugmentedRanker` (gives one ranker features of its own), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
 
 On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:

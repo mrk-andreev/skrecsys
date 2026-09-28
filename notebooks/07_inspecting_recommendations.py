@@ -524,6 +524,9 @@ def _():
     - Asked about items that were **not** served, it names the stage that lost them.
       Aggregated over many users, that shows whether retrieval or ranking is the
       bottleneck, and for whom.
+
+    Next: [notebook 08](08_query_context.py) gives each request a context, such as the
+    shelf it came from, and teaches a cascade's ranker to use it.
     """)
     return
 

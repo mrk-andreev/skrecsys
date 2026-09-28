@@ -95,7 +95,7 @@ def test_failed_trials_are_not_best():
     first.suggest_float("x", 0, 1)
     study.tell(first, float("nan"))
     with pytest.raises(ValueError, match="No trial"):
-        study.best_trial  # noqa: B018
+        _ = study.best_trial
     second = study.ask()
     second.suggest_float("x", 0, 1)
     study.tell(second, 1.0)

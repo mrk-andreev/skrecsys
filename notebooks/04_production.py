@@ -108,7 +108,7 @@ def _():
 def _(log):
     _model = EASE().fit(log)
     _payload = pickle.dumps(_model)
-    _restored = pickle.loads(_payload)  # noqa: S301 -- we just made this pickle ourselves
+    _restored = pickle.loads(_payload)
     _users = _model.user_ids_[:100]
     _same = np.array_equal(
         _model.recommend(_users, n_recommendations=10)[0],

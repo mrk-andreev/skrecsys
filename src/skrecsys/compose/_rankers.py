@@ -69,19 +69,22 @@ class Candidates:
     own (see :meth:`skrecsys.base.RankerMixin._takes_candidates`): ``pairs`` laid out as
     the Cascade's features see them, the generator ``scores``, and -- while a trace is
     recording -- the ``names`` of the columns of ``X``, when they are known, and the
-    ``positions`` of the items in the fitted item order, which break score ties.
+    ``positions`` of the items in the fitted item order, which break score ties. With
+    query context, ``context`` holds the context of the query behind each row.
     """
 
     pairs: NDArray[np.generic]
     scores: NDArray[np.float64] | None = None
     names: tuple[str, ...] | None = None
     positions: NDArray[np.intp] | None = None
+    context: NDArray[np.generic] | None = None
 
     def take(self, rows: NDArray[np.bool_] | NDArray[np.intp]) -> "Candidates":
         """The candidates of ``rows``, as ``X[rows]`` takes their features."""
         scores = None if self.scores is None else self.scores[rows]
         positions = None if self.positions is None else self.positions[rows]
-        return Candidates(self.pairs[rows], scores, self.names, positions)
+        context = None if self.context is None else self.context[rows]
+        return Candidates(self.pairs[rows], scores, self.names, positions, context)
 
     def renamed(self, names: tuple[str, ...] | None) -> "Candidates":
         """The same candidates behind a matrix whose columns are ``names``."""
@@ -415,7 +418,9 @@ class AugmentedRanker(RankerMixin, BaseEstimator):
             raise ValueError(
                 f"candidates hold {len(candidates.pairs)} pairs for the {len(X)} rows of X."
             )
-        extra = self.features_.transform(candidates.pairs, scores=candidates.scores)
+        extra = self.features_.transform(
+            candidates.pairs, scores=candidates.scores, context=candidates.context
+        )
         return np.hstack([X, np.asarray(extra, dtype=np.float64).reshape(len(X), -1)])
 
     def _joined_names(self, n_shared: int, shared: tuple[str, ...] | None) -> tuple[str, ...]:

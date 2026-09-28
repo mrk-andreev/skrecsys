@@ -124,20 +124,17 @@ class TestTracedReasons:
             rec.recommend([0], n_recommendations=3)
         assert not t[0].attributions
 
-    def test_a_failing_attribution_is_recorded_not_raised(self, monkeypatch):
+    def test_a_failing_attribution_propagates(self, monkeypatch):
         rec = ItemKNNRecommender().fit(X)
-        want = rec.recommend([0], n_recommendations=3)
 
         def broken(*args):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(rec, "_attribute", broken)
-        with trace() as t:
-            got = rec.recommend([0], n_recommendations=3)
-        np.testing.assert_array_equal(got[0], want[0])
+        with trace() as t, pytest.raises(RuntimeError, match="boom"):
+            rec.recommend([0], n_recommendations=3)
         (raised,) = t[0].raised
-        assert raised.error == "AttributionError"
-        assert "boom" in raised.message
+        assert raised.error == "RuntimeError"
 
     def test_a_linear_ranker_reports_its_log_odds_terms(self):
         rec = cascade(PointwiseRanker(LogisticRegression())).fit(X)

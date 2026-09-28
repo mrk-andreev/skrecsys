@@ -1,8 +1,10 @@
 {#- Included by README.md.j2 after "Installation", so headings start at level two. -#}
 ## Usage
 
-Training data `X` has exactly two columns: user identifiers in column 0 and item
-identifiers in column 1. Each row is one interaction. For ordinary recommenders the rows
+Training data `X` starts with two columns: user identifiers in column 0 and item
+identifiers in column 1. Each row is one interaction. Any further columns are its
+[query context](#query-context), which the recommenders here accept and ignore; only a
+`Cascade` ranker learns from it. For ordinary recommenders the rows
 are an unordered set of interactions, so their order does not matter. An optional `y`
 array carries the interaction value (such as a rating or confidence) for each row; it is
 separate from `X` and must have the same number of rows. This layout also applies when
@@ -51,7 +53,8 @@ rec.recommend(["dave"], n_recommendations=1, exclude_interactions=[["dave", "bla
 
 - `fit(X, y=None)` learns from scratch. `y` is optional: one rating or weight per row.
 - `recommend(users, n_recommendations=k)` returns two `(n_users, k)` arrays: item IDs
-  and their scores. Only users seen by `fit` or `partial_fit` can be queried.
+  and their scores. Only users seen by `fit` or `partial_fit` can be queried. `users` may
+  also be a matrix `[user, context...]`, one row per query.
   `candidates=` limits the ranking to some items, `exclude_seen=False` keeps a user's own
   items, and `exclude_interactions=` removes further user-item pairs.
 - `predict(pairs)` scores given `(user, item)` pairs, both of which the model has seen.

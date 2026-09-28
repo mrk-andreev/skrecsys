@@ -1,4 +1,3 @@
-import datetime
 import pickle
 from typing import Any
 
@@ -580,7 +579,7 @@ def test_timed_cascade_with_datetimes_and_string_ids():
     cascade = _timed_cascade(_recording(calls, lambda keys: np.zeros(len(keys)))).fit(timed)
     assert cascade.time_dtype_ == np.dtype("datetime64[ns]")
     cascade.recommend(["u0"], n_recommendations=1, as_of=np.datetime64("2024-02-01"))
-    assert {t for _, _, t in calls[-1]} == {datetime.datetime(2024, 2, 1)}
+    assert {t for _, _, t in calls[-1]} == {np.datetime64("2024-02-01", "ns")}
     with pytest.raises(TypeError, match="datetimes"):
         cascade.recommend(["u0"], n_recommendations=1, as_of=5)
 
@@ -599,8 +598,6 @@ def test_timed_cascade_pickles_and_clones():
 def test_time_must_be_asked_for():
     X = _timed(trending_interactions())
     untimed = _timed_cascade(times_of_keys, kind="user", time=False)
-    with pytest.raises(ValueError, match="time=True"):
-        untimed.fit(X)
     fitted = untimed.fit(X[:, :2])
     with pytest.raises(ValueError, match="as_of needs"):
         fitted.recommend([0], n_recommendations=1, as_of=3)

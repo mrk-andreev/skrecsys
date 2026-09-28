@@ -35,7 +35,7 @@ from typing import Concatenate, Literal, ParamSpec, Self, TypeAlias, TypeVar
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys.utils.validation import check_ids, factorize, lookup_ids, stack_pairs
+from skrecsys.utils.validation import check_queries, factorize, lookup_ids, stack_pairs
 
 #: How much a tracer records: ``"full"`` adds the feature matrices and the leaf
 #: attributions to the ``"decisions"`` every stage takes.
@@ -258,7 +258,7 @@ class Tracer:
         bound.apply_defaults()
         params = dict(bound.arguments)
         params.pop(next(iter(signature.parameters)))  # self
-        queries = check_ids(params.pop("X"))
+        queries, _ = check_queries(params.pop("X"))
         outer = self._depth == 0
         if outer:
             self._call += 1
@@ -303,18 +303,16 @@ class Tracer:
     def _attribute(self, estimator: object, served: Served) -> None:
         """Report why a leaf scored what it served; a composite has no reasons of its own.
 
-        A failure is recorded rather than raised: explaining must not break serving.
+        The leaf is asked only about the queries it just served and the items it chose,
+        so attribution cannot meet an input serving did not; a failure is a bug and
+        propagates like one.
         """
         attribute = getattr(estimator, "_attribute", None)
         if attribute is None or not served.items.size:
             return
         k = served.items.shape[1]
         users = np.repeat(served.queries, k)
-        try:
-            found = attribute(users, served.items.ravel(), self.n_reasons)
-        except Exception as exc:  # noqa: BLE001 - see the docstring
-            self._emit(Raised(self._call, self._where, "AttributionError", f"{exc!r}"))
-            return
+        found = attribute(users, served.items.ravel(), self.n_reasons)
         if found is None:
             return
         self._emit(
@@ -370,8 +368,7 @@ class Tracer:
         if self._sampled is None or not len(groups):
             return None, groups
         starts = np.cumsum(groups) - groups
-        kept = self._rows(pairs[starts, 0])
-        assert kept is not None  # noqa: S101 - _sampled is set
+        kept = lookup_ids(pairs[starts, 0], self._sampled, name="query")[1]
         return np.repeat(kept, groups), groups[kept]
 
     # -- what estimators report ------------------------------------------------------------
@@ -573,10 +570,10 @@ def feature_names(component: object) -> tuple[str, ...] | None:
     names_out = getattr(component, "get_feature_names_out", None)
     if names_out is None:
         return None
-    try:
+    # Naming is a courtesy; a trace must not fail on it.
+    with contextlib.suppress(Exception):
         return tuple(str(name) for name in names_out())
-    except Exception:  # noqa: BLE001 - naming is a courtesy; a trace must not fail on it
-        return None
+    return None
 
 
 _SPLITMIX_GAMMA = np.uint64(0x9E3779B97F4A7C15)

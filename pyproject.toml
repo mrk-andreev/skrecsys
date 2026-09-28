@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.6.0"
+version = "0.7.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -166,12 +166,15 @@ ignore = [
 # job is running the toolchain.
 "benchmarks/run.py" = ["T201"]
 "scripts/**" = ["T201", "S603"]
+# The suite logs a failed row and keeps what the rest of the run measures.
+"benchmarks/suite.py" = ["BLE001"]
 "notebooks/**" = [
     "B018",     # a marimo cell displays its last expression, such as a bare UI element
     "E501",     # prose in mo.md cells: markdown tables cannot wrap
     "RUF001",   # prose in mo.md cells uses typographic dashes and the multiplication sign
     "PLC0415",  # marimo cells import inside their cell functions
     "PLR1711",  # marimo's file format ends every cell with `return`
+    "S301",     # a notebook loads the pickle it has just dumped to show the round trip
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]

@@ -1,0 +1,142 @@
+{#- Included by README.md.j2 after "Composing recommenders", so headings start at level two
+    and relative links resolve from the repository root. -#}
+## Query context
+
+A recommendation answers a request, and the request says more than who is asking: the shelf
+or search the user came from, the device, the hour. That is its *query context*. The same user
+wants comedies on the comedy shelf and dramas on the drama shelf. A model that knows only the
+user serves both requests the same list.
+
+### The layout
+
+Context columns come after the system columns, in `fit` and in `recommend`:
+
+| Call | `X` | Context |
+| --- | --- | --- |
+| `fit(X, y)` | `[user, item, context...]`, or `[user, item, time, context...]` with `time=True` | the request each interaction answered |
+| `recommend(X, ...)` | a vector of users, or a matrix `[user, context...]` | none for a vector; one row per query for a matrix |
+| `predict(X)` | laid out like the `X` of `fit` | the request each pair is scored for |
+| `exclude_interactions=` | pairs, or rows laid out like the `X` of `fit` | ignored |
+
+Every recommender accepts context, and one that cannot use it ignores it, so a dataset with
+context columns fits any model unchanged. `EASE`, `ItemKNNRecommender` and the rest of
+`skrecsys.recommendation` and `skrecsys.nn` score by user alone. `Switch` passes the context on
+to its branches. `ReciprocalRankFusion` and the generators of a `Cascade` retrieve by user. The
+features and the ranker of a `Cascade` read the context.
+
+```python
+import numpy as np
+
+from skrecsys.recommendation import EASE
+
+# each row: user, item, and the shelf the user browsed when they took it
+rng = np.random.default_rng(0)
+X = np.array(
+    [
+        [f"u{u}", f"{shelf}-{i}", shelf]
+        for u in range(100)
+        for shelf in ("comedy", "drama")
+        for i in rng.choice(6, size=3, replace=False)
+    ],
+    dtype=object,
+)
+
+ease = EASE().fit(X)  # the shelf column is accepted and ignored
+ease.recommend(["u0"], n_recommendations=2)[0]  # -> [["drama-3", "drama-2"]], as without it
+```
+
+A third column is time only for a recommender constructed with `time=True`; everywhere else it
+is context. Before 0.7.0 it was an error. This holds for a `Cascade` too: fitted on
+`[user, item, time]` rows without `time=True`, it reads the time as one context column
+(`n_context_ == 1`) and hands it to the features like any other context. Construct it with
+`time=True` for the features to see the time as time.
+
+### A ranker that reads the context
+
+In a `Cascade`, the generator retrieves candidates by user. The ranker then reorders them for
+the request. `JoinDynamicFeatures` with the key part `"context"` gives it the context: the
+callback gets the distinct context rows of a batch of candidates and returns features for
+them. The context may be of any type, such as the shelf names here.
+
+- `"item-context"` passes distinct `[item, context...]` rows. The callback computes a feature
+  of the candidate and the request together, which is what lets even a linear ranker reorder
+  candidates by context.
+- `"context"` alone passes the context rows. A callback such as
+  `lambda keys: keys.astype(float)`, written as a module-level function so the cascade
+  pickles, hands numeric context to the ranker as it is. That helps only a ranker that learns
+  interactions, such as gradient-boosted trees. The value is the same for every candidate of a
+  request, so a linear ranker adds the same amount to all of them.
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+from skrecsys.compose import (
+    Cascade,
+    ConcatFeatures,
+    GeneratorScores,
+    JoinDynamicFeatures,
+    PointwiseRanker,
+)
+from skrecsys.recommendation import MostPopularRecommender
+
+
+def on_shelf(keys):  # rows of [item, shelf]; the shelf is NaN for a query without context
+    return np.array(
+        [[isinstance(shelf, str) and item.startswith(shelf)] for item, shelf in keys], dtype=float
+    )
+
+
+rec = Cascade(
+    MostPopularRecommender(),
+    ConcatFeatures([GeneratorScores(), JoinDynamicFeatures("item-context", on_shelf)]),
+    PointwiseRanker(LogisticRegression()),
+    n_retrieved=12,
+    split=0.3,
+).fit(X)
+rec.n_context_  # -> 1
+
+# one user, two requests
+rec.recommend([["u0", "comedy"], ["u0", "drama"]], n_recommendations=2, exclude_seen=False)[0]
+# -> [["comedy-0", "comedy-2"], ["drama-1", "drama-0"]]
+
+# a vector asks without context: the features see NaN, and the ranker falls back on the rest
+rec.recommend(["u0"], n_recommendations=2, exclude_seen=False)[0]  # -> [["drama-1", "comedy-0"]]
+```
+
+To train the ranker, `Cascade.fit` holds out each user's latest interactions and ranks
+candidates for them. It ranks them with the context of the user's **first held-out
+interaction**: the earliest by time with `time=True`, otherwise the first by row. That
+interaction is the request the held-out items answer, and it is the same moment `time=True`
+ranks as of. The features are fitted on the system columns alone. The context never reaches
+`fit`; it travels beside the candidate pairs, as `transform(pairs, *, scores, context)`.
+
+`recommend` checks that a matrix of queries has as many context columns as the fitted `X`. A
+query asked with a vector gets NaN in every column. A `Cascade` fitted without context
+ignores the context of a query.
+
+The NaN reaches the features as it is, and whatever they make of it reaches the ranker. A
+callback that reads context must handle it, as `on_shelf` does above by turning it into 0. A
+feature that passes it through, such as `keys.astype(float)`, hands NaN to the ranker, and a
+ranker that does not accept missing values then raises: scikit-learn's `LogisticRegression`
+does, `HistGradientBoostingClassifier` does not. Ask with context, or give the ranker features
+that are defined without it.
+
+### Evaluation
+
+`evaluate_recommender` and `make_recommender_scorer` read held-out rows laid out like the `X` of
+`fit`, context columns included. They group the rows by user and ask `recommend` once per user,
+with the context of that user's first held-out row. That matches how the ranker was trained, and
+it keeps cross-validation and `AutoTune` working unchanged. When each request should be scored
+with its own context, call `recommend` with one query row per request instead:
+[notebook 08](notebooks/08_query_context.py) does this on MovieLens. `WarmStartKFold` and
+`ColdStartSplit` read only the user and item columns, so they split an `X` with context as they
+split it without.
+
+### Writing a component that reads context
+
+The contract of a feature component is `transform(pairs, *, scores=None, context=None)`, as
+`skrecsys.base.FeaturesMixin` declares it. `context` is an array of shape
+`(n_pairs, n_context)` aligned with `pairs`, or `None` when the cascade was fitted without
+context columns. It is always passed, so every component takes the keyword; one that does not
+read it ignores it, as every built-in component except `JoinDynamicFeatures` does. A
+component written before 0.7.0, without the keyword, needs it added.

@@ -370,7 +370,8 @@ class _FitLog(FeaturesMixin, BaseEstimator):
         return self
 
     @override
-    def transform(self, pairs, *, scores=None):
+    def transform(self, pairs, *, scores=None, context=None):
+        del scores, context
         self.joined(len(pairs))
         return np.zeros((len(pairs), 1))
 

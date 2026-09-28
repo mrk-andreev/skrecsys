@@ -120,3 +120,41 @@
 - The integration extras' floors are each library's release from two years back:
   `catboost>=1.2.8` (1.2.7 needs numpy<2), `xgboost>=2.1.1` and `lightgbm>=4.5`. CI tests
   the integrations at those floors and at the latest releases.
+
+### 0.7.0
+
+- Query context: columns after the system ones in `X` are the context of each interaction,
+  `[user, item, context...]` or `[user, item, time, context...]` with `time=True`, such as
+  the shelf, device or search a request came from. `recommend(X)` takes a vector of users, as
+  before, or a matrix `[user, context...]` with one row per query. Every recommender accepts
+  context and ignores what it cannot use; `Switch` passes it on to its branches.
+- `Cascade` hands the context to its features and ranker, beside the candidate pairs. Its
+  generators still retrieve by user. It trains the ranker with the context of each held-out
+  user's first held-out interaction, fills a query asked without context with NaN, and checks
+  the width against `n_context_`. `predict` reads context columns too.
+- `JoinDynamicFeatures` takes the key part `"context"`: `"context"` passes the context rows
+  to the callback, and `"item-context"` computes features of a candidate and its request
+  together, for context of any type.
+- Breaking: the feature component contract is now
+  `transform(pairs, *, scores=None, context=None)`. `Cascade`, `ConcatFeatures` and
+  `AugmentedRanker` always pass `context=`, `None` when there is none, so a custom component
+  must take the keyword, ignoring it if it has no use for it. Every built-in component does.
+  The `Candidates` a ranker receives carry the context too.
+- `evaluate_recommender` and `make_recommender_scorer` ask each user with the context of
+  their first held-out row. `WarmStartKFold` and `ColdStartSplit` split an `X` with context
+  columns as they split it without. `trace` and `explain` take queries with context.
+- `skrecsys.utils.validation` adds `check_queries`, `interaction_context` and
+  `stack_columns`.
+- Behaviour change: without `time=True`, a third column of `X` is context, no longer an
+  error. `check_interactions` accepts any number of columns after the system ones, and
+  `check_optionally_timed` is no longer used where context may be present, since it cannot
+  tell time from context.
+- Identifiers keep their type next to time and context columns. A list or a DataFrame that
+  mixes integer identifiers with float or datetime columns no longer turns the identifiers
+  into floats, which merged identifiers past 2**53. A float array whose identifiers are whole
+  numbers gives them back as integers, and one whose identifiers are past 2**53 is rejected.
+- Times keep their nanoseconds. A `pandas.Timestamp` was read to the microsecond, and a time
+  beside identifiers of another type was stored as a `datetime`. Breaking: a
+  `JoinDynamicFeatures` callback keyed by time now gets such times as `datetime64` scalars,
+  NaT where missing, instead of `datetime` objects and `None`.
+- Notebook 08, `08_query_context.py`: query context on MovieLens 100K.
