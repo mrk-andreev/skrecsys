@@ -1,4 +1,4 @@
-<!-- Generated from README.md.j2 by `python benchmarks/run.py render`: edit the template, not this file. -->
+<!-- Generated from README.md.j2 by `python scripts/render_readme.py`: edit the template, not this file. -->
 # skrecsys
 
 [![PyPI](https://img.shields.io/pypi/v/skrecsys)](https://pypi.org/project/skrecsys/)
@@ -3000,7 +3000,7 @@ LTO still crosses the crate boundary.
 
 The tables in this README are generated, and so is the README itself: `README.md.j2` is
 the source, with one `docs/*.md.j2` fragment per section, and
-`python benchmarks/run.py render` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
+`python scripts/render_readme.py` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
 `README.md`; a test fails when the two disagree.
 
 What the benchmarks run is configuration rather than code. `benchmarks/config/`
@@ -3034,7 +3034,7 @@ uv run python benchmarks/run.py run indexes --dataset movielens-100k --index qua
 uv run python benchmarks/run.py run leaderboard           # measure what is out of date, re-render README.md
 uv run python benchmarks/run.py run leaderboard --dataset amazon-books --only ALS --force
 uv run python benchmarks/run.py run leaderboard --no-store --set repeat=20 --set rank_repeat=5000
-uv run python benchmarks/run.py render --check            # exit 1 if README.md is out of date
+uv run python scripts/render_readme.py --check            # exit 1 if README.md is out of date
 ```
 
 `--no-store` measures without keeping the result, which suits tighter timing runs like the
@@ -3079,9 +3079,11 @@ specific to this workload and micro-architecture, so the script is there to re-m
 
 ## Releasing
 
-1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
-2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
-3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.
+1. Bump the version: `uv version --bump patch` (or `minor` / `major`). Commit
+   `pyproject.toml` and `uv.lock`, then merge the change into `main`.
+2. After the `Tests` workflow passes on `main`, the `Release` workflow builds that commit,
+   publishes to PyPI via Trusted Publishing, and creates its `v<version>` tag. A version
+   already tagged is skipped; there is no manual tag or tag push.
 
 ## Changelog
 

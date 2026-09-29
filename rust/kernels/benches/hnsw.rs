@@ -29,16 +29,18 @@ const EF_CONSTRUCTION: usize = 200;
 fn dense_vectors(n_items: usize, dim: usize, seed: u64) -> Vec<f64> {
     let mut rng = Rng::new(seed);
     let mut vectors: Vec<f64> = (0..n_items * dim)
-        .map(|_| rng.next_f64() * 2.0 - 1.0)
+        .map(|_| rng.next_f64().mul_add(2.0, -1.0))
         .collect();
     for row in vectors.chunks_mut(dim) {
         let norm: f64 = row.iter().map(|v| v * v).sum::<f64>().sqrt();
-        row.iter_mut().for_each(|v| *v /= norm);
+        for v in row.iter_mut() {
+            *v /= norm;
+        }
     }
     vectors
 }
 
-fn params(seed: u64) -> Params {
+const fn params(seed: u64) -> Params {
     Params {
         m: M,
         ef_construction: EF_CONSTRUCTION,
@@ -57,7 +59,7 @@ fn build_dense(c: &mut Criterion) {
         };
         group.throughput(Throughput::Elements(n_items as u64));
         group.bench_function(BenchmarkId::from_parameter(n_items), |b| {
-            b.iter(|| hnsw::build(black_box(&items), &params(0xcafe)))
+            b.iter(|| hnsw::build(black_box(&items), &params(0xcafe)));
         });
     }
     group.finish();
@@ -74,7 +76,7 @@ fn build_sparse(c: &mut Criterion) {
         };
         group.throughput(Throughput::Elements(n_items as u64));
         group.bench_function(BenchmarkId::from_parameter(n_items), |b| {
-            b.iter(|| hnsw::build(black_box(&items), &params(0xcafe)))
+            b.iter(|| hnsw::build(black_box(&items), &params(0xcafe)));
         });
     }
     group.finish();
@@ -99,7 +101,9 @@ fn search_dense(c: &mut Criterion) {
         )
         .expect("a built graph describes itself");
         let candidates: Vec<usize> = (0..n_items).collect();
-        let position: Vec<i64> = (0..n_items).map(|i| i as i64).collect();
+        let position: Vec<i64> = (0..n_items)
+            .map(|item| i64::try_from(item).expect("item fits i64"))
+            .collect();
         let query_data = dense_vectors(n_queries, 32, 0xf00d);
         let queries = Queries::Dense {
             data: &query_data,
@@ -126,7 +130,7 @@ fn search_dense(c: &mut Criterion) {
                             ef,
                         )
                         .map_err(|e| e.row)
-                    })
+                    });
                 },
             );
         }
@@ -151,7 +155,9 @@ fn search_sparse(c: &mut Criterion) {
     )
     .expect("a built graph describes itself");
     let candidates: Vec<usize> = (0..n_items).collect();
-    let position: Vec<i64> = (0..n_items).map(|i| i as i64).collect();
+    let position: Vec<i64> = (0..n_items)
+        .map(|item| i64::try_from(item).expect("item fits i64"))
+        .collect();
     let users = Matrix::random(n_queries, n_items, SEEN_PER_QUERY, 0xbeef);
     let queries = Queries::Scattered(users.csr());
     let seen = Pattern::random(n_queries, n_items, SEEN_PER_QUERY, 0xbeef);
@@ -173,7 +179,7 @@ fn search_sparse(c: &mut Criterion) {
                     ef,
                 )
                 .map_err(|e| e.row)
-            })
+            });
         });
     }
     group.finish();

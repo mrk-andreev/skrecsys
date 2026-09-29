@@ -20,13 +20,17 @@ pub fn factorize(values: &[i64]) -> (Vec<i64>, Vec<i64>) {
     let (min, max) = values
         .iter()
         .fold((i64::MAX, i64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-    let span = (max as i128 - min as i128 + 1) as u128;
+    let Ok(span) = u128::try_from(i128::from(max) - i128::from(min) + 1) else {
+        return hashed(values);
+    };
     // Bucketing costs 4 bytes per value of the span, so it has to stay proportional to
     // the input; ids that are counted upwards from zero, which is the usual shape, are
     // far below this.
-    let budget = (values.len() as u128 * 2).min(u32::MAX as u128 - 1);
-    if span <= budget {
-        bucketed(values, min, span as usize)
+    let budget = (values.len() as u128 * 2).min(u128::from(u32::MAX) - 1);
+    if span <= budget
+        && let Ok(span) = usize::try_from(span)
+    {
+        bucketed(values, min, span)
     } else {
         hashed(values)
     }
@@ -36,19 +40,19 @@ pub fn factorize(values: &[i64]) -> (Vec<i64>, Vec<i64>) {
 fn bucketed(values: &[i64], min: i64, span: usize) -> (Vec<i64>, Vec<i64>) {
     let mut code = vec![0u32; span];
     for &v in values {
-        code[(v - min) as usize] = 1;
+        code[usize::try_from(v - min).expect("bucket offset is in range")] = 1;
     }
     let mut uniques = Vec::new();
     for (offset, slot) in code.iter_mut().enumerate() {
         if *slot == 1 {
-            uniques.push(min + offset as i64);
+            uniques.push(min + i64::try_from(offset).expect("bucket offset fits i64"));
             // Codes are stored one-based, so that zero still means absent.
-            *slot = uniques.len() as u32;
+            *slot = u32::try_from(uniques.len()).expect("bucket code fits u32");
         }
     }
     let codes = values
         .iter()
-        .map(|&v| code[(v - min) as usize] as i64 - 1)
+        .map(|&v| i64::from(code[usize::try_from(v - min).expect("bucket offset is in range")]) - 1)
         .collect();
     (uniques, codes)
 }
@@ -66,7 +70,9 @@ fn hashed(values: &[i64]) -> (Vec<i64>, Vec<i64>) {
     }
     (
         order.iter().map(|&code| table.keys[code]).collect(),
-        seen.iter().map(|&code| rank[code] as i64).collect(),
+        seen.iter()
+            .map(|&code| i64::try_from(rank[code]).expect("code fits i64"))
+            .collect(),
     )
 }
 
@@ -92,7 +98,7 @@ impl Table {
     }
 
     /// Fibonacci hashing: the high bits of the product are the well-mixed ones.
-    fn probe(slots: &[usize], mask: usize, keys: &[i64], key: i64) -> usize {
+    const fn probe(slots: &[usize], mask: usize, keys: &[i64], key: i64) -> usize {
         let mut at = ((key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize & mask;
         while slots[at] != EMPTY && keys[slots[at]] != key {
             at = (at + 1) & mask;
@@ -137,7 +143,9 @@ mod tests {
         uniques.dedup();
         let codes = values
             .iter()
-            .map(|v| uniques.binary_search(v).expect("present") as i64)
+            .map(|v| {
+                i64::try_from(uniques.binary_search(v).expect("present")).expect("code fits i64")
+            })
             .collect();
         (uniques, codes)
     }
@@ -496,8 +504,8 @@ mod csr_tests {
         let mut cols = Vec::new();
         let mut data = Vec::new();
         for _ in 0..4_000 {
-            rows.push((next() % n_rows as u64) as i64);
-            cols.push((next() % n_cols as u64) as i64);
+            rows.push(i64::try_from(next() % n_rows as u64).expect("row fits i64"));
+            cols.push(i64::try_from(next() % n_cols as u64).expect("column fits i64"));
             data.push((next() % 100) as f64 / 10.0);
         }
         check(&rows, &cols, &data, n_rows, n_cols);

@@ -36,7 +36,7 @@ pub fn pool(n_threads: usize) -> PyResult<Arc<ThreadPool>> {
     // mutation is one insert of a fully built pool.
     let mut cache = cache
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if cache.pid != pid {
         // Forked: the workers behind the inherited pools belong to the parent. The
         // handles are leaked rather than dropped, since dropping one would try to
@@ -56,5 +56,6 @@ pub fn pool(n_threads: usize) -> PyResult<Arc<ThreadPool>> {
             .map_err(|e| PyValueError::new_err(e.to_string()))?,
     );
     cache.pools.insert(n_threads, Arc::clone(&pool));
+    drop(cache);
     Ok(pool)
 }

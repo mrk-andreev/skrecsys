@@ -1,12 +1,12 @@
-//! RP3beta: item-item similarity from a three-step random walk on the user-item graph,
+//! `RP3beta`: item-item similarity from a three-step random walk on the user-item graph,
 //! damped by item popularity.
 //!
 //! The walk `item -> user -> item` gives `W = Piu Pui`, where `Pui` is the row-normalized
 //! interaction matrix and `Piu` the row-normalized binary transpose, both raised to the
-//! power `alpha`. RP3beta then divides column `j` by `popularity[j]^beta`
+//! power `alpha`. `RP3beta` then divides column `j` by `popularity[j]^beta`
 //! (B. Paudel et al., "Updatable, Accurate, Diverse, and Scalable Recommendations for
-//! Interactive Applications", TiiS 2017; F. Christoffel et al., "Blockbusters and
-//! Wallflowers", RecSys 2015).
+//! Interactive Applications", `TiiS` 2017; F. Christoffel et al., "Blockbusters and
+//! Wallflowers", `RecSys` 2015).
 //!
 //! Every entry of row `i` of `Piu^alpha` is `popularity[i]^-alpha`, because a binary row
 //! normalizes to a constant. The walk therefore needs only `Pui^alpha` and two scaling
@@ -61,10 +61,10 @@ pub fn similarity_rows(
         acc.reset();
         crate::knn::keep_best(out, before, k);
     };
-    match rows {
-        Some(rows) => CsrOwned::build_rows(rows, init, fill),
-        None => CsrOwned::build(n, init, fill),
-    }
+    rows.map_or_else(
+        || CsrOwned::build(n, init, fill),
+        |rows| CsrOwned::build_rows(rows, init, fill),
+    )
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
     fn a_row_subset_is_the_same_rows() {
         let dense = pseudo_random_dense(30, 12);
         let pui = Owned::from_dense(&dense);
-        let scale: Vec<f64> = (0..12).map(|j| 1.0 / (j as f64 + 2.0)).collect();
+        let scale: Vec<f64> = (0..12).map(|j| 1.0 / (f64::from(j) + 2.0)).collect();
         let full = similarity(&pui.csr(), &scale, &scale, 4);
         let wanted = [1usize, 4, 11];
         let part = similarity_rows(&pui.csr(), &scale, &scale, 4, Some(&wanted));

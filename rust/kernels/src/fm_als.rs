@@ -12,11 +12,12 @@
 use rayon::prelude::*;
 
 use crate::sparse::{Csc, Csr};
+use crate::vectors::{BASELINE_FMA, madd};
 
 /// Rows per rayon task in the two parallel passes.
 ///
 /// `q` is refreshed once per factor per sweep, so on a small problem the cost of
-/// splitting the work outruns the work itself: MovieLens 100K has 943 rows, where an
+/// splitting the work outruns the work itself: `MovieLens` 100K has 943 rows, where an
 /// unbounded split made the fit slower than the serial version. A minimum task size
 /// leaves such a problem as a single task and still splits a large one across the pool.
 const ROWS_PER_TASK: usize = 2048;
@@ -100,7 +101,7 @@ fn predict_row(x: &Csr, model: &Model, n_factors: usize, c: usize) -> f64 {
     let row = x.indptr[c]..x.indptr[c + 1];
     let mut pred = model.w0;
     for k in row.clone() {
-        pred += model.w[x.col(k)] * x.data[k];
+        pred = madd::<BASELINE_FMA>(model.w[x.col(k)], x.data[k], pred);
     }
     for f in 0..n_factors {
         let v_f = &model.v[f * n_features..(f + 1) * n_features];
@@ -109,9 +110,9 @@ fn predict_row(x: &Csr, model: &Model, n_factors: usize, c: usize) -> f64 {
         for k in row.clone() {
             let d = v_f[x.col(k)] * x.data[k];
             sum += d;
-            sum_sqr += d * d;
+            sum_sqr = madd::<BASELINE_FMA>(d, d, sum_sqr);
         }
-        pred += 0.5 * (sum * sum - sum_sqr);
+        pred = madd::<BASELINE_FMA>(0.5, sum * sum - sum_sqr, pred);
     }
     pred
 }
@@ -135,8 +136,8 @@ fn update_w(csc: &Csc, e: &mut [f64], model: &mut Model, j: usize) {
     let mut mean = 0.0;
     let mut sigma_sqr = 0.0;
     for (c, x) in csc.column(j) {
-        mean += x * (e[c] - old * x);
-        sigma_sqr += x * x;
+        mean = madd::<BASELINE_FMA>(x, madd::<BASELINE_FMA>(old, -x, e[c]), mean);
+        sigma_sqr = madd::<BASELINE_FMA>(x, x, sigma_sqr);
     }
     let denominator = sigma_sqr + model.reg_w[model.group[j]];
     // libFM resets a parameter with an unbounded posterior variance to 0.
@@ -169,12 +170,12 @@ fn update_v(
     let mut mean = 0.0;
     let mut sigma_sqr = 0.0;
     for (slot, (c, x)) in h_buf.iter_mut().zip(csc.column(j)) {
-        let h = x * q[c] - x * x * old;
+        let h = madd::<BASELINE_FMA>(x * x, -old, x * q[c]);
         *slot = h;
-        mean += h * e[c];
-        sigma_sqr += h * h;
+        mean = madd::<BASELINE_FMA>(h, e[c], mean);
+        sigma_sqr = madd::<BASELINE_FMA>(h, h, sigma_sqr);
     }
-    mean -= old * sigma_sqr;
+    mean = madd::<BASELINE_FMA>(old, -sigma_sqr, mean);
     let denominator = sigma_sqr + reg;
     // libFM resets a parameter with an unbounded posterior variance to 0.
     let new = if denominator == 0.0 {
@@ -184,8 +185,8 @@ fn update_v(
     };
     let delta = new - old;
     for (&h, (c, x)) in h_buf.iter().zip(csc.column(j)) {
-        e[c] += h * delta;
-        q[c] += x * delta;
+        e[c] = madd::<BASELINE_FMA>(h, delta, e[c]);
+        q[c] = madd::<BASELINE_FMA>(x, delta, q[c]);
     }
     v_f[j] = new;
 }
@@ -216,7 +217,7 @@ mod tests {
         let mut indptr = vec![0];
         let mut indices: Vec<i64> = Vec::new();
         for &(u, i, _) in &pairs {
-            indices.extend([u as i64, 3 + i as i64]);
+            indices.extend([i64::from(u), 3 + i64::from(i)]);
             indptr.push(indices.len());
         }
         let data = vec![1.0; indices.len()];
@@ -269,7 +270,10 @@ mod tests {
         assert!((resid.iter().sum::<f64>() + reg * w0).abs() < 1e-9);
         for (j, &w_j) in w.iter().enumerate() {
             let grad: f64 = (0..y.len())
-                .filter(|&c| indices[indptr[c]..indptr[c + 1]].contains(&(j as i64)))
+                .filter(|&c| {
+                    indices[indptr[c]..indptr[c + 1]]
+                        .contains(&i64::try_from(j).expect("item index fits i64"))
+                })
                 .map(|c| resid[c])
                 .sum::<f64>()
                 + reg * w_j;

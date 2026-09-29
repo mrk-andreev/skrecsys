@@ -23,7 +23,9 @@ const N_ITEMS: usize = 5_000;
 /// Ids drawn from `0..distinct`, which is the shape a re-encoded dataset has.
 fn contiguous_ids(len: usize, distinct: usize, seed: u64) -> Vec<i64> {
     let mut rng = Rng::new(seed);
-    (0..len).map(|_| rng.below(distinct) as i64).collect()
+    (0..len)
+        .map(|_| i64::try_from(rng.below(distinct)).expect("identifier fits i64"))
+        .collect()
 }
 
 /// The same ids spread far enough apart that bucketing them would cost more memory than
@@ -56,8 +58,12 @@ fn coo_to_csr(c: &mut Criterion) {
     let mut rng = Rng::new(0x2c);
     // Duplicate pairs are ordinary input -- the kernel sums them -- and at this density
     // a fair number of them occur by chance, as in a real interaction log.
-    let rows: Vec<i64> = (0..NNZ).map(|_| rng.below(N_USERS) as i64).collect();
-    let cols: Vec<i64> = (0..NNZ).map(|_| rng.below(N_ITEMS) as i64).collect();
+    let rows: Vec<i64> = (0..NNZ)
+        .map(|_| i64::try_from(rng.below(N_USERS)).expect("user fits i64"))
+        .collect();
+    let cols: Vec<i64> = (0..NNZ)
+        .map(|_| i64::try_from(rng.below(N_ITEMS)).expect("item fits i64"))
+        .collect();
     let data: Vec<f64> = (0..NNZ).map(|_| rng.next_f64()).collect();
 
     let mut group = c.benchmark_group("encode::coo_to_csr");

@@ -3,7 +3,7 @@
 
 The tables in this README are generated, and so is the README itself: `README.md.j2` is
 the source, with one `docs/*.md.j2` fragment per section, and
-`python benchmarks/run.py render` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
+`python scripts/render_readme.py` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
 `README.md`; a test fails when the two disagree.
 
 What the benchmarks run is configuration rather than code. `benchmarks/config/`
@@ -37,7 +37,7 @@ uv run python benchmarks/run.py run indexes --dataset movielens-100k --index qua
 uv run python benchmarks/run.py run leaderboard           # measure what is out of date, re-render README.md
 uv run python benchmarks/run.py run leaderboard --dataset amazon-books --only ALS --force
 uv run python benchmarks/run.py run leaderboard --no-store --set repeat=20 --set rank_repeat=5000
-uv run python benchmarks/run.py render --check            # exit 1 if README.md is out of date
+uv run python scripts/render_readme.py --check            # exit 1 if README.md is out of date
 ```
 
 `--no-store` measures without keeping the result, which suits tighter timing runs like the

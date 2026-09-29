@@ -78,7 +78,6 @@ pub fn greedy(
 /// Walk `level` from `entries`, returning the `ef` best admitted nodes, best first.
 ///
 /// `admit` decides what may be *returned*; everything reachable is still walked.
-#[allow(clippy::too_many_arguments)]
 pub fn search_layer(
     score: &impl Fn(usize) -> f64,
     admit: &impl Fn(usize) -> bool,
@@ -139,7 +138,7 @@ pub fn search_layer(
     }
 
     let mut best = results.into_vec();
-    best.sort_unstable_by(|a, b| a.worst_first(b));
+    best.sort_unstable_by(Candidate::worst_first);
     best
 }
 
@@ -155,7 +154,6 @@ fn keep(results: &mut BinaryHeap<Candidate>, candidate: Candidate, ef: usize) {
 ///
 /// Takes the entry point and its level rather than a [`GraphView`], so that the build
 /// can walk its own half-finished graph with the same code a query uses.
-#[allow(clippy::too_many_arguments)]
 pub fn search_graph(
     score: &impl Fn(usize) -> f64,
     admit: &impl Fn(usize) -> bool,
@@ -189,7 +187,10 @@ pub fn search_graph(
 /// items, so the result is always `k` items the caller may show. That costs one exact
 /// query and happens when the graph is disconnected or the filter was selective, which
 /// is rare and bounded -- the alternative is a short list, and `recommend` promises `k`.
-#[allow(clippy::too_many_arguments)]
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] if a query has fewer than `k` eligible candidates.
 pub fn top_k(
     items: &impl Items,
     graph: &GraphView<'_>,
@@ -296,7 +297,7 @@ fn exhaustive(
         );
     }
     let mut best = heap.into_vec();
-    best.sort_unstable_by(|a, b| a.worst_first(b));
+    best.sort_unstable_by(Candidate::worst_first);
     best
 }
 
@@ -324,7 +325,9 @@ mod tests {
             },
         );
         let candidates: Vec<usize> = (0..items.len()).collect();
-        let position: Vec<i64> = (0..items.len()).map(|i| i as i64).collect();
+        let position: Vec<i64> = (0..items.len())
+            .map(|i| i64::try_from(i).expect("item fits i64"))
+            .collect();
         Case {
             graph,
             candidates,
@@ -371,7 +374,7 @@ mod tests {
                         })
                         .collect()
                 });
-                scored.sort_unstable_by(|a, b| a.worst_first(b));
+                scored.sort_unstable_by(Candidate::worst_first);
                 scored.into_iter().take(k).map(|c| c.index).collect()
             })
             .collect()
@@ -581,7 +584,10 @@ mod tests {
         for row in &exact {
             let mut row = row.clone();
             row.sort_unstable();
-            indices.extend(row.iter().map(|&p| p as i64));
+            indices.extend(
+                row.iter()
+                    .map(|&p| i64::try_from(p).expect("item fits i64")),
+            );
             indptr.push(indices.len());
         }
         let excluded = Excluded {
@@ -622,7 +628,7 @@ mod tests {
         let candidates: Vec<usize> = (0..600).step_by(3).collect();
         let mut position = vec![-1i64; 600];
         for (p, &item) in candidates.iter().enumerate() {
-            position[item] = p as i64;
+            position[item] = i64::try_from(p).expect("position fits i64");
         }
         let query_data = unit_vectors(30, 8);
         let queries = Queries::Dense {
@@ -666,7 +672,7 @@ mod tests {
         let view = GraphView::new(&node_level, &links_indptr, &links_indices, 0)
             .expect("an edgeless graph is still a graph");
         let candidates: Vec<usize> = (0..200).collect();
-        let position: Vec<i64> = (0..200).map(|i| i as i64).collect();
+        let position: Vec<i64> = (0..200).map(i64::from).collect();
         let query_data = unit_vectors(20, 8);
         let queries = Queries::Dense {
             data: &query_data,
@@ -691,7 +697,7 @@ mod tests {
         .expect("every item is eligible");
         let exact = brute_force(&items, &queries, &candidates, &|_, _| false, 10);
         // Falling back to a full scan means the answer is not approximate at all.
-        assert_eq!(recall(&found, &exact, 10), 1.0);
+        assert_eq!(recall(&found, &exact, 10).to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]
@@ -712,7 +718,7 @@ mod tests {
         let mut indices: Vec<i64> = Vec::new();
         for row in 0..3 {
             if row == 1 {
-                indices.extend((0..48).map(|p| p as i64));
+                indices.extend((0..48).map(i64::from));
             }
             indptr.push(indices.len());
         }

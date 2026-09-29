@@ -1,5 +1,7 @@
-//! Bayesian personalized ranking for implicit feedback, fitted by stochastic gradient
-//! ascent over sampled triplets (S. Rendle, C. Freudenthaler, Z. Gantner, and L.
+//! Bayesian personalized ranking for implicit feedback.
+//!
+//! Fitted by stochastic gradient ascent over sampled triplets (S. Rendle,
+//! C. Freudenthaler, Z. Gantner, and L.
 //! Schmidt-Thieme, "BPR: Bayesian Personalized Ranking from Implicit Feedback", UAI
 //! 2009).
 //!
@@ -32,6 +34,7 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::sparse::Csr;
+use crate::vectors::{BASELINE_FMA, madd};
 
 /// How the negative item of a triplet is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,9 +114,8 @@ pub fn fit(r: &Csr, positives: Option<&[usize]>, model: &mut Model, hyper: &Hype
 /// One triplet: draw it, and unless it is skipped, take a gradient step.
 ///
 /// Returns `(correct, skipped)`, both 0 or 1.
-#[allow(clippy::too_many_arguments)]
 fn step(
-    r: &Csr,
+    interactions: &Csr,
     positives: Option<&[usize]>,
     user_of: &[usize],
     users: &Shared,
@@ -121,53 +123,104 @@ fn step(
     biases: &Shared,
     hyper: &Hyper,
     epoch: usize,
-    s: usize,
+    sample: usize,
 ) -> (usize, usize) {
-    let n_samples = positives.map_or(r.indices.len(), <[usize]>::len);
-    let (first, second) = draw(hyper.seed, (epoch * n_samples + s) as u64);
+    let n_samples = positives.map_or(interactions.indices.len(), <[usize]>::len);
+    let (first, second) = draw(hyper.seed, (epoch * n_samples + sample) as u64);
     let drawn = (first % n_samples as u64) as usize;
-    let entry = positives.map_or(drawn, |p| p[drawn]);
-    let u = user_of[entry];
-    let i = r.col(entry);
-    let j = negative(r, hyper.negatives, second);
+    let entry = positives.map_or(drawn, |positive_entries| positive_entries[drawn]);
+    let user = user_of[entry];
+    let positive_item = interactions.col(entry);
+    let negative_item = negative(interactions, hyper.negatives, second);
     // The reference skips a negative the user has interacted with rather than redraw it.
-    if r.indices[r.indptr[u]..r.indptr[u + 1]]
-        .binary_search(&(j as i64))
+    if interactions.indices[interactions.indptr[user]..interactions.indptr[user + 1]]
+        .binary_search(&i64::try_from(negative_item).expect("item index fits i64"))
         .is_ok()
     {
         return (0, 1);
     }
 
-    let k = hyper.n_factors;
-    let (u0, i0, j0) = (u * k, i * k, j * k);
+    let n_factors = hyper.n_factors;
+    let (user_offset, positive_offset, negative_offset) = (
+        user * n_factors,
+        positive_item * n_factors,
+        negative_item * n_factors,
+    );
     let mut score = if hyper.use_bias {
-        biases.get(i) - biases.get(j)
+        biases.get(positive_item) - biases.get(negative_item)
     } else {
         0.0
     };
-    for f in 0..k {
-        score += users.get(u0 + f) * (items.get(i0 + f) - items.get(j0 + f));
+    for factor in 0..n_factors {
+        score = madd::<BASELINE_FMA>(
+            users.get(user_offset + factor),
+            items.get(positive_offset + factor) - items.get(negative_offset + factor),
+            score,
+        );
     }
     // sigma(-x_uij): the gradient weight, largest where the pair is ranked worst.
-    let z = 1.0 / (1.0 + score.exp());
+    let gradient = 1.0 / (1.0 + score.exp());
 
-    let (lr, reg) = (hyper.learning_rate, hyper.regularization);
-    for f in 0..k {
-        let (p_f, i_f, j_f) = (users.get(u0 + f), items.get(i0 + f), items.get(j0 + f));
-        users.set(u0 + f, p_f + lr * (z * (i_f - j_f) - reg * p_f));
-        items.set(i0 + f, i_f + lr * (z * p_f - reg * i_f));
-        items.set(j0 + f, j_f + lr * (-z * p_f - reg * j_f));
+    let (learning_rate, regularization) = (hyper.learning_rate, hyper.regularization);
+    for factor in 0..n_factors {
+        let (user_factor, positive_factor, negative_factor) = (
+            users.get(user_offset + factor),
+            items.get(positive_offset + factor),
+            items.get(negative_offset + factor),
+        );
+        users.set(
+            user_offset + factor,
+            madd::<BASELINE_FMA>(
+                learning_rate,
+                madd::<BASELINE_FMA>(
+                    regularization,
+                    -user_factor,
+                    gradient * (positive_factor - negative_factor),
+                ),
+                user_factor,
+            ),
+        );
+        items.set(
+            positive_offset + factor,
+            madd::<BASELINE_FMA>(
+                learning_rate,
+                madd::<BASELINE_FMA>(regularization, -positive_factor, gradient * user_factor),
+                positive_factor,
+            ),
+        );
+        items.set(
+            negative_offset + factor,
+            madd::<BASELINE_FMA>(
+                learning_rate,
+                madd::<BASELINE_FMA>(regularization, -negative_factor, -gradient * user_factor),
+                negative_factor,
+            ),
+        );
     }
     if hyper.use_bias {
-        let (b_i, b_j) = (biases.get(i), biases.get(j));
-        biases.set(i, b_i + lr * (z - reg * b_i));
-        biases.set(j, b_j + lr * (-z - reg * b_j));
+        let (positive_bias, negative_bias) = (biases.get(positive_item), biases.get(negative_item));
+        biases.set(
+            positive_item,
+            madd::<BASELINE_FMA>(
+                learning_rate,
+                madd::<BASELINE_FMA>(regularization, -positive_bias, gradient),
+                positive_bias,
+            ),
+        );
+        biases.set(
+            negative_item,
+            madd::<BASELINE_FMA>(
+                learning_rate,
+                madd::<BASELINE_FMA>(regularization, -negative_bias, -gradient),
+                negative_bias,
+            ),
+        );
     }
-    (usize::from(z < 0.5), 0)
+    (usize::from(gradient < 0.5), 0)
 }
 
 /// The candidate negative item for the uniform draw `second`.
-fn negative(r: &Csr, negatives: Negatives, second: u64) -> usize {
+const fn negative(r: &Csr, negatives: Negatives, second: u64) -> usize {
     match negatives {
         Negatives::Uniform => (second % r.n_cols as u64) as usize,
         Negatives::Popularity => r.col((second % r.indices.len() as u64) as usize),
@@ -184,7 +237,7 @@ fn user_of_each_entry(r: &Csr) -> Vec<usize> {
 }
 
 /// splitmix64's finalizer: a bijection of `u64` with good avalanche.
-fn mix(z: u64) -> u64 {
+const fn mix(z: u64) -> u64 {
     let z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     let z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
@@ -195,7 +248,7 @@ fn mix(z: u64) -> u64 {
 ///
 /// Counter-based rather than sequential, so a sample's triplet is the same whichever
 /// thread happens to run it.
-fn draw(seed: u64, counter: u64) -> (u64, u64) {
+const fn draw(seed: u64, counter: u64) -> (u64, u64) {
     let counter = counter.wrapping_mul(2);
     (
         mix(seed ^ mix(counter)),
@@ -371,13 +424,14 @@ mod tests {
         let z = 1.0 / (1.0 + score.exp());
         for f in 0..2 {
             let (p, q_i, q_j) = (before_user[f], before_item[f], before_item[2 + f]);
-            let expect = |value: f64, gradient: f64| value + lr * (gradient - reg * value);
+            let expect =
+                |value: f64, gradient: f64| lr.mul_add(reg.mul_add(-value, gradient), value);
             assert!((fitted.user_factors[f] - expect(p, z * (q_i - q_j))).abs() < 1e-15);
             assert!((fitted.item_factors[f] - expect(q_i, z * p)).abs() < 1e-15);
             assert!((fitted.item_factors[2 + f] - expect(q_j, -z * p)).abs() < 1e-15);
         }
-        assert!((fitted.item_bias[0] - lr * z).abs() < 1e-15);
-        assert!((fitted.item_bias[1] + lr * z).abs() < 1e-15);
+        assert!(lr.mul_add(-z, fitted.item_bias[0]).abs() < 1e-15);
+        assert!(lr.mul_add(z, fitted.item_bias[1]).abs() < 1e-15);
     }
 
     #[test]
@@ -420,7 +474,8 @@ mod tests {
         let untouched = initial(r.n_rows, hyper.n_factors, 1);
         let moved = |u: usize| {
             (0..hyper.n_factors).any(|f| {
-                fitted.user_factors[u * hyper.n_factors + f] != untouched[u * hyper.n_factors + f]
+                fitted.user_factors[u * hyper.n_factors + f].to_bits()
+                    != untouched[u * hyper.n_factors + f].to_bits()
             })
         };
         assert!(!(0..r.n_rows - 2).any(moved));
@@ -503,7 +558,7 @@ mod tests {
                 ..hyper(4, 50)
             },
         );
-        assert_eq!(popularity.item_bias[3], 0.0);
+        assert_eq!(popularity.item_bias[3].to_bits(), 0.0_f64.to_bits());
         assert!(popularity.item_bias[..3].iter().all(|&b| b != 0.0));
     }
 

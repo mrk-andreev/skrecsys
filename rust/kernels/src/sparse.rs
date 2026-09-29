@@ -8,6 +8,7 @@ use rayon::prelude::*;
 /// array in play, and copying them into `usize` cost a pass over `nnz` on every call.
 /// They are validated against `n_cols` once at the boundary, so [`Csr::col`] is a plain
 /// widening cast.
+#[derive(Clone, Copy)]
 pub struct Csr<'a> {
     pub n_rows: usize,
     pub n_cols: usize,
@@ -19,7 +20,7 @@ pub struct Csr<'a> {
 impl Csr<'_> {
     /// The column of the `p`-th stored value.
     #[inline]
-    pub fn col(&self, p: usize) -> usize {
+    pub const fn col(&self, p: usize) -> usize {
         self.indices[p] as usize
     }
 
@@ -228,6 +229,11 @@ pub mod testing {
     }
 
     impl Owned {
+        /// Build a test matrix from dense rows.
+        ///
+        /// # Panics
+        ///
+        /// Panics if a column index exceeds the `i64` sparse index format.
         pub fn from_dense(dense: &[Vec<f64>]) -> Self {
             let mut indptr = vec![0];
             let mut indices = Vec::new();
@@ -235,7 +241,7 @@ pub mod testing {
             for row in dense {
                 for (j, &v) in row.iter().enumerate() {
                     if v != 0.0 {
-                        indices.push(j as i64);
+                        indices.push(i64::try_from(j).expect("column fits i64"));
                         data.push(v);
                     }
                 }
@@ -251,13 +257,17 @@ pub mod testing {
         }
 
         /// Build from `(column, value)` pairs per row, already ascending by column.
-        pub fn from_rows(rows: Vec<Vec<(usize, f64)>>, n_cols: usize) -> Self {
+        ///
+        /// # Panics
+        ///
+        /// Panics if a column index exceeds the `i64` sparse index format.
+        pub fn from_rows(rows: &[Vec<(usize, f64)>], n_cols: usize) -> Self {
             let mut indptr = vec![0];
             let mut indices = Vec::new();
             let mut data = Vec::new();
-            for row in &rows {
+            for row in rows {
                 for &(j, v) in row {
-                    indices.push(j as i64);
+                    indices.push(i64::try_from(j).expect("column fits i64"));
                     data.push(v);
                 }
                 indptr.push(indices.len());

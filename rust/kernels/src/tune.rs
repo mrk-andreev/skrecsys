@@ -17,9 +17,11 @@
 //! its choice.
 //!
 //! [1] J. Bergstra, R. Bardenet, Y. Bengio and B. Kégl, "Algorithms for
-//! Hyper-Parameter Optimization", NeurIPS 2011.
+//! Hyper-Parameter Optimization", `NeurIPS` 2011.
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
+
+use crate::vectors::{BASELINE_FMA, madd};
 
 /// The range of one hyperparameter.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,7 +70,7 @@ impl Rng {
         Self([next(), next(), next(), next()])
     }
 
-    pub fn next_u64(&mut self) -> u64 {
+    pub const fn next_u64(&mut self) -> u64 {
         let s = &mut self.0;
         let result = s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         let t = s[1] << 17;
@@ -88,7 +90,7 @@ impl Rng {
 
     /// Uniform in `[low, high)`.
     pub fn uniform_in(&mut self, low: f64, high: f64) -> f64 {
-        low + (high - low) * self.uniform()
+        madd::<BASELINE_FMA>(high - low, self.uniform(), low)
     }
 
     /// Standard normal, by Box-Muller.
@@ -114,14 +116,11 @@ impl Rng {
 
 /// A value drawn uniformly from `dist`, in the parameter's own space.
 pub fn sample_random(dist: &Distribution, rng: &mut Rng) -> f64 {
-    match *dist {
-        Distribution::Categorical { n_choices } => {
-            ((rng.uniform() * n_choices as f64) as usize).min(n_choices - 1) as f64
-        }
-        _ => {
-            let (low, high) = internal_bounds(dist);
-            to_external(dist, rng.uniform_in(low, high))
-        }
+    if let Distribution::Categorical { n_choices } = *dist {
+        ((rng.uniform() * n_choices as f64) as usize).min(n_choices - 1) as f64
+    } else {
+        let (low, high) = internal_bounds(dist);
+        to_external(dist, rng.uniform_in(low, high))
     }
 }
 
@@ -130,6 +129,10 @@ pub fn sample_random(dist: &Distribution, rng: &mut Rng) -> f64 {
 /// `observed[t]` is the value trial `t` used and `scores[t]` what it scored, in trial
 /// order; higher is better. With fewer than `n_startup_trials` observations the value is
 /// drawn at random.
+///
+/// # Panics
+///
+/// Panics if `observed` and `scores` have different lengths.
 pub fn suggest(
     dist: &Distribution,
     observed: &[f64],
@@ -155,56 +158,53 @@ pub fn suggest(
     let (below_values, above_values) = (values(&below), values(&above));
     let (below_weights, above_weights) = (weights(&below), weights(&above));
 
-    match *dist {
-        Distribution::Categorical { n_choices } => {
-            let l = categorical(
-                &below_values,
-                &below_weights,
-                n_choices,
-                config.prior_weight,
-            );
-            let g = categorical(
-                &above_values,
-                &above_weights,
-                n_choices,
-                config.prior_weight,
-            );
-            let mut best = (f64::NEG_INFINITY, 0);
-            for _ in 0..config.n_ei_candidates {
-                let c = rng.choice(&l);
-                let gain = l[c].ln() - g[c].ln();
-                if gain > best.0 {
-                    best = (gain, c);
-                }
+    if let Distribution::Categorical { n_choices } = *dist {
+        let l = categorical(
+            &below_values,
+            &below_weights,
+            n_choices,
+            config.prior_weight,
+        );
+        let g = categorical(
+            &above_values,
+            &above_weights,
+            n_choices,
+            config.prior_weight,
+        );
+        let mut best = (f64::NEG_INFINITY, 0);
+        for _ in 0..config.n_ei_candidates {
+            let c = rng.choice(&l);
+            let gain = l[c].ln() - g[c].ln();
+            if gain > best.0 {
+                best = (gain, c);
             }
-            best.1 as f64
         }
-        _ => {
-            let (low, high) = internal_bounds(dist);
-            let l = Parzen::new(
-                &below_values,
-                &below_weights,
-                low,
-                high,
-                config.prior_weight,
-            );
-            let g = Parzen::new(
-                &above_values,
-                &above_weights,
-                low,
-                high,
-                config.prior_weight,
-            );
-            let mut best = (f64::NEG_INFINITY, (low + high) / 2.0);
-            for _ in 0..config.n_ei_candidates {
-                let x = l.sample(&mut rng);
-                let gain = l.log_pdf(x) - g.log_pdf(x);
-                if gain > best.0 {
-                    best = (gain, x);
-                }
+        best.1 as f64
+    } else {
+        let (low, high) = internal_bounds(dist);
+        let l = Parzen::new(
+            &below_values,
+            &below_weights,
+            low,
+            high,
+            config.prior_weight,
+        );
+        let g = Parzen::new(
+            &above_values,
+            &above_weights,
+            low,
+            high,
+            config.prior_weight,
+        );
+        let mut best = (f64::NEG_INFINITY, f64::midpoint(low, high));
+        for _ in 0..config.n_ei_candidates {
+            let x = l.sample(&mut rng);
+            let gain = l.log_pdf(x) - g.log_pdf(x);
+            if gain > best.0 {
+                best = (gain, x);
             }
-            to_external(dist, best.1)
         }
+        to_external(dist, best.1)
     }
 }
 
@@ -251,7 +251,9 @@ fn categorical(values: &[f64], weights: &[f64], n_choices: usize, prior_weight: 
         p[(v as usize).min(n_choices - 1)] += w;
     }
     let total: f64 = p.iter().sum();
-    p.iter_mut().for_each(|x| *x /= total);
+    for x in &mut p {
+        *x /= total;
+    }
     p
 }
 
@@ -273,7 +275,7 @@ impl Parzen {
         let width = high - low;
         let mut mus = values.to_vec();
         let mut component_weights = weights.to_vec();
-        mus.push((low + high) / 2.0);
+        mus.push(f64::midpoint(low, high));
         component_weights.push(prior_weight);
 
         // Bandwidth: the larger gap to a sorted neighbour, clipped to
@@ -300,7 +302,9 @@ impl Parzen {
         sigmas[n - 1] = width;
 
         let total: f64 = component_weights.iter().sum();
-        component_weights.iter_mut().for_each(|w| *w /= total);
+        for w in &mut component_weights {
+            *w /= total;
+        }
         let log_weights = component_weights.iter().map(|w| w.ln()).collect();
         let log_mass = mus
             .iter()
@@ -324,7 +328,7 @@ impl Parzen {
         // Every component is centred inside the bounds with a bandwidth no wider than
         // them, so at least a third of its mass is inside and rejection ends quickly.
         for _ in 0..64 {
-            let x = mu + sigma * rng.normal();
+            let x = madd::<BASELINE_FMA>(sigma, rng.normal(), mu);
             if (self.low..=self.high).contains(&x) {
                 return x;
             }
@@ -336,11 +340,11 @@ impl Parzen {
         let terms: Vec<f64> = (0..self.mus.len())
             .map(|c| {
                 let z = (x - self.mus[c]) / self.sigmas[c];
-                self.log_weights[c]
-                    - 0.5 * z * z
-                    - self.sigmas[c].ln()
-                    - 0.5 * (2.0 * PI).ln()
-                    - self.log_mass[c]
+                madd::<BASELINE_FMA>(
+                    0.5,
+                    -(2.0 * PI).ln(),
+                    madd::<BASELINE_FMA>(0.5 * z, -z, self.log_weights[c]) - self.sigmas[c].ln(),
+                ) - self.log_mass[c]
             })
             .collect();
         log_sum_exp(&terms)
@@ -370,8 +374,8 @@ fn normal_mass(a: f64, b: f64) -> f64 {
 /// (Numerical Recipes' `erfcc`).
 fn erfc(x: f64) -> f64 {
     let z = x.abs();
-    let t = 1.0 / (1.0 + 0.5 * z);
-    let poly = -z * z - 1.265_512_23
+    let t = 1.0 / madd::<BASELINE_FMA>(0.5, z, 1.0);
+    let poly = madd::<BASELINE_FMA>(-z, z, -1.265_512_23)
         + t * (1.000_023_68
             + t * (0.374_091_96
                 + t * (0.096_784_18
@@ -500,7 +504,7 @@ mod tests {
             for &x in &observed {
                 assert!((low..=high).contains(&x), "{x} outside {dist:?}");
                 if !matches!(dist, Distribution::Float { .. }) {
-                    assert_eq!(x, x.round());
+                    assert_eq!(x.to_bits(), x.round().to_bits());
                 }
             }
         }
@@ -528,12 +532,18 @@ mod tests {
             high: 1.0,
             log: false,
         };
-        let observed: Vec<f64> = (0..20).map(|i| i as f64 / 20.0).collect();
+        let observed: Vec<f64> = (0..20).map(|i| f64::from(i) / 20.0).collect();
         let scores: Vec<f64> = observed.iter().map(|x| -(x - 0.3f64).powi(2)).collect();
         let config = TpeConfig::default();
         let a = suggest(&dist, &observed, &scores, &config, 42);
-        assert_eq!(a, suggest(&dist, &observed, &scores, &config, 42));
-        assert_ne!(a, suggest(&dist, &observed, &scores, &config, 43));
+        assert_eq!(
+            a.to_bits(),
+            suggest(&dist, &observed, &scores, &config, 42).to_bits()
+        );
+        assert_ne!(
+            a.to_bits(),
+            suggest(&dist, &observed, &scores, &config, 43).to_bits()
+        );
     }
 
     #[test]
@@ -556,8 +566,19 @@ mod tests {
     #[test]
     fn tpe_concentrates_on_the_best_choice() {
         let dist = Distribution::Categorical { n_choices: 10 };
-        let objective = |x: f64| if x == 7.0 { 1.0 } else { x / 100.0 };
-        let hits = |observed: &[f64]| observed[30..].iter().filter(|&&x| x == 7.0).count();
+        let objective = |x: f64| {
+            if x.to_bits() == 7.0_f64.to_bits() {
+                1.0
+            } else {
+                x / 100.0
+            }
+        };
+        let hits = |observed: &[f64]| {
+            observed[30..]
+                .iter()
+                .filter(|&&x| x.to_bits() == 7.0_f64.to_bits())
+                .count()
+        };
         let (mut tpe, mut random) = (0, 0);
         for seed in 0..10 {
             tpe += hits(&search(&dist, objective, 60, &TpeConfig::default(), seed).0);
@@ -584,6 +605,6 @@ mod tests {
         let w = recency_weights(30);
         assert_eq!(w.len(), 30);
         assert!(w[..5].windows(2).all(|p| p[0] < p[1]));
-        assert!(w[5..].iter().all(|&x| x == 1.0));
+        assert!(w[5..].iter().all(|&x| x.to_bits() == 1.0_f64.to_bits()));
     }
 }

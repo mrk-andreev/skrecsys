@@ -38,7 +38,7 @@ const DIM: usize = 64;
 fn dense_vectors(n_items: usize, dim: usize, seed: u64) -> Vec<f64> {
     let mut rng = Rng::new(seed);
     (0..n_items * dim)
-        .map(|_| rng.next_f64() * 2.0 - 1.0)
+        .map(|_| rng.next_f64().mul_add(2.0, -1.0))
         .collect()
 }
 
@@ -115,7 +115,7 @@ fn scan_dense(c: &mut Criterion) {
                             4,
                         )
                         .map_err(|e| e.row)
-                    })
+                    });
                 },
             );
         }
@@ -133,7 +133,7 @@ fn scan_dense(c: &mut Criterion) {
                         }
                     }
                     total
-                })
+                });
             },
         );
     }
@@ -191,7 +191,7 @@ fn shortlist_width(c: &mut Criterion) {
                         oversample,
                     )
                     .map_err(|e| e.row)
-                })
+                });
             },
         );
     }
@@ -241,7 +241,7 @@ fn scan_sparse(c: &mut Criterion) {
                     4,
                 )
                 .map_err(|e| e.row)
-            })
+            });
         });
     }
     group.finish();

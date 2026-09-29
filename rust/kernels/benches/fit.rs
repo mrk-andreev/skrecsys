@@ -95,10 +95,10 @@ impl Design {
         for _ in 0..n_rows {
             let user = rng.below(n_users);
             let item = n_users + rng.below(n_items);
-            indices.push(user as i64);
-            indices.push(item as i64);
+            indices.push(i64::try_from(user).expect("user fits i64"));
+            indices.push(i64::try_from(item).expect("item fits i64"));
             indptr.push(indices.len());
-            y.push(1.0 + rng.next_f64() * 4.0);
+            y.push(rng.next_f64().mul_add(4.0, 1.0));
         }
         Self {
             data: vec![1.0; indices.len()],
