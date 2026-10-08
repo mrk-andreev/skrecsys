@@ -3,7 +3,12 @@
 
 [![PyPI](https://img.shields.io/pypi/v/skrecsys)](https://pypi.org/project/skrecsys/)
 [![Python](https://img.shields.io/pypi/pyversions/skrecsys)](https://pypi.org/project/skrecsys/)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://pypi.org/project/skrecsys/#files)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[![CI](https://github.com/mrk-andreev/skrecsys/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/mrk-andreev/skrecsys/actions/workflows/tests.yml)
+[![Maintainability](https://qlty.sh/gh/mrk-andreev/projects/skrecsys/maintainability.svg)](https://qlty.sh/gh/mrk-andreev/projects/skrecsys)
+[![Rust accelerated](https://img.shields.io/badge/accelerated_by-Rust-CE422B?logo=rust&logoColor=white)](https://github.com/mrk-andreev/skrecsys/tree/main/rust)
 
 Recommender systems in the scikit-learn style, built on NumPy, SciPy and scikit-learn.
 
