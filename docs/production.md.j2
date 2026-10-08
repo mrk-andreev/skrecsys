@@ -241,7 +241,9 @@ users get the fallback until the next update adds them.
 A model object ranks and scores. These parts of a deployment belong to the service around it:
 
 - **Unknown users.** `recommend` raises `ValueError` for a user the model has not seen; the
-  service serves the popular fallback above.
+  service serves the popular fallback above. A [`Backfill`](#backfill) puts that fallback in
+  the model instead: it tops every list up from the next recommender, so a model ending with
+  an `ItemListRecommender` of the catalog returns a full list to anyone.
 - **Anonymous sessions.** The classical estimators score users by identifier, so a session
   becomes rankable once `partial_fit` has taken in its events.
 - **Retention.** `partial_fit` only adds interactions; time decay, windows and deletion

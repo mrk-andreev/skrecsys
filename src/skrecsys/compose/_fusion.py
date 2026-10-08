@@ -37,7 +37,12 @@ from skrecsys.base import (
     is_recommender,
     serves_unknown_users,
 )
-from skrecsys.compose._candidates import concat_ids, retrieve, top_k_per_group
+from skrecsys.compose._candidates import (
+    concat_ids,
+    retrieve,
+    served_queries,
+    top_k_per_group,
+)
 from skrecsys.compose._named import ComponentList, NamedComponentsEstimator
 from skrecsys.compose._rankers import (
     Candidates,
@@ -236,9 +241,7 @@ class ReciprocalRankFusion(RecommenderMixin, NamedComponentsEstimator[Recommende
         self, recommender: FittedRecommender, queries: NDArray[np.generic]
     ) -> NDArray[np.intp]:
         """Positions of the queries ``recommender`` can answer."""
-        if serves_unknown_users(recommender):
-            return np.arange(len(queries))
-        return np.flatnonzero(lookup_ids(queries, recommender.user_ids_, name="user")[1])
+        return served_queries(recommender, queries)
 
     def _fuse(
         self,

@@ -15,6 +15,7 @@ the context of each query (see :func:`check_queries`).
 import datetime
 import math
 import numbers
+import zlib
 from typing import Literal, TypeVar, overload
 
 import numpy as np
@@ -23,6 +24,7 @@ from sklearn.utils.validation import check_array, check_consistent_length
 
 from skrecsys import _core
 from skrecsys._typing import DataFrameLike, SortableId
+from skrecsys.exceptions import InsufficientDataError
 
 __all__ = [
     "check_as_of",
@@ -142,16 +144,21 @@ def check_rows(X: ArrayLike, *, ensure_min_samples: int = 1) -> NDArray[np.gener
 
     Raises
     ------
+    InsufficientDataError
+        If ``X`` has fewer than ``ensure_min_samples`` rows: there is nothing wrong with
+        it but that there is too little of it. A :class:`ValueError`.
     ValueError
         If ``X`` is a float array whose identifiers are integers too large for a float
         to have kept exactly.
     """
     arr = check_array(
-        _typed_rows(X, _N_COLUMNS),
-        dtype=None,
-        ensure_all_finite=False,
-        ensure_min_samples=ensure_min_samples,
+        _typed_rows(X, _N_COLUMNS), dtype=None, ensure_all_finite=False, ensure_min_samples=0
     )
+    if len(arr) < ensure_min_samples:
+        raise InsufficientDataError(
+            f"Found {len(arr)} row(s) of shape {arr.shape}, while a minimum of "
+            f"{ensure_min_samples} is required."
+        )
     return _integer_ids_restored(arr, _N_COLUMNS)
 
 
@@ -570,3 +577,29 @@ def encode_ids(
         sample = list(np.asarray(ids)[~known][:5])
         raise ValueError(f"Unknown {name} identifiers: {sample}.")
     return positions
+
+
+_SPLITMIX_GAMMA = np.uint64(0x9E3779B97F4A7C15)
+_SPLITMIX_M1 = np.uint64(0xBF58476D1CE4E5B9)
+_SPLITMIX_M2 = np.uint64(0x94D049BB133111EB)
+
+
+def stable_unit_hash(ids: NDArray[np.generic], salt: int = 0) -> NDArray[np.float64]:
+    """A number in [0, 1) per identifier, the same in every process and on every run.
+
+    Integers go through SplitMix64, vectorized; anything else through CRC-32 of its
+    ``str``. Python's own ``hash`` is salted per process for strings, so it would sample
+    a different set of users on every restart. ``salt``, a non-negative integer, gives
+    every identifier another number.
+    """
+    if ids.dtype.kind in "iub":
+        with np.errstate(over="ignore"):
+            x = ids.astype(np.int64).view(np.uint64) + _SPLITMIX_GAMMA
+            x = x + np.uint64(salt) * _SPLITMIX_M1
+            x = (x ^ (x >> np.uint64(30))) * _SPLITMIX_M1
+            x = (x ^ (x >> np.uint64(27))) * _SPLITMIX_M2
+            x ^= x >> np.uint64(31)
+        return (x >> np.uint64(11)).astype(np.float64) * 2.0**-53
+    start = salt & 0xFFFFFFFF
+    codes = (zlib.crc32(str(value).encode(), start) for value in ids.tolist())
+    return np.fromiter(codes, dtype=np.float64, count=len(ids)) * 2.0**-32

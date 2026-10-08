@@ -5,6 +5,7 @@ import pytest
 import scipy.sparse as sp
 
 from skrecsys import _core
+from skrecsys.exceptions import InsufficientDataError
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
 from skrecsys.utils.validation import (
     check_as_of,
@@ -19,6 +20,7 @@ from skrecsys.utils.validation import (
     factorize,
     interaction_context,
     lookup_ids,
+    stable_unit_hash,
     stack_columns,
 )
 
@@ -505,3 +507,21 @@ def test_stack_columns_keeps_datetimes_exact():
     assert stacked[0, 1] == times[0]
     assert np.isnat(stacked[1, 1])
     assert check_times(stacked[:, 1], allow_missing=True)[0] == times[0]
+
+
+def test_no_interactions_are_too_little_data_rather_than_a_wrong_argument():
+    empty = np.empty((0, 2), dtype=str)
+    with pytest.raises(InsufficientDataError, match="Found 0 row"):
+        check_interactions(empty)
+    assert check_rows(empty, ensure_min_samples=0).shape == (0, 2)
+    assert issubclass(InsufficientDataError, ValueError)
+
+
+def test_stable_unit_hash_takes_a_salt():
+    for ids in (np.arange(50), np.array([f"u{k}" for k in range(50)], dtype=object)):
+        plain = stable_unit_hash(ids)
+        np.testing.assert_array_equal(stable_unit_hash(ids, 0), plain)
+        salted = stable_unit_hash(ids, 3)
+        assert np.all((salted >= 0) & (salted < 1))
+        assert np.mean(salted != plain) > 0.9
+        np.testing.assert_array_equal(stable_unit_hash(ids, 3), salted)

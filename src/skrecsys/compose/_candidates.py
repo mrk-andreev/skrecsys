@@ -100,6 +100,98 @@ def retrieve(
     return pairs, scores, groups, kept
 
 
+def served_queries(
+    recommender: FittedRecommender, queries: NDArray[np.generic]
+) -> NDArray[np.intp]:
+    """Positions of the queries ``recommender`` can answer.
+
+    All of them when it serves users it has never seen (see
+    :func:`skrecsys.base.serves_unknown_users`), otherwise those of the users it was
+    fitted on.
+    """
+    if serves_unknown_users(recommender):
+        return np.arange(len(queries))
+    if not len(recommender.user_ids_):
+        return np.empty(0, dtype=np.intp)
+    return np.flatnonzero(lookup_ids(queries, recommender.user_ids_, name="user")[1])
+
+
+def retrieve_lists(
+    recommender: FittedRecommender,
+    queries: NDArray[np.generic],
+    n_items: int | NDArray[np.int64],
+    *,
+    candidates: NDArray[np.generic] | None = None,
+    exclude_seen: bool = True,
+    exclude_interactions: ArrayLike | None = None,
+    source: str = "generator",
+) -> tuple[NDArray[np.intp], NDArray[np.generic]]:
+    """The best items ``recommender`` has for each query, as many as ``n_items`` or fewer.
+
+    For the composites that put lists together rather than rank candidates. ``n_items``
+    is one length for all queries or one per query; a query asked for none, one the
+    recommender cannot answer (see :func:`served_queries`) and one it has nothing for
+    get nothing, which is not an error. Of ``candidates``, which must be validated
+    identifiers, the recommender is given those it knows: the parts of such a composite
+    need not know the same items.
+
+    Returns
+    -------
+    rows : ndarray of shape (n_found,)
+        The position in ``queries`` of the query each item is for, ascending.
+    items : ndarray of shape (n_found,)
+        The items, best first within a query.
+    """
+    limits = np.broadcast_to(np.asarray(n_items, dtype=np.int64), queries.shape)
+    asked = np.flatnonzero(limits > 0)
+    served = asked[served_queries(recommender, queries[asked])]
+    if candidates is not None:
+        candidates = candidates[lookup_ids(candidates, recommender.item_ids_, name="item")[1]]
+        if not len(candidates):
+            served = served[:0]
+    if not len(served):
+        return np.empty(0, dtype=np.intp), np.empty(0, dtype=recommender.item_ids_.dtype)
+    pairs, _, groups, kept = retrieve(
+        recommender,
+        queries[served],
+        n_retrieved=int(limits[served].max()),
+        min_retrieved=0,
+        candidates=candidates,
+        exclude_seen=exclude_seen,
+        exclude_interactions=exclude_interactions,
+        source=source,
+    )
+    rows = np.repeat(served[kept], groups)
+    keep = ranks_in_rows(rows, len(queries)) < limits[rows]
+    return rows[keep], pairs[keep, 1]
+
+
+def ranks_in_rows(rows: NDArray[np.intp], n_rows: int) -> NDArray[np.intp]:
+    """Where each entry stands among the entries of its row, from 0; ``rows`` ascending."""
+    counts = np.bincount(rows, minlength=n_rows)
+    return np.arange(len(rows)) - np.repeat(np.cumsum(counts) - counts, counts)
+
+
+def not_among(
+    rows: NDArray[np.intp],
+    items: NDArray[np.generic],
+    taken_rows: NDArray[np.intp],
+    taken_items: NDArray[np.generic],
+) -> NDArray[np.bool_]:
+    """Which ``(row, item)`` entries are not among the taken ones.
+
+    What keeps a list put together from several sources free of repeats. Entries are
+    matched as integer keys over the items both sides name, as :func:`retrieve_union`
+    matches them.
+    """
+    if not len(rows) or not len(taken_rows):
+        return np.ones(len(rows), dtype=bool)
+    item_ids, codes = factorize(concat_ids([items, taken_items]))
+    keys = rows.astype(np.int64) * len(item_ids) + codes[: len(rows)]
+    taken = taken_rows.astype(np.int64) * len(item_ids) + codes[len(rows) :]
+    return ~np.isin(keys, taken)
+
+
 def concat_ids(parts: list[NDArray[np.generic]]) -> NDArray[np.generic]:
     """Concatenate identifier arrays, as an object array when their dtypes differ.
 
@@ -157,10 +249,7 @@ def retrieve_union(
     n_queries = len(queries)
     rows, ranks, sources, items, scores = [], [], [], [], []
     for source, generator in enumerate(generators):
-        if serves_unknown_users(generator):
-            served = np.arange(n_queries)
-        else:
-            served = np.flatnonzero(lookup_ids(queries, generator.user_ids_, name="user")[1])
+        served = served_queries(generator, queries)
         if not len(served):
             continue
         pairs, found, groups, kept = retrieve(

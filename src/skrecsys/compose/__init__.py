@@ -5,7 +5,10 @@ part in :class:`~sklearn.model_selection.GridSearchCV` through nested parameters
 ``on_true__n_factors`` or ``ranker__estimator__C``. The parts play five roles:
 
 - **recommenders** (:mod:`skrecsys.recommendation`, and :class:`Switch`, :class:`Cascade`,
-  :class:`ReciprocalRankFusion`);
+  :class:`ReciprocalRankFusion`, and those that put lists together: :class:`Backfill`,
+  which tops one recommender's list up from the next, :class:`ReservedSlots`, which gives
+  a few positions to another recommender's items, and :class:`ItemListRecommender`, a
+  fixed list for either to end with);
 - **conditions** routing queries: :class:`KnownUser`, :class:`MinInteractions`,
   :class:`QueryIn`, combined with ``~``, ``&`` and ``|``;
 - **candidates**, passed between stages as plain numpy arrays: ``pairs`` of shape
@@ -15,7 +18,8 @@ part in :class:`~sklearn.model_selection.GridSearchCV` through nested parameters
   columns, travels beside them;
 - **features** of candidate pairs: :class:`JoinStaticFeatures`,
   :class:`JoinDynamicFeatures`, :class:`GeneratorScores`, :class:`InteractionCounts`,
-  :class:`RecommenderScores`, :class:`SegmentPopularity`, :class:`ConcatFeatures`;
+  :class:`RecommenderScores`, :class:`SegmentPopularity`, :class:`ProfileAffinity`,
+  :class:`ConcatFeatures`;
 - **rankers** ordering candidates: :class:`PointwiseRanker`, :class:`GroupRanker`,
   :class:`BlendRanker` (which blends other rankers), :class:`AugmentedRanker` (which
   gives one ranker features the others do not see), :class:`ReciprocalRankRanker` (which
@@ -61,10 +65,12 @@ from skrecsys.compose._features import (
     InteractionCounts,
     JoinDynamicFeatures,
     JoinStaticFeatures,
+    ProfileAffinity,
     RecommenderScores,
     SegmentPopularity,
 )
 from skrecsys.compose._fusion import ReciprocalRankFusion, ReciprocalRankRanker
+from skrecsys.compose._lists import Backfill, ItemListRecommender, ReservedSlots
 from skrecsys.compose._rankers import AugmentedRanker, BlendRanker, GroupRanker, PointwiseRanker
 from skrecsys.compose._switch import Switch
 
@@ -72,22 +78,26 @@ __all__ = [
     "AllOf",
     "AnyOf",
     "AugmentedRanker",
+    "Backfill",
     "BlendRanker",
     "Cascade",
     "ConcatFeatures",
     "GeneratorScores",
     "GroupRanker",
     "InteractionCounts",
+    "ItemListRecommender",
     "JoinDynamicFeatures",
     "JoinStaticFeatures",
     "KnownUser",
     "MinInteractions",
     "Not",
     "PointwiseRanker",
+    "ProfileAffinity",
     "QueryIn",
     "ReciprocalRankFusion",
     "ReciprocalRankRanker",
     "RecommenderScores",
+    "ReservedSlots",
     "SegmentPopularity",
     "Switch",
 ]

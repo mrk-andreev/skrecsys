@@ -22,8 +22,9 @@ from skrecsys.compose import (
     _cascade,
 )
 from skrecsys.compose._candidates import retrieve_union
+from skrecsys.exceptions import InsufficientDataError
 from skrecsys.metrics import evaluate_recommender, make_recommender_scorer, ndcg_at_k
-from skrecsys.model_selection import ColdStartSplit, WarmStartKFold
+from skrecsys.model_selection import ColdStartSplit, LatestInteractionsSplit, WarmStartKFold
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
 from skrecsys.utils.validation import check_interactions
 from tests.compose._data import N_USERS, TRENDING, trending_interactions, trending_table
@@ -255,16 +256,54 @@ def test_fit_validates(params, error, match):
 
 def test_fit_explains_when_nothing_is_held_out():
     X = np.array([[0, 1], [1, 2], [2, 3]])
-    with pytest.raises(ValueError, match="to hold out"):
+    with pytest.raises(InsufficientDataError, match="to hold out"):
         _learning_cascade(split=0.5).fit(X)
 
 
 def test_fit_explains_when_no_candidate_is_relevant():
     X = trending_interactions()
-    with pytest.raises(ValueError, match="increase n_retrieved"):
+    with pytest.raises(InsufficientDataError, match="increase n_retrieved"):
         Cascade(MostPopularRecommender(), GeneratorScores(), _RecordingRanker(), n_retrieved=1).fit(
             X[~np.isin(X[:, 1], TRENDING) | (np.arange(len(X)) % 5 == 4)]
         )
+
+
+def test_too_little_data_is_told_apart_from_a_wrong_argument():
+    """Every shortage of data raises the one error a caller may fall back on."""
+    X = trending_interactions()
+    knn = Cascade(ItemKNNRecommender(), GeneratorScores(), _RecordingRanker(), split=0.5)
+    # every held-out row belongs to a user the generator was not fitted on
+    with pytest.raises(InsufficientDataError, match="a user with training rows"):
+        clone(knn).set_params(split=ColdStartSplit(cold_users=0.5, test_size=0.0)).fit(X)
+    # two items, each held out for half the users: the only candidate a user has left
+    # is the one item they have not kept, which is the held-out one
+    pairs = np.array([[u, i] for u in range(6) for i in ((0, 1) if u % 2 else (1, 0))])
+    with pytest.raises(InsufficientDataError, match="Every generated candidate"):
+        clone(knn).fit(pairs)
+    with pytest.raises(InsufficientDataError, match="0 row"):
+        clone(knn).fit(np.empty((0, 2), dtype=np.int64))
+    # still a ValueError, as it always was, while a wrong argument is not this one
+    assert issubclass(InsufficientDataError, ValueError)
+    with pytest.raises(ValueError, match="n_retrieved") as wrong:
+        clone(knn).set_params(n_retrieved=0).fit(X)
+    assert not isinstance(wrong.value, InsufficientDataError)
+
+
+def test_latest_interactions_split_caps_the_users_the_ranker_learns_from():
+    """The ranker's groups are the held-out users, so capping those bounds its fit."""
+    X = trending_interactions()
+    every = _learning_cascade(split=LatestInteractionsSplit(0.2)).fit(X)
+    same = _learning_cascade(split=0.2).fit(X)
+    assert every.n_ranker_groups_ == same.n_ranker_groups_
+    users = np.arange(N_USERS)
+    np.testing.assert_array_equal(
+        every.recommend(users, n_recommendations=5)[0],
+        same.recommend(users, n_recommendations=5)[0],
+    )
+    capped = _learning_cascade(split=LatestInteractionsSplit(0.2, max_users=10)).fit(X)
+    assert capped.n_ranker_groups_ <= 10 < every.n_ranker_groups_
+    # everyone else keeps all of their rows for the generator
+    assert capped.generator_.interactions_.nnz == every.generator_.interactions_.nnz
 
 
 def test_integer_users_and_string_items_keep_their_types():

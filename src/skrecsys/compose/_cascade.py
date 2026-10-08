@@ -59,6 +59,8 @@ from skrecsys.compose._rankers import (
     predict_ranker,
     trace_ranker,
 )
+from skrecsys.exceptions import InsufficientDataError
+from skrecsys.model_selection._split import positions_in_user
 from skrecsys.utils._param_validation import check_bool, check_component, check_int, check_real
 from skrecsys.utils.validation import (
     check_as_of,
@@ -406,13 +408,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
             train, test = next(iter(split.split(X, y)))
             return np.asarray(train, dtype=np.intp), np.asarray(test, dtype=np.intp)
         _, codes = factorize(users)
-        # Each user's rows by time when there is one -- ties in row order -- else by row.
-        order = np.argsort(codes, kind="stable") if times is None else np.lexsort((times, codes))
-        counts = np.bincount(codes)
-        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
-        # A row's position among its user's rows, in time or row order.
-        position = np.empty(len(codes), dtype=np.intp)
-        position[order] = np.arange(len(codes)) - np.repeat(starts, counts)
+        position, counts = positions_in_user(codes, times)
         n_held = np.floor(split * counts).astype(np.intp)
         held = position >= (counts - n_held)[codes]
         return np.flatnonzero(~held), np.flatnonzero(held)
@@ -435,6 +431,13 @@ class Cascade(RecommenderMixin, BaseEstimator):
         Returns
         -------
         self : object
+
+        Raises
+        ------
+        InsufficientDataError
+            If the ranker has nothing to learn from: ``split`` leaves one of its parts
+            empty, no held-out interaction is among the candidates of a user the
+            generator serves, or every candidate is relevant. A :class:`ValueError`.
         """
         self._check_params()
         users, items, weights, times = self._check_interactions(X, y)
@@ -448,7 +451,7 @@ class Cascade(RecommenderMixin, BaseEstimator):
         y_arr = None if y is None else weights
         train, held = self._split_rows(X_arr, y_arr, users, times)
         if not len(train) or not len(held):
-            raise ValueError(
+            raise InsufficientDataError(
                 f"split left {len(train)} interactions to fit on and {len(held)} to hold "
                 "out; the ranker needs both."
             )
@@ -463,7 +466,9 @@ class Cascade(RecommenderMixin, BaseEstimator):
         if not self._serves_unknown_users:
             queries = np.intersect1d(queries, users[train])
         if not len(queries):
-            raise ValueError("No held-out interaction belongs to a user with training rows.")
+            raise InsufficientDataError(
+                "No held-out interaction belongs to a user with training rows."
+            )
         pairs, scores, groups, kept = self._retrieve(generators, queries, min_retrieved=0)
         labels = _is_held_out(pairs, users[relevant], items[relevant], queries)
         pairs, pair_context = _as_requested(
@@ -478,12 +483,12 @@ class Cascade(RecommenderMixin, BaseEstimator):
             pairs, scores, labels, groups, pair_context
         )
         if not len(groups):
-            raise ValueError(
+            raise InsufficientDataError(
                 "No held-out interaction was among the generated candidates, so the ranker "
                 "has nothing to learn from; increase n_retrieved."
             )
         if labels.min() == labels.max():
-            raise ValueError(
+            raise InsufficientDataError(
                 "Every generated candidate of the held-out users is relevant, so the ranker "
                 "has nothing to tell apart; the catalog is too small for n_retrieved, or "
                 "split holds out too much."

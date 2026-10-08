@@ -158,3 +158,30 @@
   `JoinDynamicFeatures` callback keyed by time now gets such times as `datetime64` scalars,
   NaT where missing, instead of `datetime` objects and `None`.
 - Notebook 08, `08_query_context.py`: query context on MovieLens 100K.
+
+### 0.8.0
+
+- Lists put together from several recommenders, in `skrecsys.compose`. `Backfill` fills each
+  list from its first recommender and tops it up from the next, so a list is as personal as
+  the data allows and full for every user; `skip_insufficient=True` leaves out a recommender
+  that cannot be fitted yet. `ReservedSlots` gives the last `n_slots` of the first `head`
+  positions to another recommender's items, for exploration. `ItemListRecommender` recommends
+  from a fixed list, which may hold items no interaction names, serves unknown users and fits
+  on no interactions; `rotate=True` starts each user at a place of their own, as a function
+  of the user and `random_state`, with no state changed by `recommend`.
+- `MostPopularRecommender(exposure=..., smoothing=...)` scores an item by its popularity per
+  exposure, `popularity / (exposure + smoothing)`, from a table of `[item, exposure]`. The new
+  `item_counts_` holds the raw counts, `partial_fit` stays exact, and it reads `exposure` again
+  on every call.
+- `skrecsys.model_selection.LatestInteractionsSplit(test_size, max_users=...)` holds out the
+  latest rows of every user, or of the most recently active `max_users` only, which bounds the
+  groups a `Cascade` trains its ranker on.
+- `ProfileAffinity` compares each candidate's attributes with those of the items its user
+  interacted with: their share of the user's history, and the cosine. It and
+  `InteractionCounts` take `interactions=`, a second kind of event to read instead of `X`,
+  such as dislikes.
+- `skrecsys.exceptions.InsufficientDataError`, a `ValueError`, is what `Cascade.fit` raises
+  when its ranker has nothing to learn from, and what any recommender raises for interactions
+  without rows, in place of scikit-learn's message about 0 samples. A wrong argument never
+  raises it.
+- `skrecsys.utils.validation.stable_unit_hash` takes a `salt`.
