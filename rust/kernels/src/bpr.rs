@@ -500,7 +500,7 @@ mod tests {
         let dense = pseudo_random_dense(40, 20);
         let fitted = fit_dense(&dense, &hyper(8, 0));
         assert_eq!(fitted.user_factors, initial(40, 8, 1));
-        assert!(fitted.history.is_empty());
+        assert_eq!(fitted.history, [] as [f64; 0]);
     }
 
     #[test]

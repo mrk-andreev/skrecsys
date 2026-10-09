@@ -487,7 +487,7 @@ mod csr_tests {
     fn handles_an_empty_matrix() {
         let m = coo_to_csr(&[], &[], &[], 3, 2);
         assert_eq!(m.indptr, vec![0, 0, 0, 0]);
-        assert!(m.indices.is_empty());
+        assert_eq!(m.indices, [] as [usize; 0]);
     }
 
     #[test]

@@ -398,7 +398,7 @@ pub mod tests {
         };
         let graph = build(&items, &params(8));
         assert_eq!(graph.entry_point, -1);
-        assert!(graph.links_indices.is_empty());
+        assert_eq!(graph.links_indices, [] as [i32; 0]);
     }
 
     #[test]
@@ -412,7 +412,7 @@ pub mod tests {
             &params(8),
         );
         assert_eq!(graph.entry_point, 0);
-        assert!(graph.links_indices.is_empty());
+        assert_eq!(graph.links_indices, [] as [i32; 0]);
     }
 
     #[test]
@@ -597,7 +597,7 @@ pub mod tests {
             vectors: &vectors,
             dim: 2,
         };
-        assert!(select_neighbours(&[], 4, &items).is_empty());
+        assert_eq!(select_neighbours(&[], 4, &items), [] as [u32; 0]);
     }
 
     #[test]

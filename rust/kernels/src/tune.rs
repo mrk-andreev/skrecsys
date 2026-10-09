@@ -375,14 +375,39 @@ fn normal_mass(a: f64, b: f64) -> f64 {
 fn erfc(x: f64) -> f64 {
     let z = x.abs();
     let t = 1.0 / madd::<BASELINE_FMA>(0.5, z, 1.0);
-    let poly = madd::<BASELINE_FMA>(-z, z, -1.265_512_23)
-        + t * (1.000_023_68
-            + t * (0.374_091_96
-                + t * (0.096_784_18
-                    + t * (-0.186_288_06
-                        + t * (0.278_868_07
-                            + t * (-1.135_203_98
-                                + t * (1.488_515_87 + t * (-0.822_152_23 + t * 0.170_872_77))))))));
+    let poly = madd::<BASELINE_FMA>(
+        t,
+        madd::<BASELINE_FMA>(
+            t,
+            madd::<BASELINE_FMA>(
+                t,
+                madd::<BASELINE_FMA>(
+                    t,
+                    madd::<BASELINE_FMA>(
+                        t,
+                        madd::<BASELINE_FMA>(
+                            t,
+                            madd::<BASELINE_FMA>(
+                                t,
+                                madd::<BASELINE_FMA>(
+                                    t,
+                                    madd::<BASELINE_FMA>(t, 0.170_872_77, -0.822_152_23),
+                                    1.488_515_87,
+                                ),
+                                -1.135_203_98,
+                            ),
+                            0.278_868_07,
+                        ),
+                        -0.186_288_06,
+                    ),
+                    0.096_784_18,
+                ),
+                0.374_091_96,
+            ),
+            1.000_023_68,
+        ),
+        madd::<BASELINE_FMA>(-z, z, -1.265_512_23),
+    );
     let r = t * poly.exp();
     if x >= 0.0 { r } else { 2.0 - r }
 }

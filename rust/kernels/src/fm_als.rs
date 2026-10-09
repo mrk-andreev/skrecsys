@@ -112,7 +112,7 @@ fn predict_row(x: &Csr, model: &Model, n_factors: usize, c: usize) -> f64 {
             sum += d;
             sum_sqr = madd::<BASELINE_FMA>(d, d, sum_sqr);
         }
-        pred = madd::<BASELINE_FMA>(0.5, sum * sum - sum_sqr, pred);
+        pred = madd::<BASELINE_FMA>(0.5, madd::<BASELINE_FMA>(sum, sum, -sum_sqr), pred);
     }
     pred
 }
@@ -148,7 +148,7 @@ fn update_w(csc: &Csc, e: &mut [f64], model: &mut Model, j: usize) {
     };
     let delta = new - old;
     for (c, x) in csc.column(j) {
-        e[c] += delta * x;
+        e[c] = madd::<BASELINE_FMA>(delta, x, e[c]);
     }
     model.w[j] = new;
 }
@@ -267,16 +267,16 @@ mod tests {
                     - y[c]
             })
             .collect();
-        assert!((resid.iter().sum::<f64>() + reg * w0).abs() < 1e-9);
+        assert!(madd::<BASELINE_FMA>(reg, w0, resid.iter().sum::<f64>()).abs() < 1e-9);
         for (j, &w_j) in w.iter().enumerate() {
-            let grad: f64 = (0..y.len())
+            let column_sum: f64 = (0..y.len())
                 .filter(|&c| {
                     indices[indptr[c]..indptr[c + 1]]
                         .contains(&i64::try_from(j).expect("item index fits i64"))
                 })
                 .map(|c| resid[c])
-                .sum::<f64>()
-                + reg * w_j;
+                .sum();
+            let grad = madd::<BASELINE_FMA>(reg, w_j, column_sum);
             assert!(grad.abs() < 1e-9, "feature {j}: gradient {grad}");
         }
     }
