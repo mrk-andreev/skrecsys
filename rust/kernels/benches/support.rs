@@ -16,18 +16,19 @@ use criterion::Criterion;
 
 use skrecsys_kernels::sparse::Csr;
 
-/// xorshift64, as used by the kernels' own test fixtures: reproducible, fast enough
-/// that generating a fixture is not what a bench ends up measuring, and free of a
-/// dependency whose version could change the inputs underneath us.
+/// xorshift64 for reproducible benchmark fixtures.
+///
+/// It is fast enough for fixture generation and avoids a dependency whose version
+/// could change the benchmark inputs.
 pub struct Rng(u64);
 
 impl Rng {
-    pub fn new(seed: u64) -> Self {
+    pub const fn new(seed: u64) -> Self {
         // A zero state is a fixed point of xorshift, so it is never a valid seed.
         Self(seed | 1)
     }
 
-    pub fn next_u64(&mut self) -> u64 {
+    pub const fn next_u64(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -40,7 +41,7 @@ impl Rng {
     }
 
     /// A value in `[0, bound)`.
-    pub fn below(&mut self, bound: usize) -> usize {
+    pub const fn below(&mut self, bound: usize) -> usize {
         (self.next_u64() % bound as u64) as usize
     }
 }
@@ -60,6 +61,10 @@ impl Matrix {
     ///
     /// Distinct ascending columns are what the kernels validate at the Python boundary,
     /// so a fixture that lacked them would benchmark input no caller can pass.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n_cols` exceeds the `i64` sparse index format.
     pub fn random(n_rows: usize, n_cols: usize, per_row: usize, seed: u64) -> Self {
         let per_row = per_row.min(n_cols);
         let mut rng = Rng::new(seed);
@@ -70,11 +75,13 @@ impl Matrix {
         indptr.push(0);
         for _ in 0..n_rows {
             row.clear();
-            row.extend((0..per_row).map(|_| rng.below(n_cols) as i64));
+            row.extend(
+                (0..per_row).map(|_| i64::try_from(rng.below(n_cols)).expect("column fits i64")),
+            );
             row.sort_unstable();
             row.dedup();
             indices.extend_from_slice(&row);
-            data.extend((0..row.len()).map(|_| 0.1 + rng.next_f64() * 5.0));
+            data.extend((0..row.len()).map(|_| rng.next_f64().mul_add(5.0, 0.1)));
             indptr.push(indices.len());
         }
         Self {
@@ -105,7 +112,7 @@ impl Matrix {
         }
     }
 
-    pub fn nnz(&self) -> usize {
+    pub const fn nnz(&self) -> usize {
         self.indices.len()
     }
 
@@ -113,7 +120,7 @@ impl Matrix {
     pub fn column_norms(&self) -> Vec<f64> {
         let mut norms = vec![0.0; self.n_cols];
         for (&j, &v) in self.indices.iter().zip(&self.data) {
-            norms[j as usize] += v * v;
+            norms[j as usize] = v.mul_add(v, norms[j as usize]);
         }
         for norm in &mut norms {
             *norm = norm.sqrt();
@@ -121,7 +128,8 @@ impl Matrix {
         norms
     }
 
-    /// A copy whose rows sum to one, which is the shape the RP3beta walk expects.
+    /// A copy whose rows sum to one, which is the shape the `RP3beta` walk expects.
+    #[must_use]
     pub fn row_normalized(&self) -> Self {
         let mut data = self.data.clone();
         for p in self.indptr.windows(2) {
@@ -209,7 +217,7 @@ pub fn threads() -> usize {
         .filter(|&t| t > 0)
         .unwrap_or_else(|| {
             std::thread::available_parallelism()
-                .map_or(1, |n| n.get())
+                .map_or(1, std::num::NonZero::get)
                 .min(4)
         })
 }

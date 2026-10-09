@@ -7,6 +7,8 @@
 //! which is what lets `rust/kernels/benches` measure them directly.
 
 #![forbid(unsafe_code)]
+// PyO3 takes ownership of array wrappers at the Python boundary.
+#![allow(clippy::needless_pass_by_value)]
 
 use skrecsys_kernels::{
     bpr, ease, encode, fm_als, hnsw, knn, prune, quantized, ranking, recommend, rp3beta, slim,
@@ -22,6 +24,16 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 mod pools;
+
+fn to_i64(values: Vec<usize>) -> PyResult<Vec<i64>> {
+    values
+        .into_iter()
+        .map(|value| {
+            i64::try_from(value)
+                .map_err(|_| PyValueError::new_err("result index exceeds the i64 array format"))
+        })
+        .collect()
+}
 
 fn to_usize(values: &[i64], name: &str, bound: usize) -> PyResult<Vec<usize>> {
     values
@@ -108,10 +120,9 @@ fn check_indptr(indptr: &[i64], nnz: usize) -> PyResult<Vec<usize>> {
 
 /// Fit a factorization machine by alternating least squares, libFM style.
 ///
-/// `w` (n_features,) and `v` (n_factors, n_features) are updated in place.
+/// `w` (`n_features`,) and `v` (`n_factors`, `n_features`) are updated in place.
 /// Returns the fitted global bias and the training RMSE after each sweep.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn fm_als_fit<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -186,8 +197,8 @@ fn fm_als_fit<'py>(
 /// Fit a BPR matrix factorization by stochastic gradient ascent over sampled triplets.
 ///
 /// `r` is the users x items CSR interaction structure, whose values are ignored and whose
-/// column indices must be sorted. `user_factors` (n_users, n_factors), `item_factors`
-/// (n_items, n_factors) and `item_bias` (n_items,) are updated in place. Returns the
+/// column indices must be sorted. `user_factors` (`n_users`, `n_factors`), `item_factors`
+/// (`n_items`, `n_factors`) and `item_bias` (`n_items`,) are updated in place. Returns the
 /// share of correctly ranked triplets in each epoch. `n_threads == 0` uses all cores.
 ///
 /// `positives`, when given, holds offsets into `indices` and restricts an epoch to
@@ -212,7 +223,6 @@ fn fm_als_fit<'py>(
     positives = None,
     popularity_negatives = false,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn bpr_fit<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -311,7 +321,6 @@ type CsrArrays<'py> = (
 /// column indices. `n_threads == 0` uses all cores.
 #[pyfunction]
 #[pyo3(signature = (indptr, indices, data, n_cols, k, n_threads, rows = None))]
-#[allow(clippy::too_many_arguments)]
 fn item_knn_top_k<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -344,10 +353,9 @@ fn item_knn_top_k<'py>(
         };
         pool.install(|| knn::all_pairs_top_k_rows(&w, k, rows.as_deref()))
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
-        to_i64(result.indptr).into_pyarray(py),
-        to_i64(result.indices).into_pyarray(py),
+        to_i64(result.indptr)?.into_pyarray(py),
+        to_i64(result.indices)?.into_pyarray(py),
         result.data.into_pyarray(py),
     ))
 }
@@ -360,7 +368,6 @@ fn item_knn_top_k<'py>(
 /// `n_threads == 0` uses all cores.
 #[pyfunction]
 #[pyo3(signature = (indptr, indices, data, n_cols, norms, shrink, k, n_threads, rows = None))]
-#[allow(clippy::too_many_arguments)]
 fn item_cosine_top_k<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -402,10 +409,9 @@ fn item_cosine_top_k<'py>(
         };
         pool.install(|| knn::cosine_top_k_rows(&w, norms, shrink, k, rows.as_deref()))
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
-        to_i64(result.indptr).into_pyarray(py),
-        to_i64(result.indices).into_pyarray(py),
+        to_i64(result.indptr)?.into_pyarray(py),
+        to_i64(result.indices)?.into_pyarray(py),
         result.data.into_pyarray(py),
     ))
 }
@@ -414,7 +420,6 @@ fn item_cosine_top_k<'py>(
 ///
 /// One body behind `ease_weights` and `ease_inverse_gram`, which differ only in which of
 /// the two they hand back.
-#[allow(clippy::too_many_arguments)]
 fn ease_inverse_and_weights<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -522,7 +527,7 @@ fn ease_weights_from_inverse<'py>(
         .map(|a| a.into_pyarray(py))
 }
 
-/// Top `k` entries of every row of the RP3beta walk matrix for a users x items CSR `Pui`.
+/// Top `k` entries of every row of the `RP3beta` walk matrix for a users x items CSR `Pui`.
 ///
 /// `Pui` must already carry the row normalization and the `alpha` power; `row_scale` and
 /// `col_scale` hold the walk and popularity damping per item. Returns the item-item
@@ -530,7 +535,6 @@ fn ease_weights_from_inverse<'py>(
 /// diagonal. `n_threads == 0` uses all cores.
 #[pyfunction]
 #[pyo3(signature = (indptr, indices, data, n_cols, row_scale, col_scale, k, n_threads, rows = None))]
-#[allow(clippy::too_many_arguments)]
 fn rp3beta_similarity<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -571,10 +575,9 @@ fn rp3beta_similarity<'py>(
         };
         pool.install(|| rp3beta::similarity_rows(&pui, row_scale, col_scale, k, rows.as_deref()))
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
-        to_i64(result.indptr).into_pyarray(py),
-        to_i64(result.indices).into_pyarray(py),
+        to_i64(result.indptr)?.into_pyarray(py),
+        to_i64(result.indices)?.into_pyarray(py),
         result.data.into_pyarray(py),
     ))
 }
@@ -641,7 +644,6 @@ fn item_gram<'py>(
     warm_indices = None,
     warm_data = None,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn slim_elasticnet_weights_from_gram<'py>(
     py: Python<'py>,
     gram: PyReadonlyArray2<'py, f64>,
@@ -718,11 +720,10 @@ fn slim_elasticnet_weights_from_gram<'py>(
             slim::similarity_from_gram(gram, n, n_rows, columns.as_deref(), warm.as_ref(), &enet, k)
         })
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
         (
-            to_i64(result.indptr).into_pyarray(py),
-            to_i64(result.indices).into_pyarray(py),
+            to_i64(result.indptr)?.into_pyarray(py),
+            to_i64(result.indices)?.into_pyarray(py),
             result.data.into_pyarray(py),
         ),
         unconverged,
@@ -736,7 +737,6 @@ fn slim_elasticnet_weights_from_gram<'py>(
 /// weights of the regression that predicts item `j`, together with the number of columns
 /// that hit `max_iter` without converging. `n_threads == 0` uses all cores.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn slim_elasticnet_weights<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -779,11 +779,10 @@ fn slim_elasticnet_weights<'py>(
         };
         pool.install(|| slim::similarity(&r, &enet, k))
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
         (
-            to_i64(result.indptr).into_pyarray(py),
-            to_i64(result.indices).into_pyarray(py),
+            to_i64(result.indptr)?.into_pyarray(py),
+            to_i64(result.indices)?.into_pyarray(py),
             result.data.into_pyarray(py),
         ),
         unconverged,
@@ -826,10 +825,9 @@ fn csr_top_k_per_row<'py>(
         };
         pool.install(|| prune::top_k_per_row(&m, k))
     });
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
-        to_i64(result.indptr).into_pyarray(py),
-        to_i64(result.indices).into_pyarray(py),
+        to_i64(result.indptr)?.into_pyarray(py),
+        to_i64(result.indices)?.into_pyarray(py),
         result.data.into_pyarray(py),
     ))
 }
@@ -874,7 +872,7 @@ fn top_k_per_row<'py>(
                 e.row, e.found
             ))
         })?;
-    let selected = selected.into_iter().map(|i| i as i64).collect();
+    let selected = to_i64(selected)?;
     Array2::from_shape_vec((n_rows, k), selected)
         .map_err(|e| PyValueError::new_err(e.to_string()))
         .map(|a| a.into_pyarray(py))
@@ -950,13 +948,14 @@ fn candidate_subset(
     }
     let mut position = vec![-1i64; n_items];
     for (p, &j) in items.iter().enumerate() {
-        position[j] = p as i64;
+        position[j] = i64::try_from(p)
+            .map_err(|_| PyValueError::new_err("candidate position exceeds i64"))?;
     }
     Ok(Some((items, position)))
 }
 
 fn candidates_of(
-    subset: &Option<(Vec<usize>, Vec<i64>)>,
+    subset: Option<&(Vec<usize>, Vec<i64>)>,
     n_items: usize,
 ) -> recommend::Candidates<'_> {
     match subset {
@@ -1009,15 +1008,15 @@ fn exclusions_of<'a, P: recommend::Offset>(
 ///
 /// `first_query` is the position of this batch's first query in the caller's whole
 /// request, so that an error names the query the user actually passed.
-fn recommend_call<'py>(
-    py: Python<'py>,
+fn recommend_call(
+    py: Python<'_>,
     n_rows: usize,
     parallel: bool,
     k: usize,
     n_threads: usize,
     first_query: usize,
     kernel: impl FnOnce() -> Result<(Vec<usize>, Vec<f64>), ranking::TooFewEligible> + Send,
-) -> PyResult<Ranked<'py>> {
+) -> PyResult<Ranked<'_>> {
     let pool = if parallel {
         Some(pools::pool(n_threads)?)
     } else {
@@ -1043,13 +1042,23 @@ fn recommend_call<'py>(
                 e.found
             ))
         })?;
-    let order = order.into_iter().map(|i| i as i64).collect();
+    ranked_pair(py, (n_rows, k), to_i64(order)?, scores)
+}
+
+/// The `(n_rows, k)` item and score arrays a recommend call returns.
+fn ranked_pair(
+    py: Python<'_>,
+    shape: (usize, usize),
+    order: Vec<i64>,
+    scores: Vec<f64>,
+) -> PyResult<Ranked<'_>> {
+    let shape_error = |e: numpy::ndarray::ShapeError| PyValueError::new_err(e.to_string());
     Ok((
-        Array2::from_shape_vec((n_rows, k), order)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?
+        Array2::from_shape_vec(shape, order)
+            .map_err(shape_error)?
             .into_pyarray(py),
-        Array2::from_shape_vec((n_rows, k), scores)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?
+        Array2::from_shape_vec(shape, scores)
+            .map_err(shape_error)?
             .into_pyarray(py),
     ))
 }
@@ -1072,7 +1081,6 @@ fn recommend_call<'py>(
     candidates, exclude_seen, k, n_threads, first_query=0,
     excluded_indptr=None, excluded_indices=None, implicit_ties=false,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn recommend_from_similarity<'py>(
     py: Python<'py>,
     users_indptr: PyReadonlyArray1<'py, i64>,
@@ -1115,7 +1123,7 @@ fn recommend_from_similarity<'py>(
         candidates.as_ref().map(|c| c.as_slice()).transpose()?,
         n_items,
     )?;
-    let candidates = candidates_of(&subset, n_items);
+    let candidates = candidates_of(subset.as_ref(), n_items);
     let extra_indices = excluded_indices
         .as_ref()
         .map(|a| a.as_slice())
@@ -1159,7 +1167,6 @@ fn recommend_from_similarity<'py>(
     candidates, exclude_seen, k, n_threads, first_query=0,
     excluded_indptr=None, excluded_indices=None,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn recommend_from_dense_rows<'py>(
     py: Python<'py>,
     users_indptr: PyReadonlyArray1<'py, i64>,
@@ -1194,7 +1201,7 @@ fn recommend_from_dense_rows<'py>(
         candidates.as_ref().map(|c| c.as_slice()).transpose()?,
         n_items,
     )?;
-    let candidates = candidates_of(&subset, n_items);
+    let candidates = candidates_of(subset.as_ref(), n_items);
     let extra_indices = excluded_indices
         .as_ref()
         .map(|a| a.as_slice())
@@ -1227,7 +1234,6 @@ fn recommend_from_dense_rows<'py>(
     seen_indptr, seen_indices, candidates, k, n_threads, first_query=0,
     excluded_indptr=None, excluded_indices=None,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn recommend_from_factors<'py>(
     py: Python<'py>,
     user_factors: PyReadonlyArray2<'py, f64>,
@@ -1279,7 +1285,7 @@ fn recommend_from_factors<'py>(
         candidates.as_ref().map(|c| c.as_slice()).transpose()?,
         n_items,
     )?;
-    let candidates = candidates_of(&subset, n_items);
+    let candidates = candidates_of(subset.as_ref(), n_items);
     let seen = match (&seen_indptr, &seen_indices) {
         (Some(indptr), Some(indices)) => {
             let indptr = indptr.as_slice()?;
@@ -1332,7 +1338,6 @@ fn factorize<'py>(py: Python<'py>, values: PyReadonlyArray1<'py, i64>) -> PyResu
 /// The rows come out with ascending column indices and one entry per pair, which is
 /// scipy's canonical form; explicit zeros are kept. `n_threads == 0` uses all cores.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn coo_to_csr<'py>(
     py: Python<'py>,
     rows: PyReadonlyArray1<'py, i64>,
@@ -1354,10 +1359,9 @@ fn coo_to_csr<'py>(
     let pool = pools::pool(n_threads)?;
     let result =
         py.detach(|| pool.install(|| encode::coo_to_csr(rows, cols, data, n_rows, n_cols)));
-    let to_i64 = |v: Vec<usize>| v.into_iter().map(|x| x as i64).collect::<Vec<i64>>();
     Ok((
-        to_i64(result.indptr).into_pyarray(py),
-        to_i64(result.indices).into_pyarray(py),
+        to_i64(result.indptr)?.into_pyarray(py),
+        to_i64(result.indices)?.into_pyarray(py),
         result.data.into_pyarray(py),
     ))
 }
@@ -1391,6 +1395,11 @@ fn hnsw_built<'py>(
     params: &hnsw::Params,
     n_threads: usize,
 ) -> PyResult<HnswGraph<'py>> {
+    if i32::try_from(items.len().saturating_sub(1)).is_err() {
+        return Err(PyValueError::new_err(
+            "HNSW item count exceeds the i32 node index format.",
+        ));
+    }
     let pool = pools::pool(n_threads)?;
     let graph = py.detach(|| pool.install(|| hnsw::build(items, params)));
     Ok((
@@ -1419,7 +1428,8 @@ fn graph_candidates(candidates: &[i64], n_items: usize) -> PyResult<(Vec<usize>,
     let candidates = index_candidates(candidates, n_items)?;
     let mut position = vec![-1i64; n_items];
     for (p, &j) in candidates.iter().enumerate() {
-        position[j] = p as i64;
+        position[j] = i64::try_from(p)
+            .map_err(|_| PyValueError::new_err("candidate position exceeds i64"))?;
     }
     Ok((candidates, position))
 }
@@ -1445,7 +1455,6 @@ fn hnsw_view<'a>(
 }
 
 /// Run a batch search and shape its result the way `recommend` expects.
-#[allow(clippy::too_many_arguments)]
 fn hnsw_ranked<'py>(
     py: Python<'py>,
     items: &impl hnsw::Items,
@@ -1494,7 +1503,7 @@ fn ranked_arrays(
             e.row, e.found
         ))
     })?;
-    let order = order.into_iter().map(|i| i as i64).collect();
+    let order = to_i64(order)?;
     Ok((
         Array2::from_shape_vec((n_rows, k), order)
             .map_err(|e| PyValueError::new_err(e.to_string()))?
@@ -1542,7 +1551,6 @@ fn hnsw_build_dense<'py>(
 /// sparse collection. `dim` is the number of columns, which for the item-item models is
 /// the size of the catalog. See [`hnsw_build_dense`] for the rest.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn hnsw_build_sparse<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i64>,
@@ -1579,7 +1587,6 @@ fn hnsw_build_sparse<'py>(
 /// is completed by an exact scan of its eligible items, so the result is always `k`
 /// items the caller may show. `n_threads == 0` uses all cores.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn hnsw_search_dense<'py>(
     py: Python<'py>,
     node_level: PyReadonlyArray1<'py, i32>,
@@ -1646,7 +1653,6 @@ fn hnsw_search_dense<'py>(
 /// each distance is a gather over an item vector's stored entries rather than a merge of
 /// two sorted runs. See [`hnsw_search_dense`] for the filtering rules.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn hnsw_search_sparse<'py>(
     py: Python<'py>,
     node_level: PyReadonlyArray1<'py, i32>,
@@ -1727,7 +1733,6 @@ fn hnsw_search_sparse<'py>(
 /// would cost a full pass per distance. The query stays sparse and the gather runs over
 /// its handful of nonzeros instead. See [`hnsw_search_dense`] for the filtering rules.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn hnsw_search_sparse_dense<'py>(
     py: Python<'py>,
     node_level: PyReadonlyArray1<'py, i32>,
@@ -1822,7 +1827,7 @@ fn quantized_checked(
 }
 
 /// Borrow a dense store's codes, with the row stride the packing implies.
-fn dense_store<'a>(
+const fn dense_store<'a>(
     codes: &'a [u8],
     bits: u32,
     dim: usize,
@@ -1846,7 +1851,6 @@ fn dense_store<'a>(
 /// No thread count and no pool: this index is sequential over queries by construction,
 /// which is the property it is chosen for. The GIL is still released, because the scan
 /// touches nothing Python owns.
-#[allow(clippy::too_many_arguments)]
 fn quantized_ranked<'py>(
     py: Python<'py>,
     store: &quantized::Store<'_>,
@@ -1882,7 +1886,6 @@ fn quantized_ranked<'py>(
 /// back. `oversample * k` candidates are shortlisted by their codes and then rescored
 /// exactly, so the scores returned are always the exact ones.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn quantized_search_dense<'py>(
     py: Python<'py>,
     codes: PyReadonlyArray1<'py, u8>,
@@ -1947,7 +1950,6 @@ fn quantized_search_dense<'py>(
 /// the coarse pass gathers over the query's own columns rather than the item's width.
 /// See [`quantized_search_dense`] for the packing and the filtering rules.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn quantized_search_sparse_dense<'py>(
     py: Python<'py>,
     codes: PyReadonlyArray1<'py, u8>,
@@ -2018,7 +2020,6 @@ fn quantized_search_sparse_dense<'py>(
 /// is scattered once into a buffer of `dim` values and every candidate gathers its own
 /// stored columns out of it. See [`quantized_search_dense`] for the filtering rules.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn quantized_search_sparse<'py>(
     py: Python<'py>,
     codes: PyReadonlyArray1<'py, u8>,
@@ -2055,7 +2056,7 @@ fn quantized_search_sparse<'py>(
             bits,
             stride: 1,
         },
-        matrix: sparse::Csr { ..matrix },
+        matrix,
         scale,
         offset,
     };
@@ -2100,7 +2101,6 @@ fn quantized_search_sparse<'py>(
 /// it. `observed[t]` is the value trial `t` used and `scores[t]` what it scored, higher
 /// being better. Below `n_startup_trials` observations the value is drawn at random.
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
 fn tune_suggest<'py>(
     py: Python<'py>,
     kind: &str,

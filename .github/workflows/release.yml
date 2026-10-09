@@ -1,21 +1,63 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 env:
   # The abi3 floor: one wheel per platform covers every supported interpreter.
   ABI3_PYTHON: "3.11"
 
 jobs:
+  prepare:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Check whether this version needs publishing
+        id: release
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$(git rev-parse refs/remotes/origin/main)" != "$RELEASE_SHA" ]; then
+            echo "main has advanced; skipping this run"
+            exit 0
+          fi
+          uv lock --check
+          version="$(uv version --short)"
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
+            echo "v$version already exists; skipping this run"
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
   sdist:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - name: Check tag matches project version
-        run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
@@ -26,6 +68,8 @@ jobs:
           path: dist/
 
   wheels:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +81,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.ABI3_PYTHON }}
@@ -49,11 +95,13 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
       - name: Smoke test the wheel on every supported interpreter
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           for python in 3.11 3.12 3.13 3.14; do
             echo "::group::python $python"
             uv run --isolated --no-project --python "$python" --with dist/*.whl \
-              -- python -c "import skrecsys, skrecsys._core; print(skrecsys.__version__)"
+              -- python -c "import skrecsys, skrecsys._core; assert skrecsys.__version__ == '$RELEASE_VERSION', skrecsys.__version__"
             echo "::endgroup::"
           done
       - uses: actions/upload-artifact@v4
@@ -62,7 +110,7 @@ jobs:
           path: dist/
 
   publish:
-    needs: [sdist, wheels]
+    needs: [prepare, sdist, wheels]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -78,3 +126,19 @@ jobs:
           path: dist/
       - uses: astral-sh/setup-uv@v6
       - run: uv publish
+
+  tag:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Tag the published commit
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          git tag "v$RELEASE_VERSION"
+          git push origin "refs/tags/v$RELEASE_VERSION"

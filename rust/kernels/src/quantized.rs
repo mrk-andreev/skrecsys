@@ -54,7 +54,7 @@ use std::collections::BinaryHeap;
 
 use crate::ranking::{Candidate, Excluded, TooFewEligible};
 use crate::sparse::Csr;
-use crate::vectors::{Items, Probe, Queries, Scatter};
+use crate::vectors::{BASELINE_FMA, Items, Probe, Queries, Scatter, madd};
 
 /// The code widths a store may use.
 ///
@@ -73,7 +73,7 @@ pub fn supported_bits(bits: u32) -> bool {
 /// Rows are byte-aligned rather than packed end to end: it wastes under a byte per item
 /// and it makes a row's address a multiplication instead of a bit offset, which the
 /// dense scan does once per candidate.
-pub fn row_bytes(len: usize, bits: u32) -> usize {
+pub const fn row_bytes(len: usize, bits: u32) -> usize {
     let per_byte = 8 / bits as usize;
     len.div_ceil(per_byte)
 }
@@ -95,7 +95,7 @@ impl<'a> Codes<'a> {
     }
 
     /// Whether `data` is long enough to hold `n_rows` rows at this stride.
-    fn covers(&self, n_rows: usize) -> bool {
+    const fn covers(&self, n_rows: usize) -> bool {
         self.data.len() >= n_rows * self.stride
     }
 }
@@ -284,7 +284,7 @@ fn dense_dot<const BITS: u32>(scaled: &[f64], row: &[u8]) -> f64 {
     for (block, chunk) in blocks.iter().enumerate() {
         let codes = block_codes::<BITS>(row, block * BLOCK);
         for i in 0..BLOCK {
-            acc[i] += chunk[i] * codes[i];
+            acc[i] = madd::<BASELINE_FMA>(chunk[i], codes[i], acc[i]);
         }
     }
     let mut total =
@@ -341,14 +341,18 @@ fn scattered_dot<const BITS: u32>(
     codes: &[u8],
     start: usize,
 ) -> (f64, f64) {
-    let mut coded = 0.0;
+    let mut weighted_codes = 0.0;
     let mut plain = 0.0;
     for (offset, &column) in columns.iter().enumerate() {
         let q = values[column as usize];
-        coded += q * f64::from(code_at::<BITS>(codes, start + offset));
+        weighted_codes = madd::<BASELINE_FMA>(
+            q,
+            f64::from(code_at::<BITS>(codes, start + offset)),
+            weighted_codes,
+        );
         plain += q;
     }
-    (coded, plain)
+    (weighted_codes, plain)
 }
 
 /// The `i`-th code of a packed run, at a width known at compile time.
@@ -400,7 +404,10 @@ impl Workspace {
 /// Unlike the graph search there is no fallback path, because there is nothing to fall
 /// back from: a scan sees every eligible candidate, so a query short of `k` is genuinely
 /// short of `k` and returns [`TooFewEligible`].
-#[allow(clippy::too_many_arguments)]
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] if a query has fewer than `k` eligible candidates.
 pub fn top_k(
     store: &Store<'_>,
     exact: &impl Items,
@@ -549,7 +556,6 @@ struct Tiled<'a> {
 /// catalog; and EASE's catalog-wide dense rows would have to be decoded in full to serve a
 /// query that only ever gathers a handful of columns, which is more work, not less. Both
 /// keep the per-query path, where their costs already sit somewhere else.
-#[allow(clippy::too_many_arguments)]
 fn scan_tiled<const BITS: u32>(
     tiled: &Tiled<'_>,
     exact: &impl Items,
@@ -584,7 +590,7 @@ fn scan_tiled<const BITS: u32>(
             let mut constant = 0.0;
             for (d, &q) in query.iter().enumerate() {
                 scaled[d * QUERY_TILE + t] = q * tiled.scale[d];
-                constant += q * tiled.offset[d];
+                constant = madd::<BASELINE_FMA>(q, tiled.offset[d], constant);
             }
             bias[t] = constant;
             cursor[t] = 0;
@@ -598,7 +604,7 @@ fn scan_tiled<const BITS: u32>(
                 // score is already computed by the time this runs: with the tile fused,
                 // dropping a candidate for one query would save nothing but the heap.
                 let skip = excluded.row(start + t);
-                if cursor[t] < skip.len() && skip[cursor[t]] == slot as i64 {
+                if cursor[t] < skip.len() && usize::try_from(skip[cursor[t]]) == Ok(slot) {
                     cursor[t] += 1;
                     continue;
                 }
@@ -633,7 +639,7 @@ fn scan_tiled<const BITS: u32>(
                     index: candidate.index,
                 });
             }
-            reranked.sort_unstable_by(|a, b| a.worst_first(b));
+            reranked.sort_unstable_by(super::ranking::Candidate::worst_first);
             let out_index = &mut selected[row * k..(row + 1) * k];
             let out_score = &mut scores[row * k..(row + 1) * k];
             for ((slot, score), candidate) in out_index.iter_mut().zip(out_score).zip(&reranked) {
@@ -659,7 +665,7 @@ fn tile_row<const BITS: u32>(row: &[u8], scaled: &[f64], dim: usize) -> [f64; QU
         for (i, &code) in codes.iter().enumerate() {
             let lane = &scaled[(block * BLOCK + i) * QUERY_TILE..][..QUERY_TILE];
             for t in 0..QUERY_TILE {
-                acc[t] += lane[t] * code;
+                acc[t] = madd::<BASELINE_FMA>(lane[t], code, acc[t]);
             }
         }
     }
@@ -667,7 +673,7 @@ fn tile_row<const BITS: u32>(row: &[u8], scaled: &[f64], dim: usize) -> [f64; QU
         let code = f64::from(code_at::<BITS>(row, d));
         let lane = &scaled[d * QUERY_TILE..][..QUERY_TILE];
         for t in 0..QUERY_TILE {
-            acc[t] += lane[t] * code;
+            acc[t] = madd::<BASELINE_FMA>(lane[t], code, acc[t]);
         }
     }
     acc
@@ -686,7 +692,7 @@ fn coarse_width(store: &Store<'_>, queries: &Queries<'_>) -> usize {
 }
 
 /// The buffer a sparse store's scattered query needs, or `None` when nothing scatters.
-fn scatter_width(store: &Store<'_>, queries: &Queries<'_>) -> Option<usize> {
+const fn scatter_width(store: &Store<'_>, queries: &Queries<'_>) -> Option<usize> {
     match (store, queries) {
         (Store::Sparse { matrix, .. }, _) => Some(matrix.n_cols),
         _ => queries.scatter_dim(),
@@ -702,7 +708,6 @@ fn widest_row(csr: &Csr<'_>) -> usize {
 }
 
 /// Rank one query: coarse scan, exact rerank, cut to `k`.
-#[allow(clippy::too_many_arguments)]
 fn rank_one(
     store: &Store<'_>,
     exact: &impl Items,
@@ -757,7 +762,7 @@ fn rank_one(
             });
         }
     });
-    reranked.sort_unstable_by(|a, b| a.worst_first(b));
+    reranked.sort_unstable_by(super::ranking::Candidate::worst_first);
 
     for ((slot, score), candidate) in out_index.iter_mut().zip(out_score).zip(&*reranked) {
         *slot = candidate.index;
@@ -783,7 +788,7 @@ fn shortlist_by_codes<const BITS: u32>(
     let mut next_skipped = 0usize;
     for (slot, &item) in candidates.iter().enumerate() {
         // The excluded positions ascend, so one cursor keeps up with the scan.
-        if next_skipped < skip.len() && skip[next_skipped] == slot as i64 {
+        if next_skipped < skip.len() && usize::try_from(skip[next_skipped]) == Ok(slot) {
             next_skipped += 1;
             continue;
         }
@@ -821,7 +826,7 @@ fn with_coarse<R>(
                 let mut bias = 0.0;
                 for (d, &q) in query.iter().enumerate() {
                     scaled[d] = q * scale[d];
-                    bias += q * offset[d];
+                    bias = madd::<BASELINE_FMA>(q, offset[d], bias);
                 }
                 f(&Coarse::Dense { scaled, bias })
             }
@@ -833,7 +838,7 @@ fn with_coarse<R>(
                 let mut bias = 0.0;
                 for (p, (&column, &q)) in indices.iter().zip(data).enumerate() {
                     scaled[p] = q * scale[column as usize];
-                    bias += q * offset[column as usize];
+                    bias = madd::<BASELINE_FMA>(q, offset[column as usize], bias);
                 }
                 f(&Coarse::Sparse {
                     indices,
@@ -951,7 +956,7 @@ mod tests {
                 index: i,
             })
             .collect();
-        all.sort_unstable_by(|a, b| a.worst_first(b));
+        all.sort_unstable_by(super::super::ranking::Candidate::worst_first);
         all.into_iter().take(k).map(|c| c.index).collect()
     }
 

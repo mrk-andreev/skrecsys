@@ -1,6 +1,8 @@
 {#- Included by README.md.j2 after "Development", so headings start at level two. -#}
 ## Releasing
 
-1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
-2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
-3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.
+1. Bump the version: `uv version --bump patch` (or `minor` / `major`). Commit
+   `pyproject.toml` and `uv.lock`, then merge the change into `main`.
+2. After the `Tests` workflow passes on `main`, the `Release` workflow builds that commit,
+   publishes to PyPI via Trusted Publishing, and creates its `v<version>` tag. A version
+   already tagged is skipped; there is no manual tag or tag push.

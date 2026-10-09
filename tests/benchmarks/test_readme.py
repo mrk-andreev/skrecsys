@@ -21,7 +21,7 @@ def test_the_readme_is_what_its_template_and_results_render_to():
     """
     assert readme.is_current(), (
         "README.md differs from README.md.j2 rendered with benchmarks/results; run "
-        "`python benchmarks/run.py render` and commit the result."
+        "`python scripts/render_readme.py` and include the result."
     )
 
 

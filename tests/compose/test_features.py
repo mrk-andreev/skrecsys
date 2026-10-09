@@ -12,12 +12,15 @@ from skrecsys.compose import (
     InteractionCounts,
     JoinDynamicFeatures,
     JoinStaticFeatures,
+    ProfileAffinity,
     RecommenderScores,
     SegmentPopularity,
 )
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
 
 PAIRS = np.array([["u1", "a"], ["u2", "b"], ["u9", "a"]], dtype=object)
+#: Two 0/1 attributes per item; "d" is described though nobody interacted with it.
+GENRES = np.array([["a", 1, 0], ["b", 1, 1], ["c", 0, 1], ["d", 0, 1]], dtype=object)
 USERS = np.array([["u1", 1.0, 10.0], ["u2", 2.0, 20.0]], dtype=object)
 
 
@@ -358,10 +361,13 @@ def test_segment_popularity_validates(params, match):
     "component",
     [
         InteractionCounts("user"),
+        InteractionCounts("item", interactions=[["u1", "c"]]),
         RecommenderScores(MostPopularRecommender()),
         SegmentPopularity(SEGMENTS),
+        ProfileAffinity(GENRES),
+        ProfileAffinity(GENRES, interactions=[["u1", "c"]]),
     ],
-    ids=lambda c: type(c).__name__,
+    ids=repr,
 )
 def test_fitted_components_pickle_and_clone(component):
     fitted = clone(component).fit(X)
@@ -372,7 +378,12 @@ def test_fitted_components_pickle_and_clone(component):
 
 @pytest.mark.parametrize(
     "component",
-    [InteractionCounts(), RecommenderScores(MostPopularRecommender()), SegmentPopularity(SEGMENTS)],
+    [
+        InteractionCounts(),
+        RecommenderScores(MostPopularRecommender()),
+        SegmentPopularity(SEGMENTS),
+        ProfileAffinity(GENRES),
+    ],
     ids=lambda c: type(c).__name__,
 )
 def test_components_that_learn_need_interactions(component):
@@ -487,6 +498,7 @@ TIMED_X = np.array(
         RecommenderScores(ItemKNNRecommender()),
         SegmentPopularity(np.array([["u1", "x"], ["u2", "x"], ["u3", "y"]])),
         JoinStaticFeatures("item", np.array([["a", 1.0], ["b", 2.0]], dtype=object)),
+        ProfileAffinity(np.array([["a", 1.0, 0.0], ["b", 1.0, 1.0]], dtype=object)),
     ],
     ids=lambda c: type(c).__name__,
 )
@@ -503,3 +515,79 @@ def test_concat_hands_its_parts_the_time():
     ).fit()
     out = concat.transform(TIMED_PAIRS, scores=[0.1, 0.2, 0.3, 0.4])
     np.testing.assert_array_equal(out[:, 0], [3.0, 9.0, 3.0, -1.0])
+
+
+def test_interaction_counts_of_its_own_interactions_ignore_x():
+    dislikes = [["u1", "c"], ["u2", "c"], ["u1", "a"]]
+    items = InteractionCounts("item", interactions=dislikes)
+    want = [[2.0], [1.0], [0.0]]
+    pairs = [["u9", "c"], ["u9", "a"], ["u9", "b"]]
+    np.testing.assert_array_equal(items.fit().transform(pairs), want)
+    np.testing.assert_array_equal(clone(items).fit(X).transform(pairs), want)
+    users = InteractionCounts("user", interactions=dislikes).fit()
+    np.testing.assert_array_equal(users.transform([["u1", "z"], ["new", "a"]]), [[2.0], [0.0]])
+
+
+@pytest.mark.parametrize("empty", [[], np.empty((0, 2), dtype=str), np.empty((0, 2), dtype=int)])
+def test_own_interactions_may_be_empty(empty):
+    """Before the first dislike there are none, and that is not an error."""
+    counts = InteractionCounts("item", interactions=empty).fit(X)
+    np.testing.assert_array_equal(counts.transform(PAIRS), np.zeros((3, 1)))
+    affinity = ProfileAffinity(GENRES, interactions=empty).fit(X)
+    np.testing.assert_array_equal(affinity.transform(PAIRS), np.zeros((3, 2)))
+
+
+def test_own_interactions_need_two_columns():
+    with pytest.raises(ValueError, match="at least 2 columns"):
+        InteractionCounts(interactions=[["u1"], ["u2"]]).fit()
+
+
+def test_profile_affinity_compares_an_item_with_the_history_of_its_user():
+    history = [["u1", "a"], ["u1", "b"], ["u1", "b"], ["u2", "c"], ["u1", "unlisted"]]
+    affinity = ProfileAffinity(GENRES).fit(history)
+    # u1's three listed interactions sum to [3, 2]; the unlisted item adds nothing
+    np.testing.assert_array_equal(affinity.profiles_, [[3.0, 2.0], [0.0, 1.0]])
+    np.testing.assert_array_equal(affinity.n_interactions_, [3.0, 1.0])
+    got = affinity.transform([["u1", "a"], ["u1", "b"], ["u1", "d"], ["u2", "a"]])
+    norm = np.sqrt(13.0)
+    np.testing.assert_allclose(
+        got,
+        [
+            [3 / 3, 3 / norm],
+            [5 / (2 * 3), 5 / (norm * np.sqrt(2.0))],
+            [2 / 3, 2 / norm],  # an item nobody interacted with, known by its attributes
+            [0.0, 0.0],
+        ],
+    )
+    assert affinity.get_feature_names_out().tolist() == ["profile_share", "profile_cosine"]
+
+
+def test_profile_affinity_tells_a_new_user_from_one_with_nothing_to_match():
+    """NaN for a user the history lacks; 0 for a user its own interactions lack."""
+    from_history = ProfileAffinity(GENRES).fit(X)
+    assert np.isnan(from_history.transform([["new", "a"]])).all()
+    np.testing.assert_array_equal(from_history.transform([["u1", "unlisted"]]), [[0.0, 0.0]])
+    from_dislikes = ProfileAffinity(GENRES, interactions=[["u1", "c"]]).fit(X)
+    np.testing.assert_array_equal(from_dislikes.transform([["new", "c"]]), [[0.0, 0.0]])
+    np.testing.assert_allclose(from_dislikes.transform([["u1", "d"]]), [[1.0, 1.0]])
+
+
+def test_profile_affinity_accepts_a_dataframe_and_numeric_ids():
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame({"item": [1, 2, 3], "drama": [1, 1, 0], "comedy": [0, 1, 1]})
+    affinity = ProfileAffinity(frame).fit(np.array([[10, 1], [10, 2]]))
+    np.testing.assert_allclose(affinity.transform(np.array([[10, 3]])), [[0.5, 1 / np.sqrt(5)]])
+
+
+@pytest.mark.parametrize(
+    ("table", "match"),
+    [
+        (None, "item_features must be a table"),
+        ([["a"], ["b"]], "at least one attribute"),
+        ([["a", 1.0], ["a", 2.0]], "duplicate"),
+        (np.array([["a", np.nan]], dtype=object), "finite"),
+    ],
+)
+def test_profile_affinity_validates(table, match):
+    with pytest.raises(ValueError, match=match):
+        ProfileAffinity(table).fit(X)

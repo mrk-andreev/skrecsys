@@ -27,6 +27,7 @@ from tests.estimator_checks import (
 IMPLEMENTED = [
     MostPopularRecommender(),
     MostPopularRecommender(weighting="sum"),
+    MostPopularRecommender(exposure=[["i0", 3.0], ["i-", 1.0], ["i9", 5.0]], smoothing=2.0),
     ItemKNNRecommender(),
     ItemKNNRecommender(n_neighbors=1, shrink=10.0),
     ItemKNNRecommender(n_neighbors=None),
@@ -80,6 +81,7 @@ def test_pandas_input_matches_numpy(estimator):
 INCREMENTAL = [
     MostPopularRecommender(),
     MostPopularRecommender(weighting="sum"),
+    MostPopularRecommender(exposure=[["i0", 3.0], ["i-", 1.0], ["i9", 5.0]], smoothing=2.0),
     AlternatingLeastSquares(n_factors=2, n_iter=5, random_state=0),
     AlternatingLeastSquares(n_factors=2, n_iter=5, n_iter_partial=2, random_state=0),
     BayesianPersonalizedRanking(n_factors=4, max_iter=10, random_state=0),
@@ -106,6 +108,7 @@ INCREMENTAL = [
 INCREMENTAL_EXACT = [
     MostPopularRecommender(),
     MostPopularRecommender(weighting="sum"),
+    MostPopularRecommender(exposure=[["i0", 3.0], ["i-", 1.0], ["i9", 5.0]], smoothing=2.0),
     EASE(),
     EASE(l2_reg=1.0, n_jobs=1),
     ItemKNNRecommender(),

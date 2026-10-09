@@ -5,8 +5,8 @@
     python benchmarks/run.py run leaderboard                 # measure what is out of date
     python benchmarks/run.py run indexes --dataset amazon-books --only ALS
     python benchmarks/run.py run leaderboard --dry-run       # say what would run
-    python benchmarks/run.py render                          # rewrite README.md
-    python benchmarks/run.py render --check                  # fail if README.md is stale
+    python scripts/render_readme.py                           # rewrite README.md
+    python scripts/render_readme.py --check                   # fail if README.md is stale
 
 What runs is ``benchmarks/config/<benchmark>.json``: each entry names a class, its
 parameters and a version, and each result in ``benchmarks/results`` is keyed on all of
@@ -259,7 +259,7 @@ def _render(args: argparse.Namespace) -> int:
             return 0
         print(
             "README.md differs from what README.md.j2 and benchmarks/results render to; "
-            "run `python benchmarks/run.py render`.",
+            "run `uv run python scripts/render_readme.py`.",
             file=sys.stderr,
         )
         return 1

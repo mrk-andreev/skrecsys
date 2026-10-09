@@ -10,6 +10,32 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[workspace.lints.clippy]
+# The broad groups are lower priority than individual, reviewed exceptions below.
+correctness = { level = "deny", priority = -2 }
+dbg_macro = "deny"
+missing_errors_doc = "deny"
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+# Index and format conversions are checked before crossing signed integer bounds.
+cast_possible_wrap = "deny"
+# The remaining casts include signed sparse indices, deliberate float quantization,
+# model counts represented as f64, and narrower storage formats. Audit their bounds
+# and numerical behavior before denying each lint.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+# These internal APIs are public so the extension and benches can call the kernels.
+must_use_candidate = "allow"
+# Explicit inlining is used in the small arithmetic helpers and ranking loops.
+inline_always = "allow"
+# Python entry points and data-oriented kernels naturally pass several related arrays.
+too_many_arguments = "allow"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
 [workspace.dependencies]
 criterion = { version = "0.8", default-features = false, features = [
     "cargo_bench_support",
@@ -30,6 +56,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[lints]
+workspace = true
 
 [lib]
 name = "_core"

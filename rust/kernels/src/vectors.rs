@@ -160,6 +160,7 @@ impl Items for SparseItems<'_> {
 /// emulation, so those clones keep the plain expression; `FMA` is a constant per clone
 /// and the branch folds away.
 #[inline(always)]
+#[allow(clippy::suboptimal_flops)]
 pub(crate) fn madd<const FMA: bool>(a: f64, b: f64, c: f64) -> f64 {
     if FMA { a.mul_add(b, c) } else { a * b + c }
 }
@@ -274,7 +275,7 @@ fn merge_dot(a_indices: &[i64], a_data: &[f64], b_indices: &[i64], b_data: &[f64
             std::cmp::Ordering::Less => p += 1,
             std::cmp::Ordering::Greater => q += 1,
             std::cmp::Ordering::Equal => {
-                total += a_data[p] * b_data[q];
+                total = madd::<BASELINE_FMA>(a_data[p], b_data[q], total);
                 p += 1;
                 q += 1;
             }
@@ -313,7 +314,7 @@ impl Queries<'_> {
     }
 
     /// The buffer width a worker must reserve, or `None` when nothing is scattered.
-    pub fn scatter_dim(&self) -> Option<usize> {
+    pub const fn scatter_dim(&self) -> Option<usize> {
         match self {
             Self::Scattered(csr) => Some(csr.n_cols),
             _ => None,
@@ -387,8 +388,8 @@ mod tests {
         // The lane loop and its remainder meet at every length modulo four, so the
         // boundary is what the test walks rather than one convenient size.
         for dim in 1..=17 {
-            let a: Vec<f64> = (0..dim).map(|i| i as f64 * 0.5 - 1.0).collect();
-            let b: Vec<f64> = (0..dim).map(|i| 2.0 - i as f64 * 0.25).collect();
+            let a: Vec<f64> = (0..dim).map(|i| f64::from(i).mul_add(0.5, -1.0)).collect();
+            let b: Vec<f64> = (0..dim).map(|i| f64::from(i).mul_add(-0.25, 2.0)).collect();
             let naive: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
             assert!((dot(&a, &b) - naive).abs() < 1e-12, "dim {dim}");
         }
@@ -458,7 +459,7 @@ mod tests {
         };
         assert_eq!(items.dim(), 4);
         assert!((items.similarity(0, 1) - 8.0).abs() < 1e-12);
-        assert_eq!(items.similarity(0, 2), 0.0);
+        assert_eq!(items.similarity(0, 2).to_bits(), 0.0_f64.to_bits());
         assert!((items.similarity(1, 1) - 50.0).abs() < 1e-12);
     }
 }

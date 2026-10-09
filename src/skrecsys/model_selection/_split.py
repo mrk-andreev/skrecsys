@@ -8,12 +8,30 @@ from sklearn.model_selection import BaseCrossValidator
 from sklearn.utils import check_random_state
 
 from skrecsys._typing import RandomStateLike, override
-from skrecsys.utils._param_validation import check_real
+from skrecsys.utils._param_validation import check_int, check_real
 from skrecsys.utils.validation import check_interactions, factorize
 
-__all__ = ["ColdStartSplit", "WarmStartKFold"]
+__all__ = ["ColdStartSplit", "LatestInteractionsSplit", "WarmStartKFold"]
 
 _MIN_SPLITS = 2
+
+
+def positions_in_user(
+    codes: NDArray[np.intp], times: NDArray[np.generic] | None = None
+) -> tuple[NDArray[np.intp], NDArray[np.intp]]:
+    """Where each row stands among the rows of its user, and how many rows each user has.
+
+    ``codes`` names the user of each row, as :func:`~skrecsys.utils.validation.factorize`
+    does. A user's rows are numbered from 0 in the order of ``times``, ties in row order,
+    or in row order alone without times; so the latest ``n`` rows of a user with ``count``
+    rows are those at ``position >= count - n``.
+    """
+    order = np.argsort(codes, kind="stable") if times is None else np.lexsort((times, codes))
+    counts = np.bincount(codes).astype(np.intp)
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    position = np.empty(len(codes), dtype=np.intp)
+    position[order] = np.arange(len(codes)) - np.repeat(starts, counts)
+    return position, counts
 
 
 class WarmStartKFold(BaseCrossValidator):
@@ -175,15 +193,91 @@ class ColdStartSplit(BaseCrossValidator):
         cold = np.zeros(len(distinct), dtype=bool)
         cold[rng.choice(len(distinct), size=n_cold, replace=False)] = True
 
-        order = np.argsort(codes, kind="stable")
-        counts = np.bincount(codes, minlength=len(distinct))
-        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
-        # A row's position among its user's rows, in the order they appear in X.
-        position = np.empty(len(codes), dtype=np.intp)
-        position[order] = np.arange(len(codes)) - np.repeat(starts, counts)
+        position, counts = positions_in_user(codes)
         n_held = np.floor(self.test_size * counts).astype(np.intp)
         latest = position >= (counts - n_held)[codes]
         yield np.flatnonzero(cold[codes] | latest)
+
+    @override
+    def get_n_splits(
+        self,
+        X: ArrayLike | None = None,
+        y: ArrayLike | None = None,
+        groups: ArrayLike | None = None,
+    ) -> int:
+        """Return the number of splitting iterations, which is always one."""
+        return 1
+
+
+class LatestInteractionsSplit(BaseCrossValidator):
+    """One train/test split holding out the latest rows of every user, or of the latest users.
+
+    Every user gives the last ``test_size`` fraction of its interactions, rounded down, to
+    the test set and keeps the rest for training, which is what a float ``split`` of a
+    :class:`~skrecsys.compose.Cascade` does. ``max_users`` holds out from that many users
+    only: a ranker gets one group of candidates per user with held-out rows, and its fit
+    time grows with their number, while the generator is better for every row it keeps.
+    Row order is read as time, as :class:`ColdStartSplit` reads it, so sort ``X`` by
+    timestamp when you have one.
+
+    Parameters
+    ----------
+    test_size : float, default=0.2
+        Fraction of a user's interactions held out, in (0, 1). A user with too few for
+        that to be a whole row keeps them all.
+    max_users : int, default=None
+        The most users to hold out from: those whose last row comes latest among the
+        users with something to hold out. Everyone else stays wholly in training.
+        ``None`` holds out from every user.
+
+    Examples
+    --------
+    >>> from skrecsys.model_selection import LatestInteractionsSplit
+    >>> X = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"], ["u3", "b"], ["u3", "c"]]
+    >>> train, test = next(LatestInteractionsSplit(test_size=0.5).split(X))
+    >>> test.tolist()
+    [1, 3, 5]
+    >>> train, test = next(LatestInteractionsSplit(test_size=0.5, max_users=2).split(X))
+    >>> test.tolist()
+    [3, 5]
+    """
+
+    def __init__(self, test_size: float = 0.2, *, max_users: int | None = None) -> None:
+        check_real(
+            test_size,
+            "test_size",
+            min_value=0,
+            max_value=1,
+            min_inclusive=False,
+            max_inclusive=False,
+        )
+        check_int(max_users, "max_users", min_value=1, allow_none=True)
+        self.test_size = test_size
+        self.max_users = max_users
+
+    @override
+    def _iter_test_indices(
+        self,
+        X: ArrayLike | None = None,
+        y: ArrayLike | None = None,
+        groups: ArrayLike | None = None,
+    ) -> Iterator[NDArray[np.intp]]:
+        if X is None:
+            raise ValueError("LatestInteractionsSplit.split requires X.")
+        users, _, _ = check_interactions(X)
+        _, codes = factorize(users)
+        position, counts = positions_in_user(codes)
+        n_held = np.floor(self.test_size * counts).astype(np.intp)
+        chosen = n_held > 0
+        if self.max_users is not None and chosen.sum() > self.max_users:
+            # The last row of each user says how recently it was active.
+            last_row = np.zeros(len(counts), dtype=np.intp)
+            np.maximum.at(last_row, codes, np.arange(len(codes)))
+            candidates = np.flatnonzero(chosen)
+            latest = candidates[np.argsort(-last_row[candidates])[: self.max_users]]
+            chosen = np.zeros(len(counts), dtype=bool)
+            chosen[latest] = True
+        yield np.flatnonzero(chosen[codes] & (position >= (counts - n_held)[codes]))
 
     @override
     def get_n_splits(

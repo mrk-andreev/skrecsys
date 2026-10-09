@@ -15,10 +15,11 @@
 
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::cholesky::llt;
-use faer::{Mat, Par};
+use faer::{Mat, Par, Spec};
 use rayon::prelude::*;
 
 use crate::sparse::{Csc, Csr};
+use crate::vectors::{BASELINE_FMA, madd};
 
 /// `A = G + l2_reg * I` was not positive definite, so it has no Cholesky factor.
 pub struct NotPositiveDefinite;
@@ -34,7 +35,7 @@ pub fn gram(w: &Csr) -> Vec<f64> {
     g.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
         for (u, w1) in items.column(i) {
             for p in w.indptr[u]..w.indptr[u + 1] {
-                row[w.col(p)] += w.data[p] * w1;
+                row[w.col(p)] = madd::<BASELINE_FMA>(w.data[p], w1, row[w.col(p)]);
             }
         }
     });
@@ -47,6 +48,10 @@ pub fn gram(w: &Csr) -> Vec<f64> {
 /// [`weights`], and it is public because it is also the state an incremental fit keeps:
 /// once `P` is in hand, adding interactions is a low-rank update of it rather than
 /// another factorization.
+///
+/// # Errors
+///
+/// Returns [`NotPositiveDefinite`] if the regularized Gram matrix cannot be factored.
 pub fn inverse(
     gram: &[f64],
     n: usize,
@@ -61,14 +66,20 @@ pub fn inverse(
         gram[i * n + j] + if i == j { l2_reg } else { 0.0 }
     });
 
-    let params = Default::default();
+    let params = Spec::default();
     let mut buffer = MemBuffer::new(StackReq::any_of(&[
         llt::factor::cholesky_in_place_scratch::<f64>(n, par, params),
         llt::inverse::inverse_scratch::<f64>(n, par),
     ]));
     let stack = MemStack::new(&mut buffer);
-    llt::factor::cholesky_in_place(a.as_mut(), Default::default(), par, stack, params)
-        .map_err(|_| NotPositiveDefinite)?;
+    llt::factor::cholesky_in_place(
+        a.as_mut(),
+        llt::factor::LltRegularization::default(),
+        par,
+        stack,
+        params,
+    )
+    .map_err(|_| NotPositiveDefinite)?;
 
     let mut inverted = Mat::<f64>::zeros(n, n);
     llt::inverse::inverse(inverted.as_mut(), a.as_ref(), par, stack);
@@ -107,6 +118,10 @@ pub fn weights_from_inverse(p: &[f64], n: usize) -> Vec<f64> {
 ///
 /// `gram` is `n x n` and symmetric; it is left untouched. The returned matrix is dense
 /// row-major with a zero diagonal.
+///
+/// # Errors
+///
+/// Returns [`NotPositiveDefinite`] if the regularized Gram matrix cannot be factored.
 pub fn weights(
     gram: &[f64],
     n: usize,
@@ -150,7 +165,8 @@ mod tests {
                 if row != col {
                     let factor = m[row * width + col];
                     for j in 0..width {
-                        m[row * width + j] -= factor * m[col * width + j];
+                        m[row * width + j] =
+                            factor.mul_add(-m[col * width + j], m[row * width + j]);
                     }
                 }
             }
@@ -210,7 +226,7 @@ mod tests {
             .collect();
 
         for j in 0..n {
-            assert_eq!(b[j * n + j], 0.0, "diagonal {j}");
+            assert_eq!(b[j * n + j].to_bits(), 0.0_f64.to_bits(), "diagonal {j}");
         }
         for i in 0..n {
             for j in 0..n {

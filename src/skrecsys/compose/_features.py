@@ -481,6 +481,41 @@ def _needs_interactions(component: object, X: ArrayLike | None) -> ArrayLike:
     return X
 
 
+def _own_interactions(interactions: ArrayLike) -> tuple[NDArray[np.generic], NDArray[np.generic]]:
+    """Users and items of the ``interactions`` a component was constructed with.
+
+    Laid out like the ``X`` of ``fit``, further columns ignored. Unlike ``X`` they may be
+    empty -- no rows, or nothing at all: a second kind of event, such as dislikes, has
+    none before the first one arrives.
+    """
+    if np.size(interactions) == 0:
+        empty = np.empty(0, dtype=object)
+        return empty, empty
+    ids = drop_time(check_rows(interactions))
+    if ids.shape[1] < len(_KINDS):
+        raise ValueError(
+            "interactions must have at least 2 columns (user identifiers, item "
+            f"identifiers), got {ids.shape[1]}."
+        )
+    return ids[:, 0], ids[:, 1]
+
+
+def _factorize(values: NDArray[np.generic]) -> tuple[NDArray[np.generic], NDArray[np.intp]]:
+    """:func:`~skrecsys.utils.validation.factorize`, of identifiers there may be none of."""
+    if len(values) == 0:
+        return values, np.empty(0, dtype=np.intp)
+    return factorize(values)
+
+
+def _lookup(
+    ids: NDArray[np.generic], fitted_ids: NDArray[np.generic], name: str
+) -> tuple[NDArray[np.intp], NDArray[np.bool_]]:
+    """:func:`~skrecsys.utils.validation.lookup_ids`, among identifiers there may be none of."""
+    if len(fitted_ids) == 0:
+        return np.zeros(len(ids), dtype=np.intp), np.zeros(len(ids), dtype=bool)
+    return lookup_ids(ids, fitted_ids, name=name)
+
+
 class InteractionCounts(FeaturesMixin, BaseEstimator):
     """How many interactions the user or the item of each pair had during ``fit``.
 
@@ -491,6 +526,12 @@ class InteractionCounts(FeaturesMixin, BaseEstimator):
     ----------
     kind : {"user", "item"}, default="item"
         Whether to count the pair's user or its item.
+    interactions : array-like of shape (n_interactions, 2), default=None
+        Interactions to count instead of the ``X`` of ``fit``, laid out like it: events
+        of another kind than the ones recommended from, such as dislikes, skips or
+        impressions. They may be empty. They are counted as given, whatever ``fit`` is
+        called with, so inside a :class:`~skrecsys.compose.Cascade` nothing is held out
+        of them: they must not be what the ranker is labelled from.
 
     Attributes
     ----------
@@ -505,16 +546,27 @@ class InteractionCounts(FeaturesMixin, BaseEstimator):
     >>> X = [["u1", "a"], ["u1", "b"], ["u2", "a"]]
     >>> InteractionCounts("item").fit(X).transform([["u9", "a"], ["u9", "z"]]).tolist()
     [[2.0], [0.0]]
+
+    How often each item was disliked, whatever the cascade is fitted on:
+
+    >>> dislikes = [["u1", "c"], ["u2", "c"]]
+    >>> disliked = InteractionCounts("item", interactions=dislikes).fit()
+    >>> disliked.transform([["u9", "c"], ["u9", "a"]]).tolist()
+    [[2.0], [0.0]]
     """
 
-    def __init__(self, kind: str = "item") -> None:
+    def __init__(self, kind: str = "item", *, interactions: ArrayLike | None = None) -> None:
         self.kind = kind
+        self.interactions = interactions
 
     def fit(self, X: ArrayLike | None = None, y: ArrayLike | None = None) -> Self:
-        """Count the interactions of every user or item in ``X``."""
+        """Count the interactions of every user or item in ``X``, or in ``interactions``."""
         column = _check_kind(self.kind)
-        users, items, _ = check_interactions(_needs_interactions(self, X), y)
-        self.ids_, codes = factorize((users, items)[column])
+        if self.interactions is None:
+            users, items, _ = check_interactions(_needs_interactions(self, X), y)
+        else:
+            users, items = _own_interactions(self.interactions)
+        self.ids_, codes = _factorize((users, items)[column])
         self.counts_ = np.bincount(codes, minlength=len(self.ids_)).astype(np.float64)
         return self
 
@@ -529,7 +581,9 @@ class InteractionCounts(FeaturesMixin, BaseEstimator):
         del scores, context
         check_is_fitted(self)
         ids = pair_ids(pairs)[:, _check_kind(self.kind)]
-        positions, known = lookup_ids(ids, self.ids_, name=self.kind)
+        positions, known = _lookup(ids, self.ids_, self.kind)
+        if len(self.ids_) == 0:
+            return np.zeros((len(ids), 1))
         return np.where(known, self.counts_[positions], 0.0)[:, None]
 
     def get_feature_names_out(self, input_features: ArrayLike | None = None) -> NDArray[np.object_]:
@@ -742,6 +796,148 @@ class SegmentPopularity(FeaturesMixin, BaseEstimator):
         del input_features
         check_is_fitted(self)
         return self.feature_names_.copy()
+
+
+class ProfileAffinity(FeaturesMixin, BaseEstimator):
+    """How well each pair's item matches the items its user interacted with.
+
+    The content-based feature: ``item_features`` describes every item by attributes --
+    genre flags, tag weights, an embedding of its text -- and a user's *profile* is the
+    sum of the attributes of the items they interacted with. A candidate is then
+    compared with the profile, which works for an item nobody has interacted with yet,
+    as long as the table describes it. ``transform`` returns two features:
+
+    - ``profile_share``: the share of the user's interactions that have each of the
+      item's attributes, averaged over those attributes with the item's values as
+      weights. With 0/1 flags, a film of two genres scores the mean of the shares of
+      the user's history those genres hold.
+    - ``profile_cosine``: the cosine between the profile and the item's attributes,
+      which does not grow with how many attributes an item has.
+
+    Parameters
+    ----------
+    item_features : array-like of shape (n_rows, 1 + n_attributes)
+        Column 0 holds item identifiers, the others the attributes, which must be
+        finite numbers and are meant to be non-negative. Identifiers must be distinct
+        and need not match the fitted ones.
+    interactions : array-like of shape (n_interactions, 2), default=None
+        Interactions to build the profiles from instead of the ``X`` of ``fit``, laid
+        out like it: events of another kind than the ones recommended from, such as
+        dislikes, which make the features say how well an item matches what the user
+        turned down. They may be empty. They are used as given, whatever ``fit`` is
+        called with, so inside a :class:`~skrecsys.compose.Cascade` nothing is held out
+        of them: they must not be what the ranker is labelled from.
+
+    Attributes
+    ----------
+    ids_ : ndarray of shape (n_rows,)
+        Sorted item identifiers of the table.
+    table_ : ndarray of shape (n_rows, n_attributes)
+        Attributes, in the order of ``ids_``.
+    user_ids_ : ndarray of shape (n_users,)
+        Sorted users with a profile.
+    profiles_ : ndarray of shape (n_users, n_attributes)
+        Summed attributes of each user's interactions, counting a repeated pair each
+        time and skipping items the table lacks.
+    n_interactions_ : ndarray of shape (n_users,)
+        Interactions behind each profile.
+
+    Notes
+    -----
+    An item the table lacks has no attributes and scores 0. A user without a profile
+    gets NaN when the profiles come from ``X``, where it means the user is new, and 0
+    when they come from ``interactions``, where it means the user has none of those:
+    someone who disliked nothing matches nothing they disliked.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from skrecsys.compose import ProfileAffinity
+    >>> genres = np.array([["a", 1, 0], ["b", 1, 1], ["c", 0, 1]], dtype=object)
+    >>> X = [["u1", "a"], ["u1", "b"]]
+    >>> affinity = ProfileAffinity(genres).fit(X)
+    >>> affinity.transform([["u1", "a"], ["u1", "c"], ["new", "c"]]).round(2).tolist()
+    [[1.0, 0.89], [0.5, 0.45], [nan, nan]]
+
+    Against what the user turned down instead, which a user who turned nothing down
+    does not match at all:
+
+    >>> disliked = ProfileAffinity(genres, interactions=[["u1", "c"]]).fit()
+    >>> disliked.transform([["u1", "b"], ["new", "b"]]).round(2).tolist()
+    [[0.5, 0.71], [0.0, 0.0]]
+    """
+
+    def __init__(
+        self, item_features: ArrayLike | None = None, *, interactions: ArrayLike | None = None
+    ) -> None:
+        self.item_features = item_features
+        self.interactions = interactions
+
+    def fit(self, X: ArrayLike | None = None, y: ArrayLike | None = None) -> Self:
+        """Sum the attributes of the items of each user in ``X``, or in ``interactions``."""
+        if self.item_features is None:
+            raise ValueError("item_features must be a table of item identifiers and attributes.")
+        table = check_array(self.item_features, dtype=None, ensure_all_finite=False)
+        if table.shape[1] < _MIN_TABLE_COLUMNS:
+            raise ValueError(
+                "item_features must have an identifier column and at least one attribute "
+                f"column, got {table.shape[1]} column(s)."
+            )
+        self.ids_, rows = factorize(table[:, 0])
+        if len(self.ids_) != len(table):
+            raise ValueError("item_features holds duplicate item identifiers.")
+        self.table_ = np.empty((len(table), table.shape[1] - 1), dtype=np.float64)
+        self.table_[rows] = table[:, 1:].astype(np.float64)
+        if not np.all(np.isfinite(self.table_)):
+            raise ValueError("item_features must hold finite attributes.")
+
+        if self.interactions is None:
+            users, items, _ = check_interactions(_needs_interactions(self, X), y)
+        else:
+            users, items = _own_interactions(self.interactions)
+        self.user_ids_, codes = _factorize(users)
+        positions, known = _lookup(items, self.ids_, "item")
+        self.profiles_ = np.zeros((len(self.user_ids_), self.table_.shape[1]))
+        np.add.at(self.profiles_, codes[known], self.table_[positions[known]])
+        self.n_interactions_ = np.bincount(codes[known], minlength=len(self.user_ids_)).astype(
+            np.float64
+        )
+        return self
+
+    @override
+    def transform(  # pylint: disable=too-many-locals
+        self,
+        pairs: ArrayLike,
+        *,
+        scores: ArrayLike | None = None,
+        context: ArrayLike | None = None,
+    ) -> NDArray[np.floating]:
+        del scores, context
+        check_is_fitted(self)
+        ids = pair_ids(pairs)
+        rows, item_known = _lookup(ids[:, 1], self.ids_, "item")
+        item = np.where(item_known[:, None], self.table_[rows], 0.0)
+        users, user_known = _lookup(ids[:, 0], self.user_ids_, "user")
+        if len(self.user_ids_):
+            profile = np.where(user_known[:, None], self.profiles_[users], 0.0)
+            n_interactions = np.where(user_known, self.n_interactions_[users], 0.0)
+        else:
+            profile, n_interactions = np.zeros_like(item), np.zeros(len(ids))
+
+        overlap = (profile * item).sum(axis=1)
+        weight = item.sum(axis=1) * n_interactions
+        norm = np.linalg.norm(profile, axis=1) * np.linalg.norm(item, axis=1)
+        out = np.zeros((len(ids), 2))
+        np.divide(overlap, weight, out=out[:, 0], where=weight > 0)
+        np.divide(overlap, norm, out=out[:, 1], where=norm > 0)
+        if self.interactions is None:
+            out[~user_known] = np.nan
+        return out
+
+    def get_feature_names_out(self, input_features: ArrayLike | None = None) -> NDArray[np.object_]:
+        """Names of the features ``transform`` returns."""
+        del input_features
+        return np.asarray(["profile_share", "profile_cosine"], dtype=object)
 
 
 #: The ``features`` of :class:`ConcatFeatures`: all bare components or all named ones.

@@ -5,7 +5,7 @@
 //! its `k` best entries before the next one starts, so a score row never outlives its
 //! query and never leaves the native side. Three scorers share that shape:
 //!
-//! * [`top_k_from_similarity`] -- a sparse item-item model (KNN, RP3beta, SLIM, BM25),
+//! * [`top_k_from_similarity`] -- a sparse item-item model (KNN, `RP3beta`, SLIM, BM25),
 //!   accumulated with the SMMP accumulator over the entries the query reaches.
 //! * [`top_k_from_dense_rows`] -- a dense item-item model (EASE), one `axpy` per item the
 //!   user interacted with into a catalog-sized buffer.
@@ -55,20 +55,20 @@ pub enum Candidates<'a> {
 }
 
 impl Candidates<'_> {
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Self::All(n) => *n,
             Self::Subset { items, .. } => items.len(),
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// The item index at candidate position `p`.
     #[inline(always)]
-    pub fn item(&self, p: usize) -> usize {
+    pub const fn item(&self, p: usize) -> usize {
         match self {
             Self::All(_) => p,
             Self::Subset { items, .. } => items[p],
@@ -126,7 +126,7 @@ pub struct CsrRows<'a, P: Offset = usize> {
 
 impl<'a, P: Offset> CsrRows<'a, P> {
     /// The number of rows the index pointer describes.
-    pub fn n_rows(&self) -> usize {
+    pub const fn n_rows(&self) -> usize {
         self.indptr.len().saturating_sub(1)
     }
 
@@ -294,7 +294,7 @@ impl Best {
         out.clear();
         out.extend(self.heap.drain());
         self.floor = f64::NEG_INFINITY;
-        out.sort_unstable_by(|a, b| a.worst_first(b));
+        out.sort_unstable_by(Candidate::worst_first);
     }
 
     /// Write the kept candidates best first, adding `offset` to every score.
@@ -345,7 +345,7 @@ fn run_chunks<S: Send>(
         .zip(scores.par_chunks_mut(width))
         .enumerate()
         .for_each_init(init, |state, (chunk, (o, s))| {
-            work(state, chunk * per, o, s)
+            work(state, chunk * per, o, s);
         });
 }
 
@@ -370,6 +370,11 @@ pub enum Ties {
 /// it contributes to.
 ///
 /// Returns the candidate positions and their scores, both `(rows.len(), k)` row-major.
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] if a query has fewer than `k` eligible candidates.
+#[allow(clippy::too_many_lines)] // Keep scoring and selection fused in the hot path.
 pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
     users: &CsrRows<'_, P>,
     rows: &[usize],
@@ -379,14 +384,6 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
     k: usize,
     ties: Ties,
 ) -> Result<(Vec<usize>, Vec<f64>), TooFewEligible> {
-    check_eligible(rows, &candidates, exclusions, k)?;
-    let n_candidates = candidates.len();
-    let mut order = vec![0usize; rows.len() * k];
-    let mut scores = vec![0.0f64; rows.len() * k];
-    if k == 0 {
-        return Ok((order, scores));
-    }
-
     struct State {
         acc: Accumulator,
         dense: Vec<f64>,
@@ -397,6 +394,15 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
         scored: Vec<Candidate>,
         zeros: Vec<Candidate>,
     }
+
+    check_eligible(rows, &candidates, exclusions, k)?;
+    let n_candidates = candidates.len();
+    let mut order = vec![0usize; rows.len() * k];
+    let mut scores = vec![0.0f64; rows.len() * k];
+    if k == 0 {
+        return Ok((order, scores));
+    }
+
     run_chunks(
         rows.len(),
         1,
@@ -432,7 +438,7 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
                 st.dense.resize(similarity.n_cols, 0.0);
                 for (item, weight) in users.row(row) {
                     for (j, w) in similarity.row(item) {
-                        st.dense[j] += weight * w;
+                        st.dense[j] = madd::<BASELINE_FMA>(weight, w, st.dense[j]);
                     }
                 }
                 let mut cursor = 0usize;
@@ -526,6 +532,10 @@ pub fn top_k_from_similarity<P: Offset, S: Offset, Q: Offset>(
 /// each touched row once, contiguously, which is the whole cost; the sparse-times-dense
 /// product scipy ran here instead is single-threaded and went through a dense result
 /// matrix that was only ranked and thrown away.
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] if a query has fewer than `k` eligible candidates.
 pub fn top_k_from_dense_rows<P: Offset, Q: Offset>(
     users: &CsrRows<'_, P>,
     rows: &[usize],
@@ -619,6 +629,10 @@ const MIN_TILED: usize = 4;
 /// multiplied into `QUERY_TILE` accumulators held in registers, instead of once per
 /// query. The dense `(n_queries, n_items)` product -- and the three bias-broadcast
 /// temporaries of the same size numpy built around it -- is never formed.
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] if a query has fewer than `k` eligible candidates.
 pub fn top_k_from_factors<Q: Offset>(
     factors: &Factors<'_>,
     rows: &[usize],
@@ -626,6 +640,14 @@ pub fn top_k_from_factors<Q: Offset>(
     exclusions: &Exclusions<'_, Q>,
     k: usize,
 ) -> Result<(Vec<usize>, Vec<f64>), TooFewEligible> {
+    struct Tile {
+        /// Query `t`'s value for dimension `d` at `d * QUERY_TILE + t`.
+        transposed: Vec<f64>,
+        skips: Vec<Vec<usize>>,
+        bests: Vec<Best>,
+        scratch: Vec<Candidate>,
+    }
+
     check_eligible(rows, &candidates, exclusions, k)?;
     let n_queries = rows.len();
     let dim = factors.dim;
@@ -648,13 +670,6 @@ pub fn top_k_from_factors<Q: Offset>(
         return Ok((order, scores));
     }
 
-    struct Tile {
-        /// Query `t`'s value for dimension `d` at `d * QUERY_TILE + t`.
-        transposed: Vec<f64>,
-        skips: Vec<Vec<usize>>,
-        bests: Vec<Best>,
-        scratch: Vec<Candidate>,
-    }
     run_chunks(
         n_queries,
         QUERY_TILE,
@@ -769,7 +784,7 @@ fn rank_split_items<Q: Offset>(
             })
             .flatten()
             .collect();
-        merged.sort_unstable_by(|a, b| a.worst_first(b));
+        merged.sort_unstable_by(Candidate::worst_first);
         let offset = factors.user_offset.map_or(0.0, |o| o[user]);
         for ((slot, score), candidate) in order[q * k..(q + 1) * k]
             .iter_mut()
@@ -920,10 +935,10 @@ fn scan_single(
 }
 
 /// Fill one row of the output from the two ranked runs, best first.
-fn merge(order: &mut [usize], scores: &mut [f64], scored: &[Candidate], zeros: &[Candidate]) {
+fn merge(order: &mut [usize], scores: &mut [f64], nonzero: &[Candidate], zeros: &[Candidate]) {
     let (mut next_scored, mut next_zero) = (0usize, 0usize);
     for slot in 0..order.len() {
-        let take_scored = match (scored.get(next_scored), zeros.get(next_zero)) {
+        let take_scored = match (nonzero.get(next_scored), zeros.get(next_zero)) {
             (Some(a), Some(b)) => a.worst_first(b) == Ordering::Less,
             (Some(_), None) => true,
             (None, Some(_)) => false,
@@ -931,7 +946,7 @@ fn merge(order: &mut [usize], scores: &mut [f64], scored: &[Candidate], zeros: &
         };
         let pick = if take_scored {
             next_scored += 1;
-            scored[next_scored - 1]
+            nonzero[next_scored - 1]
         } else {
             next_zero += 1;
             zeros[next_zero - 1]
@@ -961,7 +976,7 @@ mod tests {
             let n_items = similarity[0].len();
             let mut position = vec![-1i64; n_items];
             for (p, &j) in candidates.iter().enumerate() {
-                position[j] = p as i64;
+                position[j] = i64::try_from(p).expect("position fits i64");
             }
             Self {
                 users: Owned::from_dense(users),
@@ -978,7 +993,10 @@ mod tests {
             self.indptr = vec![0];
             self.indices = Vec::new();
             for row in rows {
-                self.indices.extend(row.iter().map(|&c| c as i64));
+                self.indices.extend(
+                    row.iter()
+                        .map(|&column| i64::try_from(column).expect("column fits i64")),
+                );
                 self.indptr.push(self.indices.len());
             }
             self
@@ -1053,7 +1071,7 @@ mod tests {
             .filter(|(p, _)| !excluded.contains(p))
             .map(|(index, &score)| Candidate { score, index })
             .collect();
-        all.sort_by(|a, b| a.worst_first(b));
+        all.sort_by(Candidate::worst_first);
         all.truncate(k);
         (
             all.iter().map(|c| c.index).collect(),
@@ -1155,7 +1173,7 @@ mod tests {
         let candidates: Vec<usize> = (0..20).step_by(2).collect();
         let mut position = vec![-1i64; 20];
         for (p, &j) in candidates.iter().enumerate() {
-            position[j] = p as i64;
+            position[j] = i64::try_from(p).expect("position fits i64");
         }
         let k = 3;
         let got = top_k_from_similarity(
@@ -1203,7 +1221,10 @@ mod tests {
         let mut extra_indptr = vec![0usize];
         let mut extra_indices = Vec::new();
         for row in &added {
-            extra_indices.extend(row.iter().map(|&p| p as i64));
+            extra_indices.extend(
+                row.iter()
+                    .map(|&p| i64::try_from(p).expect("index fits i64")),
+            );
             extra_indptr.push(extra_indices.len());
         }
         let k = 2;
@@ -1388,7 +1409,7 @@ mod tests {
             let candidates: Vec<usize> = (0..n_items).filter(|j| j % 4 != 1).collect();
             let mut position = vec![-1i64; n_items];
             for (p, &j) in candidates.iter().enumerate() {
-                position[j] = p as i64;
+                position[j] = i64::try_from(p).expect("position fits i64");
             }
             // A seen-matrix with a few items per user, some outside the candidates.
             let seen_rows: Vec<Vec<(usize, f64)>> = (0..n_users)
@@ -1399,7 +1420,7 @@ mod tests {
                         .collect()
                 })
                 .collect();
-            let seen = Owned::from_rows(seen_rows.clone(), n_items);
+            let seen = Owned::from_rows(&seen_rows, n_items);
             let seen = seen.csr();
             for n_queries in [1usize, 3, 5, 8, 21, 45] {
                 let rows: Vec<usize> = (0..n_queries).map(|q| (q * 7) % n_users).collect();
@@ -1456,7 +1477,7 @@ mod tests {
                 .collect(),
             vec![(5, 1.0)],
         ];
-        let seen = Owned::from_rows(seen_rows, n_items);
+        let seen = Owned::from_rows(&seen_rows, n_items);
         let seen = seen.csr();
         let exclusions = Exclusions::Items {
             indptr: seen.indptr,
@@ -1520,7 +1541,7 @@ mod tests {
                 if !touched.contains(&j) {
                     touched.push(j);
                 }
-                sums[j] += w * s;
+                sums[j] = w.mul_add(s, sums[j]);
             }
         }
         let mut kept: Vec<(f64, usize)> = Vec::new();
@@ -1603,7 +1624,7 @@ mod tests {
                 assert_eq!(&order[q * k..(q + 1) * k], want_order, "query {q}");
                 assert_eq!(&scores[q * k..(q + 1) * k], want_scores, "query {q}");
                 let row = &scores[q * k..(q + 1) * k];
-                tied_at_cutoff += usize::from(row[k - 2] == row[k - 1]);
+                tied_at_cutoff += usize::from(row[k - 2].to_bits() == row[k - 1].to_bits());
             }
             assert!(tied_at_cutoff > 5, "the data should tie at the cutoff");
         }

@@ -9,6 +9,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use crate::sparse::{Accumulator, Csc, Csr, CsrOwned};
+use crate::vectors::{BASELINE_FMA, madd};
 
 /// Return the top `k` entries of every row of `w^T w`, where `w` has users as rows
 /// and items as columns. Rows are computed in parallel on the current rayon pool.
@@ -33,10 +34,10 @@ pub fn all_pairs_top_k_rows(w: &Csr, k: usize, rows: Option<&[usize]>) -> CsrOwn
             }
             drain_top_k(acc, top, out);
         };
-    match rows {
-        Some(rows) => CsrOwned::build_rows(rows, init, fill),
-        None => CsrOwned::build(w.n_cols, init, fill),
-    }
+    rows.map_or_else(
+        || CsrOwned::build(w.n_cols, init, fill),
+        |rows| CsrOwned::build_rows(rows, init, fill),
+    )
 }
 
 /// Top `k` cosine neighbours of every item, the diagonal excluded.
@@ -86,15 +87,20 @@ pub fn cosine_top_k_rows(
             acc.touched()
                 .iter()
                 .filter(|&&j| j != i && acc.get(j) != 0.0)
-                .map(|&j| (j, acc.get(j) / (norms[i] * norms[j] + shrink))),
+                .map(|&j| {
+                    (
+                        j,
+                        acc.get(j) / madd::<BASELINE_FMA>(norms[i], norms[j], shrink),
+                    )
+                }),
         );
         acc.reset();
         keep_best(out, before, k);
     };
-    match rows {
-        Some(rows) => CsrOwned::build_rows(rows, init, fill),
-        None => CsrOwned::build(n, init, fill),
-    }
+    rows.map_or_else(
+        || CsrOwned::build(n, init, fill),
+        |rows| CsrOwned::build_rows(rows, init, fill),
+    )
 }
 
 /// Cut `out[from..]` down to its `k` best entries, sorted by column.
@@ -266,7 +272,7 @@ mod tests {
                         if i == j || cooc == 0.0 {
                             0.0
                         } else {
-                            cooc / (norms[i] * norms[j] + shrink)
+                            cooc / norms[i].mul_add(norms[j], shrink)
                         }
                     })
                     .collect()
@@ -314,7 +320,7 @@ mod tests {
         // Item 2 has no interactions, so its norm is zero; it must not divide by zero.
         let dense = vec![vec![1.0, 1.0, 0.0], vec![1.0, 0.0, 0.0]];
         let norms = norms_of(&dense);
-        assert_eq!(norms[2], 0.0);
+        assert_eq!(norms[2].to_bits(), 0.0_f64.to_bits());
         let got = cosine_top_k(&Owned::from_dense(&dense).csr(), &norms, 0.0, 5);
         assert_eq!(row(&got, 2), vec![]);
         for (_, value) in row(&got, 0) {
@@ -348,7 +354,7 @@ mod tests {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
-                .unwrap()
+                .expect("thread pool builds with a positive thread count")
                 .install(|| all_pairs_top_k(&w.csr(), 7))
         };
         let (a, b) = (run(1), run(4));

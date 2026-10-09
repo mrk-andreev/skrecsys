@@ -6,7 +6,7 @@
 //! `1/m`, so the slots total about `n * m / (m - 1)` -- seven percent over one per node
 //! at the default `m = 16`, which is why the simple layout is also the small one.
 //!
-//! The frozen form is four flat arrays and nothing else. That is what crosses PyO3, what
+//! The frozen form is four flat arrays and nothing else. That is what crosses `PyO3`, what
 //! a fitted estimator pickles, and what a search in a fresh process runs from; there is
 //! no Rust-side object that outlives a call.
 
@@ -29,7 +29,7 @@ pub struct Params {
 impl Params {
     /// Neighbours kept at level 0, where the graph carries every node and must stay
     /// connected; the paper and Qdrant both double the cap there.
-    pub fn m0(&self) -> usize {
+    pub const fn m0(&self) -> usize {
         2 * self.m
     }
 
@@ -52,8 +52,8 @@ impl Params {
     }
 }
 
-/// One round of SplitMix64, which is how a seed and a node index become a draw.
-fn splitmix64(x: u64) -> u64 {
+/// One round of `SplitMix64`, which is how a seed and a node index become a draw.
+const fn splitmix64(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -183,14 +183,27 @@ impl BuildLinks {
         links_indptr.push(0);
         for slot in &self.slots {
             let neighbours = slot.read().expect("hnsw link lock poisoned");
-            links_indices.extend(neighbours.iter().map(|&n| n as i32));
-            links_indptr.push(links_indices.len() as i64);
+            links_indices.extend(
+                neighbours
+                    .iter()
+                    .map(|&n| i32::try_from(n).expect("node index fits i32")),
+            );
+            drop(neighbours);
+            links_indptr.push(i64::try_from(links_indices.len()).expect("link count fits i64"));
         }
         Graph {
-            node_level: self.node_level.iter().map(|&l| l as i32).collect(),
+            node_level: self
+                .node_level
+                .iter()
+                .map(|&level| i32::try_from(level).expect("graph level fits i32"))
+                .collect(),
             links_indptr,
             links_indices,
-            entry_point: if n_nodes == 0 { -1 } else { entry_point as i64 },
+            entry_point: if n_nodes == 0 {
+                -1
+            } else {
+                i64::try_from(entry_point).expect("entry point fits i64")
+            },
         }
     }
 }
@@ -259,7 +272,7 @@ impl<'a> GraphView<'a> {
             return None;
         }
         if links_indptr.windows(2).any(|w| w[0] > w[1])
-            || links_indptr.last() != Some(&(links_indices.len() as i64))
+            || links_indptr.last() != Some(&i64::try_from(links_indices.len()).ok()?)
         {
             return None;
         }
@@ -283,11 +296,11 @@ impl<'a> GraphView<'a> {
         })
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.node_level.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
@@ -299,7 +312,11 @@ impl Links for GraphView<'_> {
         }
         let slot = self.slot_start[node] + level;
         let range = self.links_indptr[slot] as usize..self.links_indptr[slot + 1] as usize;
-        out.extend(self.links_indices[range].iter().map(|&n| n as u32));
+        out.extend(
+            self.links_indices[range]
+                .iter()
+                .map(|&node| u32::try_from(node).expect("validated node index is nonnegative")),
+        );
     }
 
     fn level_of(&self, node: usize) -> usize {
@@ -434,9 +451,9 @@ mod tests {
         // The parallel-build hazard: node 0 is linked to by 1 and 2 while it is still
         // waiting its turn, then inserts and links to 3. All three must survive.
         let links = BuildLinks::new(vec![0, 0, 0, 0], &params());
-        links.link(0, 0, &[1], 8, |c| c.to_vec());
-        links.link(0, 0, &[2], 8, |c| c.to_vec());
-        links.link(0, 0, &[3], 8, |c| c.to_vec());
+        links.link(0, 0, &[1], 8, <[u32]>::to_vec);
+        links.link(0, 0, &[2], 8, <[u32]>::to_vec);
+        links.link(0, 0, &[3], 8, <[u32]>::to_vec);
         let mut out = Vec::new();
         links.neighbors(0, 0, &mut out);
         assert_eq!(out, vec![1, 2, 3]);

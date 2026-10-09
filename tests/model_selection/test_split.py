@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from skrecsys.model_selection import ColdStartSplit, WarmStartKFold
+from skrecsys.model_selection import ColdStartSplit, LatestInteractionsSplit, WarmStartKFold
+from skrecsys.model_selection._split import positions_in_user
 
 
 def _dataset(seed=0):
@@ -129,3 +130,62 @@ def test_cold_start_needs_a_cold_and_a_warm_user():
     X = _timed_dataset()[:20]  # two users
     with pytest.raises(ValueError, match="both must be non-empty"):
         next(ColdStartSplit(cold_users=0.2).split(X))
+
+
+def test_positions_in_user_number_rows_in_row_order_or_by_time():
+    codes = np.array([1, 0, 1, 1, 0])
+    position, counts = positions_in_user(codes)
+    assert position.tolist() == [0, 0, 1, 2, 1]
+    assert counts.tolist() == [2, 3]
+    # by time, ties in row order: user 1's rows at times 5, 1, 1 are its third, first, second
+    position, _ = positions_in_user(codes, np.array([5.0, 2.0, 1.0, 1.0, 0.0]))
+    assert position.tolist() == [2, 1, 0, 1, 0]
+
+
+def test_latest_interactions_split_holds_out_the_last_rows_of_every_user():
+    X = _dataset()
+    train, test = next(LatestInteractionsSplit(test_size=0.25).split(X))
+    assert np.intersect1d(train, test).size == 0
+    assert len(train) + len(test) == len(X)
+    for user in np.unique(X[:, 0]):
+        rows = np.flatnonzero(X[:, 0] == user)
+        n_held = len(rows) // 4
+        assert sorted(np.intersect1d(test, rows)) == rows[len(rows) - n_held :].tolist()
+    assert LatestInteractionsSplit().get_n_splits() == 1
+
+
+def test_latest_interactions_split_of_the_most_recently_active_users():
+    # last rows: u0 at 7, u1 at 5, u2 at 8, u3 (one row, nothing to hold out) at 9
+    users = ["u0", "u1", "u0", "u2", "u1", "u1", "u2", "u0", "u2", "u3"]
+    X = np.column_stack([users, [f"i{k}" for k in range(len(users))]])
+    held = {
+        max_users: next(LatestInteractionsSplit(0.5, max_users=max_users).split(X))[1].tolist()
+        for max_users in (None, 3, 2, 1)
+    }
+    # each of u0, u1, u2 has three rows and gives its last one
+    assert held[None] == held[3] == [5, 7, 8]
+    assert held[2] == [7, 8]
+    assert held[1] == [8]
+
+
+def test_latest_interactions_split_accepts_context_columns():
+    X = _dataset()
+    plain = next(LatestInteractionsSplit(0.3, max_users=5).split(X))
+    context = np.column_stack([X, np.arange(len(X)) % 3])
+    with_context = next(LatestInteractionsSplit(0.3, max_users=5).split(context))
+    for got, want in zip(with_context, plain, strict=True):
+        np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"test_size": 0.0}, "test_size"),
+        ({"test_size": 1.0}, "test_size"),
+        ({"max_users": 0}, "max_users"),
+        ({"max_users": 2.5}, "max_users"),
+    ],
+)
+def test_latest_interactions_split_validates(params, match):
+    with pytest.raises(ValueError, match=match):
+        LatestInteractionsSplit(**params)

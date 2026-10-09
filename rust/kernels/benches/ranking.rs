@@ -32,7 +32,7 @@ fn dense_top_k(c: &mut Criterion) {
                 b.iter(|| {
                     ranking::top_k_per_row(black_box(&scores), &seen.excluded(), n_cols, K)
                         .map_err(|e| e.row)
-                })
+                });
             },
         );
     }
@@ -55,7 +55,7 @@ fn fused_top_k(c: &mut Criterion) {
         let candidates: Vec<usize> = (0..n_items).step_by(share).collect();
         let mut position = vec![-1i64; n_items];
         for (p, &j) in candidates.iter().enumerate() {
-            position[j] = p as i64;
+            position[j] = i64::try_from(p).expect("position fits i64");
         }
         let seen = Pattern::random(n_queries, candidates.len(), SEEN_PER_QUERY, 0xbeef);
         group.throughput(Throughput::Elements((n_queries * candidates.len()) as u64));
@@ -76,7 +76,7 @@ fn fused_top_k(c: &mut Criterion) {
                         recommend::Ties::LowerPosition,
                     )
                     .map_err(|e| e.row)
-                })
+                });
             },
         );
     }
@@ -122,7 +122,7 @@ fn factors_top_k(c: &mut Criterion) {
                             K,
                         )
                         .map_err(|e| e.row)
-                    })
+                    });
                 },
             );
         }
@@ -157,7 +157,7 @@ fn dense_rows_top_k(c: &mut Criterion) {
                         K,
                     )
                     .map_err(|e| e.row)
-                })
+                });
             },
         );
     }

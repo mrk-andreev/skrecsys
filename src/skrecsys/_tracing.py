@@ -26,7 +26,6 @@ query identifiers are what ties the events of one query together across the stag
 import contextlib
 import functools
 import inspect
-import zlib
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -35,7 +34,13 @@ from typing import Concatenate, Literal, ParamSpec, Self, TypeAlias, TypeVar
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys.utils.validation import check_queries, factorize, lookup_ids, stack_pairs
+from skrecsys.utils.validation import (
+    check_queries,
+    factorize,
+    lookup_ids,
+    stable_unit_hash,
+    stack_pairs,
+)
 
 #: How much a tracer records: ``"full"`` adds the feature matrices and the leaf
 #: attributions to the ``"decisions"`` every stage takes.
@@ -574,29 +579,6 @@ def feature_names(component: object) -> tuple[str, ...] | None:
     with contextlib.suppress(Exception):
         return tuple(str(name) for name in names_out())
     return None
-
-
-_SPLITMIX_GAMMA = np.uint64(0x9E3779B97F4A7C15)
-_SPLITMIX_M1 = np.uint64(0xBF58476D1CE4E5B9)
-_SPLITMIX_M2 = np.uint64(0x94D049BB133111EB)
-
-
-def stable_unit_hash(ids: NDArray[np.generic]) -> NDArray[np.float64]:
-    """A number in [0, 1) per identifier, the same in every process and on every run.
-
-    Integers go through SplitMix64, vectorized; anything else through CRC-32 of its
-    ``str``. Python's own ``hash`` is salted per process for strings, so it would sample
-    a different set of users on every restart.
-    """
-    if ids.dtype.kind in "iub":
-        with np.errstate(over="ignore"):
-            x = ids.astype(np.int64).view(np.uint64) + _SPLITMIX_GAMMA
-            x = (x ^ (x >> np.uint64(30))) * _SPLITMIX_M1
-            x = (x ^ (x >> np.uint64(27))) * _SPLITMIX_M2
-            x ^= x >> np.uint64(31)
-        return (x >> np.uint64(11)).astype(np.float64) * 2.0**-53
-    codes = (zlib.crc32(str(value).encode()) for value in ids.tolist())
-    return np.fromiter(codes, dtype=np.float64, count=len(ids)) * 2.0**-32
 
 
 def _take(values: NDArray[_Scalar], keep: NDArray[np.bool_] | None) -> NDArray[_Scalar]:

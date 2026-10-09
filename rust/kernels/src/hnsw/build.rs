@@ -22,8 +22,16 @@ use crate::vectors::Items;
 /// Runs on the rayon pool the caller installed. On one thread the result is a function
 /// of `items` and `params` alone; on more, concurrent insertions see different partial
 /// graphs and the links vary between runs, though the levels never do.
+///
+/// # Panics
+///
+/// Panics if the item count exceeds the `i32` node index format.
 pub fn build(items: &impl Items, params: &Params) -> Graph {
     let n_nodes = items.len();
+    assert!(
+        i32::try_from(n_nodes.saturating_sub(1)).is_ok(),
+        "HNSW item count exceeds the i32 node index format"
+    );
     let node_level: Vec<usize> = (0..n_nodes).map(|node| params.level_of(node)).collect();
     let links = BuildLinks::new(node_level.clone(), params);
     if n_nodes == 0 {
@@ -94,7 +102,7 @@ fn repair(
     // A pass can only shrink the stranded set, and one that finds nothing ends the
     // repair; the bound is there so that a pathological catalog cannot spin.
     for _ in 0..MAX_REPAIR_PASSES {
-        reachable.iter_mut().for_each(|seen| *seen = false);
+        reachable.fill(false);
         mark_component(links, entry, &mut reachable, &mut stack, &mut neighbours);
 
         // One representative per stranded component: attaching it brings everything it
@@ -160,22 +168,24 @@ fn attach(
     candidates: &[Candidate],
     cap: usize,
 ) {
+    let node_id = u32::try_from(node).expect("node index fits u32");
     // The in-edge is the one that matters: without it nothing can walk to `node`.
     let host = candidates
         .iter()
-        .find(|candidate| links.link_if_room(candidate.index, 0, node as u32, cap))
+        .find(|candidate| links.link_if_room(candidate.index, 0, node_id, cap))
         .or_else(|| {
             // Nothing near has room, so the nearest gives up its weakest link. Rare,
             // and the pass that follows picks up anything this strands.
             let best = candidates.first()?;
-            links.link(best.index, 0, &[node as u32], cap, |current| {
-                prune_keeping(current, best.index, node as u32, cap, items)
+            links.link(best.index, 0, &[node_id], cap, |current| {
+                prune_keeping(current, best.index, node_id, cap, items)
             });
             Some(best)
         });
     if let Some(host) = host {
-        links.link(node, 0, &[host.index as u32], cap, |current| {
-            prune_keeping(current, node, host.index as u32, cap, items)
+        let host_id = u32::try_from(host.index).expect("host index fits u32");
+        links.link(node, 0, &[host_id], cap, |current| {
+            prune_keeping(current, node, host_id, cap, items)
         });
     }
 }
@@ -220,7 +230,6 @@ fn prune_keeping(
     kept
 }
 
-#[allow(clippy::too_many_arguments)]
 fn insert_one(
     node: usize,
     items: &impl Items,
@@ -232,6 +241,7 @@ fn insert_one(
     neighbours: &mut Vec<u32>,
 ) {
     let level = links.level_of(node);
+    let node_id = u32::try_from(node).expect("node index fits u32");
     let score = |other: usize| items.similarity(node, other);
     let admit = |_: usize| true;
 
@@ -264,7 +274,7 @@ fn insert_one(
         });
         for &neighbour in &selected {
             let neighbour = neighbour as usize;
-            links.link(neighbour, l, &[node as u32], cap, |current| {
+            links.link(neighbour, l, &[node_id], cap, |current| {
                 prune(current, neighbour, cap, items)
             });
         }
@@ -281,7 +291,7 @@ fn prune(current: &[u32], owner: usize, cap: usize, items: &impl Items) -> Vec<u
             index: n as usize,
         })
         .collect();
-    candidates.sort_unstable_by(|a, b| a.worst_first(b));
+    candidates.sort_unstable_by(super::super::ranking::Candidate::worst_first);
     select_neighbours(&candidates, cap, items)
 }
 
@@ -310,9 +320,9 @@ fn select_neighbours(candidates: &[Candidate], cap: usize, items: &impl Items) -
             .iter()
             .all(|&other| items.similarity(candidate.index, other as usize) < candidate.score);
         if diverse {
-            kept.push(candidate.index as u32);
+            kept.push(u32::try_from(candidate.index).expect("candidate index fits u32"));
         } else {
-            rejected.push(candidate.index as u32);
+            rejected.push(u32::try_from(candidate.index).expect("candidate index fits u32"));
         }
     }
     let room = cap.saturating_sub(kept.len());
@@ -321,10 +331,36 @@ fn select_neighbours(candidates: &[Candidate], cap: usize, items: &impl Items) -
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use crate::hnsw::graph::{GraphView, MAX_LEVEL};
-    use crate::vectors::DenseItems;
+    use crate::vectors::{DenseItems, Probe};
+
+    struct TooManyItems;
+
+    impl Items for TooManyItems {
+        fn len(&self) -> usize {
+            usize::try_from(i32::MAX).expect("i32 fits usize") + 2
+        }
+
+        fn dim(&self) -> usize {
+            unreachable!()
+        }
+
+        fn similarity(&self, _: usize, _: usize) -> f64 {
+            unreachable!()
+        }
+
+        fn score(&self, _: usize, _: &Probe<'_>) -> f64 {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "HNSW item count exceeds the i32 node index format")]
+    fn build_rejects_more_nodes_than_the_stored_index_can_hold() {
+        build(&TooManyItems, &params(8));
+    }
 
     fn params(m: usize) -> Params {
         Params {
@@ -362,7 +398,7 @@ pub(crate) mod tests {
         };
         let graph = build(&items, &params(8));
         assert_eq!(graph.entry_point, -1);
-        assert!(graph.links_indices.is_empty());
+        assert_eq!(graph.links_indices, [] as [i32; 0]);
     }
 
     #[test]
@@ -376,7 +412,7 @@ pub(crate) mod tests {
             &params(8),
         );
         assert_eq!(graph.entry_point, 0);
-        assert!(graph.links_indices.is_empty());
+        assert_eq!(graph.links_indices, [] as [i32; 0]);
     }
 
     #[test]
@@ -403,7 +439,7 @@ pub(crate) mod tests {
                     neighbours.len()
                 );
                 assert!(
-                    !neighbours.contains(&(node as u32)),
+                    !neighbours.contains(&u32::try_from(node).expect("node index fits u32")),
                     "node {node} links to itself"
                 );
             }
@@ -428,7 +464,10 @@ pub(crate) mod tests {
             .iter()
             .position(|&l| l == top)
             .expect("a node");
-        assert_eq!(graph.entry_point, first as i64);
+        assert_eq!(
+            graph.entry_point,
+            i64::try_from(first).expect("node fits i64")
+        );
         assert!(top as usize <= MAX_LEVEL);
     }
 
@@ -495,7 +534,7 @@ pub(crate) mod tests {
                 index,
             })
             .collect();
-        candidates.sort_unstable_by(|a, b| a.worst_first(b));
+        candidates.sort_unstable_by(crate::ranking::Candidate::worst_first);
         assert_eq!(
             candidates.iter().map(|c| c.index).collect::<Vec<_>>(),
             vec![1, 2, 3],
@@ -524,7 +563,7 @@ pub(crate) mod tests {
                 index,
             })
             .collect();
-        candidates.sort_unstable_by(|a, b| a.worst_first(b));
+        candidates.sort_unstable_by(crate::ranking::Candidate::worst_first);
         assert_eq!(select_neighbours(&candidates, 3, &items), vec![1, 3, 2]);
     }
 
@@ -558,7 +597,7 @@ pub(crate) mod tests {
             vectors: &vectors,
             dim: 2,
         };
-        assert!(select_neighbours(&[], 4, &items).is_empty());
+        assert_eq!(select_neighbours(&[], 4, &items), [] as [u32; 0]);
     }
 
     #[test]
@@ -610,7 +649,7 @@ pub(crate) mod tests {
     }
 
     /// Reproducible pseudo-random vectors, without depending on an RNG crate.
-    pub(crate) fn pseudo_vectors(n: usize, dim: usize) -> Vec<f64> {
+    pub fn pseudo_vectors(n: usize, dim: usize) -> Vec<f64> {
         let mut state: u64 = 0x2545_f491_4f6c_dd1d;
         (0..n * dim)
             .map(|_| {
@@ -624,11 +663,13 @@ pub(crate) mod tests {
 
     /// The same vectors scaled onto the unit sphere, where an inner product ranks the
     /// same way an angle does.
-    pub(crate) fn unit_vectors(n: usize, dim: usize) -> Vec<f64> {
+    pub fn unit_vectors(n: usize, dim: usize) -> Vec<f64> {
         let mut vectors = pseudo_vectors(n, dim);
         for row in vectors.chunks_mut(dim) {
             let norm: f64 = row.iter().map(|v| v * v).sum::<f64>().sqrt();
-            row.iter_mut().for_each(|v| *v /= norm);
+            for v in row.iter_mut() {
+                *v /= norm;
+            }
         }
         vectors
     }

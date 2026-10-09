@@ -7,15 +7,18 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 
 from skrecsys.compose import (
+    Backfill,
     Cascade,
     ConcatFeatures,
     GeneratorScores,
+    ItemListRecommender,
     JoinStaticFeatures,
     KnownUser,
     MinInteractions,
     PointwiseRanker,
     ReciprocalRankFusion,
     ReciprocalRankRanker,
+    ReservedSlots,
     Switch,
 )
 from skrecsys.recommendation import (
@@ -28,6 +31,10 @@ from skrecsys.recommendation import (
 ITEM_TABLE = np.array(
     [["i0", 0.0], ["i1", 1.0], ["i2", 0.0], ["i3", 1.0], ["i4", 0.5]], dtype=object
 )
+
+#: The fixture's items as a list of its own order, for the composites that take one: the
+#: shared checks expect a recommender to know exactly the items it was fitted on.
+ITEM_LIST = ["i5", "i3", "i0", "i4", "i1", "i2"]
 
 
 def demote_i0(pairs, scores, groups):
@@ -88,4 +95,20 @@ COMPOSITES = [
     ),
     cascade(generator=ReciprocalRankFusion([ItemKNNRecommender(), MostPopularRecommender()])),
     cascade(postprocess=demote_i0),
+    ItemListRecommender(ITEM_LIST),
+    ItemListRecommender(ITEM_LIST, rotate=True, random_state=3),
+    Backfill([ItemKNNRecommender(), MostPopularRecommender(), ItemListRecommender(ITEM_LIST)]),
+    Backfill(
+        [("ranked", cascade(n_retrieved=2)), ("catalog", ItemListRecommender(ITEM_LIST))],
+        skip_insufficient=True,
+    ),
+    ReservedSlots(
+        ItemKNNRecommender(), ItemListRecommender(ITEM_LIST, rotate=True), n_slots=1, head=2
+    ),
+    ReservedSlots(
+        Backfill([Switch(KnownUser(), cascade(), MostPopularRecommender())]),
+        ItemListRecommender(ITEM_LIST),
+        n_slots=2,
+        head=3,
+    ),
 ]

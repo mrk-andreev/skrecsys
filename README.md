@@ -1,9 +1,14 @@
-<!-- Generated from README.md.j2 by `python benchmarks/run.py render`: edit the template, not this file. -->
+<!-- Generated from README.md.j2 by `python scripts/render_readme.py`: edit the template, not this file. -->
 # skrecsys
 
 [![PyPI](https://img.shields.io/pypi/v/skrecsys)](https://pypi.org/project/skrecsys/)
 [![Python](https://img.shields.io/pypi/pyversions/skrecsys)](https://pypi.org/project/skrecsys/)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://pypi.org/project/skrecsys/#files)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[![CI](https://github.com/mrk-andreev/skrecsys/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/mrk-andreev/skrecsys/actions/workflows/tests.yml)
+[![Maintainability](https://qlty.sh/gh/mrk-andreev/projects/skrecsys/maintainability.svg)](https://qlty.sh/gh/mrk-andreev/projects/skrecsys)
+[![Rust accelerated](https://img.shields.io/badge/accelerated_by-Rust-CE422B?logo=rust&logoColor=white)](https://github.com/mrk-andreev/skrecsys/tree/main/rust)
 
 Recommender systems in the scikit-learn style, built on NumPy, SciPy and scikit-learn.
 
@@ -214,7 +219,9 @@ take part in a grid search through nested parameters such as `on_true__ranker__i
 
 There are two composites, `Switch` and `Cascade`, and three kinds of primitive they are built
 from: conditions, feature components and rankers. Each primitive is a small estimator that can be
-fitted and called on its own, which is the easiest way to see what it does.
+fitted and called on its own, which is the easiest way to see what it does. Two more composites,
+`Backfill` and `ReservedSlots`, put the lists of several recommenders together, which is what
+keeps a served list full and leaves room in it to explore.
 
 ### Conditions
 
@@ -317,11 +324,16 @@ JoinDynamicFeatures("item-context", on_shelf).fit().transform(
 )  # -> [[1.], [0.]]
 ```
 
-Three components learn from the interactions they are fitted on, which inside a `Cascade` are
+Four components learn from the interactions they are fitted on, which inside a `Cascade` are
 the rows the generator was fitted on, never the held-out ones:
 
 ```python
-from skrecsys.compose import InteractionCounts, RecommenderScores, SegmentPopularity
+from skrecsys.compose import (
+    InteractionCounts,
+    ProfileAffinity,
+    RecommenderScores,
+    SegmentPopularity,
+)
 from skrecsys.recommendation import ItemKNNRecommender
 
 X = [["u1", "a"], ["u1", "b"], ["u2", "a"], ["u2", "c"]]
@@ -337,7 +349,32 @@ RecommenderScores(ItemKNNRecommender()).fit(X).transform([["u1", "c"], ["new", "
 # the global one: the one signal a cold user has, as long as the table lists them
 segments = np.array([["u1", "kid"], ["u2", "adult"], ["new", "kid"]], dtype=object)
 SegmentPopularity(segments, smoothing=0.0).fit(X).transform([["new", "b"]])  # -> [[1., 2.]]
+
+# how well the item's attributes match those of the items the user interacted with: the share
+# of the user's history that has them, and the cosine of the two. It works for an item nobody
+# has interacted with, as long as the table describes it; a user without history gets NaN
+genres = np.array([["a", 1, 0], ["b", 1, 1], ["c", 0, 1]], dtype=object)  # column 0 the id
+ProfileAffinity(genres).fit(X).transform([["u1", "c"], ["new", "c"]])
+# -> [[0.5, 0.447], [nan, nan]]
 ```
+
+`InteractionCounts` and `ProfileAffinity` can read a second kind of event instead of `X`:
+dislikes, skips, impressions. Pass it as `interactions`, laid out like `X`, and the feature
+describes that instead: how often an item was disliked, or how well it matches what its user
+turned down. A user with no such events scores 0, since having disliked nothing is a fact about
+them and not a gap:
+
+```python
+dislikes = [["u1", "c"]]  # may be empty: before the first dislike there are none
+
+InteractionCounts("item", interactions=dislikes).fit().transform([["u2", "c"], ["u2", "a"]])
+# -> [[1.], [0.]]
+ProfileAffinity(genres, interactions=dislikes).fit().transform([["u1", "b"], ["u2", "b"]])
+# -> [[0.5, 0.707], [0., 0.]]
+```
+
+These are used as given whatever the component is fitted on, so a `Cascade` holds nothing out
+of them: they must not be the events its ranker is labelled from.
 
 `ConcatFeatures` puts components side by side, as `FeatureUnion` does. Give the components names to
 address their parameters as `name__param` and to prefix the feature names:
@@ -479,6 +516,23 @@ fits a generator on the rest, and labels its candidates for the held-out users b
 held out. Only then does it refit the generator on everything, for serving. `split` also takes any
 scikit-learn splitter. A query with fewer eligible items than `n_retrieved` gets all of them as
 candidates rather than an error.
+
+The ranker gets one group of candidates per user with held-out rows, and its fit time grows
+with their number. `LatestInteractionsSplit(test_size, max_users=...)` holds out the same latest
+rows from the most recently active `max_users` users only, and leaves everyone else wholly to
+the generator, which bounds the ranker's fit on a service that refits often:
+
+```python
+from skrecsys.model_selection import LatestInteractionsSplit
+
+Cascade(..., split=LatestInteractionsSplit(0.5, max_users=500))
+```
+
+When the data cannot train a ranker -- nothing was held out, or no held-out interaction is among
+the candidates -- `fit` raises `skrecsys.exceptions.InsufficientDataError`. It is a `ValueError`,
+and so is fitting any recommender on no interactions at all; a wrong argument is never one, so a
+caller can fall back to a simpler model without hiding a mistake. [`Backfill`](#backfill) does
+that for you.
 
 A splitter that holds out a user's rows entirely, such as
 `skrecsys.model_selection.ColdStartSplit`, trains a cold-start ranker, as long as the generator
@@ -700,6 +754,96 @@ The [reranking benchmark](#reranking-benchmark) measures both against the ranker
 [candidate generation benchmark](#candidate-generation-benchmark) compares fusion with
 round-robin as a way to merge generators.
 
+### Item lists
+
+Every recommender fitted from interactions knows only the items someone interacted with. An
+`ItemListRecommender` recommends from a list you give it, best first: an editorial selection, the
+catalog by release date, the items nobody has been shown yet. It serves a user it has never seen,
+and can be fitted before the first interaction; the interactions only tell it what each user has
+seen.
+
+```python
+from skrecsys.compose import ItemListRecommender
+
+X = [["u1", "a"], ["u1", "b"], ["u2", "b"], ["u2", "c"], ["u3", "c"]]
+catalog = ["z", "y", "c", "b", "a"]  # "z" and "y" appear in no interaction
+
+shelf = ItemListRecommender(catalog).fit(X)
+shelf.recommend(["u1", "nobody"], n_recommendations=3)[0]  # -> [[z, y, c], [z, y, c]]
+
+# rotate=True starts every user at a place of their own and reads the list round from there,
+# so each item is shown about as often as any other
+spread = ItemListRecommender(catalog, rotate=True).fit(X)
+spread.recommend(["u1", "u2"], n_recommendations=2, exclude_seen=False)[0]  # -> [[y, c], [a, z]]
+```
+
+The start depends on the user and `random_state` alone. `recommend` changes nothing in the model,
+so it stays safe to call from several threads and a user asking twice gets the same list; pass a
+`random_state` that changes with each refit, such as the model's version, for a user to be shown
+other items by each.
+
+### Backfill
+
+`recommend` raises when a query has fewer eligible items than it was asked for, and most models
+run short for someone: a `Cascade` has only its `n_retrieved` candidates, a neighbourhood model
+only the items someone interacted with, and none of them a user who arrived after `fit`.
+`Backfill` fills each list from its first recommender and tops it up from the next, asking each
+only about the queries still short and only for items the list does not hold:
+
+```python
+from skrecsys.compose import Backfill
+from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+
+rec = Backfill(
+    [
+        ("personal", ItemKNNRecommender()),
+        ("popular", MostPopularRecommender()),
+        ("catalog", ItemListRecommender(catalog)),
+    ]
+).fit(X)
+rec.recommend(["u1", "nobody"], n_recommendations=3)[0]  # -> [[c, z, y], [b, c, a]]
+```
+
+`u1` has one unseen neighbour, so the catalog supplies the rest; `nobody` is unknown to the
+personal model and gets the popular items. A list that ends with the whole catalog never runs
+short. Unlike a `Switch`, which picks one recommender per query, and `ReciprocalRankFusion`, which
+scores every item by all of them, a backfill concatenates, so its scores only restate the order
+of a list: `n_recommendations` down to 1.
+
+`skip_insufficient=True` leaves out a recommender that cannot be fitted yet for lack of data,
+instead of failing the fit, and `skipped_` names it. The same pipeline then serves from the first
+request to the millionth:
+
+```python
+day_one = Backfill(rec.recommenders, skip_insufficient=True).fit(np.empty((0, 2), dtype=str))
+day_one.skipped_  # -> ["personal", "popular"]
+day_one.recommend(["u1"], n_recommendations=3)[0]  # -> [[z, y, c]]
+```
+
+### Reserved slots
+
+A recommender shows what it already believes in, so an item nobody was shown never collects the
+interactions that would get it recommended. `ReservedSlots` gives the last `n_slots` of the first
+`head` positions of each list to another recommender's items, and puts the rest of the list
+behind them:
+
+```python
+from skrecsys.compose import ReservedSlots
+
+explore = ReservedSlots(
+    rec,
+    ItemListRecommender(["new1", "new2", "new3"], rotate=True),
+    n_slots=1,
+    head=3,
+).fit(X)
+explore.recommend(["u3", "nobody"], n_recommendations=4)[0]
+# -> [[b, a, new3, z], [b, c, new2, a]]
+```
+
+Nothing is lost at either end: a slot the inserted recommender has no item for stays with the
+base list, and a head position the base list has no item for goes to the inserted one. The
+reserved positions are fixed, so a list cut before them holds none.
+
 ### Putting it together
 
 The composites nest. This one serves known users with a BM25 candidate generator and a CatBoost
@@ -738,14 +882,64 @@ rec = Switch(
 rec.recommend(["u1", "someone-new"], n_recommendations=10)
 ```
 
+A service wants more than a ranking: a full list for every user from the first day, whatever
+each model can say, and a way for new items to be seen. The same switch then becomes the first
+source of a backfill, with positions reserved for the items nobody has reacted to. Here the
+personal branch needs a few interactions, the popular list ranks by likes per impression rather
+than by likes -- a recommender shows items unequally often, so a count mostly measures exposure
+-- and the ranker also learns from what users disliked:
+
+```python
+from skrecsys.compose import (
+    Backfill,
+    InteractionCounts,
+    ItemListRecommender,
+    MinInteractions,
+    ProfileAffinity,
+    ReservedSlots,
+)
+from skrecsys.model_selection import LatestInteractionsSplit
+
+popular = MostPopularRecommender(exposure=impressions, smoothing=20.0)  # rows of [item, shown]
+personal = Cascade(
+    generator=[("bm25", BM25Recommender()), ("popular", MostPopularRecommender())],
+    features=ConcatFeatures(
+        [
+            ("gen", GeneratorScores(n_generators=2)),
+            ("item", JoinStaticFeatures("item", item_table)),
+            ("genre", ProfileAffinity(genre_table)),  # rows of [item, one 0/1 column per genre]
+            ("genre_disliked", ProfileAffinity(genre_table, interactions=dislikes)),
+            ("item_dislikes", InteractionCounts("item", interactions=dislikes)),
+        ]
+    ),
+    ranker=CatBoostRanker(),
+    n_retrieved=50,
+    split=LatestInteractionsSplit(0.5, max_users=500),
+)
+rec = ReservedSlots(
+    Backfill(
+        [
+            ("personal", Switch(MinInteractions(2), on_true=personal, on_false=popular)),
+            ("popular", popular),
+            ("catalog", ItemListRecommender(catalog)),  # every item, liked or not
+        ],
+        skip_insufficient=True,  # until there is enough to train the ranker on
+    ),
+    ItemListRecommender(unexplored, rotate=True, random_state=version),
+    n_slots=3,
+    head=10,
+).fit(likes)
+rec.recommend(["u1", "someone-new"], n_recommendations=20, exclude_interactions=recent)
+```
+
 The parts play five roles, each a small protocol:
 
 | Role | Protocol | Provided |
 | --- | --- | --- |
-| recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion` |
+| recommender | `fit`, `recommend`, `predict` | every estimator above, `Switch`, `Cascade`, `ReciprocalRankFusion`, `Backfill`, `ReservedSlots`, `ItemListRecommender` |
 | condition | `fit`, `evaluate(queries) -> bool` | `KnownUser`, `MinInteractions`, `QueryIn`; combine with `~`, `&`, `\|` |
 | candidates | plain arrays: `pairs` `(n, 2)` -- `(n, 3)` with the time under `time=True` --, generator `scores`, group sizes `groups`, and the query `context` `(n, n_context)` when `X` has context columns | produced by the generator |
-| features | `fit`, `transform(pairs, *, scores, context) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one, and ignoring `scores` or `context` when it has no use for them | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures` |
+| features | `fit`, `transform(pairs, *, scores, context) -> (n, n_features)`, reading `pairs[:, 2]` as the time when there is one, and ignoring `scores` or `context` when it has no use for them | `JoinStaticFeatures`, `JoinDynamicFeatures` (a callback), `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ProfileAffinity`, `ConcatFeatures` |
 | ranker | `fit(F, y, *, groups)`, `predict(F, *, groups)` | `PointwiseRanker` (any classifier or regressor), `GroupRanker` (`LGBMRanker`-style), `BlendRanker` (stacks or averages rankers), `AugmentedRanker` (gives one ranker features of its own), `ReciprocalRankRanker` (fuses feature columns or rankers by rank), and from `skrecsys.integrations`: `CatBoostRanker`, `XGBRanker`, `LGBMRanker` |
 
 On top of the ranker, `Cascade(postprocess=...)` takes a plain callable, not a component:
@@ -1227,7 +1421,9 @@ users get the fallback until the next update adds them.
 A model object ranks and scores. These parts of a deployment belong to the service around it:
 
 - **Unknown users.** `recommend` raises `ValueError` for a user the model has not seen; the
-  service serves the popular fallback above.
+  service serves the popular fallback above. A [`Backfill`](#backfill) puts that fallback in
+  the model instead: it tops every list up from the next recommender, so a model ending with
+  an `ItemListRecommender` of the catalog returns a full list to anyone.
 - **Anonymous sessions.** The classical estimators score users by identifier, so a session
   becomes rankable once `partial_fit` has taken in its events.
 - **Retention.** `partial_fit` only adds interactions; time decay, windows and deletion
@@ -2945,14 +3141,15 @@ interaction, roughly what `interactions_` already costs.
 | --- | --- |
 | `skrecsys` | `RecommenderMixin`, `is_recommender`, `supports_partial_fit` |
 | `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
-| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker`, `AugmentedRanker` |
+| `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ProfileAffinity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker`, `AugmentedRanker`, `ReciprocalRankFusion`, `ReciprocalRankRanker`, `Backfill`, `ReservedSlots`, `ItemListRecommender` |
+| `skrecsys.exceptions` | `InsufficientDataError` |
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
 | `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
 | `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
 | `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
-| `skrecsys.model_selection` | `WarmStartKFold`, `ColdStartSplit` |
+| `skrecsys.model_selection` | `WarmStartKFold`, `ColdStartSplit`, `LatestInteractionsSplit` |
 | `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
 | `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
 | `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
@@ -3000,7 +3197,7 @@ LTO still crosses the crate boundary.
 
 The tables in this README are generated, and so is the README itself: `README.md.j2` is
 the source, with one `docs/*.md.j2` fragment per section, and
-`python benchmarks/run.py render` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
+`python scripts/render_readme.py` fills in its tables, and the sentences around them, from the results stored in `benchmarks/results`. Edit the template, not
 `README.md`; a test fails when the two disagree.
 
 What the benchmarks run is configuration rather than code. `benchmarks/config/`
@@ -3034,7 +3231,7 @@ uv run python benchmarks/run.py run indexes --dataset movielens-100k --index qua
 uv run python benchmarks/run.py run leaderboard           # measure what is out of date, re-render README.md
 uv run python benchmarks/run.py run leaderboard --dataset amazon-books --only ALS --force
 uv run python benchmarks/run.py run leaderboard --no-store --set repeat=20 --set rank_repeat=5000
-uv run python benchmarks/run.py render --check            # exit 1 if README.md is out of date
+uv run python scripts/render_readme.py --check            # exit 1 if README.md is out of date
 ```
 
 `--no-store` measures without keeping the result, which suits tighter timing runs like the
@@ -3079,9 +3276,11 @@ specific to this workload and micro-architecture, so the script is there to re-m
 
 ## Releasing
 
-1. Bump the version: `uv version --bump patch` (or `minor` / `major`).
-2. Commit, then tag and push: `git tag v$(uv version --short) && git push --tags`.
-3. The `Release` GitHub Actions workflow builds and publishes to PyPI via Trusted Publishing.
+1. Bump the version: `uv version --bump patch` (or `minor` / `major`). Commit
+   `pyproject.toml` and `uv.lock`, then merge the change into `main`.
+2. After the `Tests` workflow passes on `main`, the `Release` workflow builds that commit,
+   publishes to PyPI via Trusted Publishing, and creates its `v<version>` tag. A version
+   already tagged is skipped; there is no manual tag or tag push.
 
 ## Changelog
 
@@ -3241,6 +3440,33 @@ specific to this workload and micro-architecture, so the script is there to re-m
   `JoinDynamicFeatures` callback keyed by time now gets such times as `datetime64` scalars,
   NaT where missing, instead of `datetime` objects and `None`.
 - Notebook 08, `08_query_context.py`: query context on MovieLens 100K.
+
+### 0.8.0
+
+- Lists put together from several recommenders, in `skrecsys.compose`. `Backfill` fills each
+  list from its first recommender and tops it up from the next, so a list is as personal as
+  the data allows and full for every user; `skip_insufficient=True` leaves out a recommender
+  that cannot be fitted yet. `ReservedSlots` gives the last `n_slots` of the first `head`
+  positions to another recommender's items, for exploration. `ItemListRecommender` recommends
+  from a fixed list, which may hold items no interaction names, serves unknown users and fits
+  on no interactions; `rotate=True` starts each user at a place of their own, as a function
+  of the user and `random_state`, with no state changed by `recommend`.
+- `MostPopularRecommender(exposure=..., smoothing=...)` scores an item by its popularity per
+  exposure, `popularity / (exposure + smoothing)`, from a table of `[item, exposure]`. The new
+  `item_counts_` holds the raw counts, `partial_fit` stays exact, and it reads `exposure` again
+  on every call.
+- `skrecsys.model_selection.LatestInteractionsSplit(test_size, max_users=...)` holds out the
+  latest rows of every user, or of the most recently active `max_users` only, which bounds the
+  groups a `Cascade` trains its ranker on.
+- `ProfileAffinity` compares each candidate's attributes with those of the items its user
+  interacted with: their share of the user's history, and the cosine. It and
+  `InteractionCounts` take `interactions=`, a second kind of event to read instead of `X`,
+  such as dislikes.
+- `skrecsys.exceptions.InsufficientDataError`, a `ValueError`, is what `Cascade.fit` raises
+  when its ranker has nothing to learn from, and what any recommender raises for interactions
+  without rows, in place of scikit-learn's message about 0 samples. A wrong argument never
+  raises it.
+- `skrecsys.utils.validation.stable_unit_hash` takes a `salt`.
 
 ## License
 

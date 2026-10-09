@@ -1,5 +1,7 @@
-//! SLIM with elastic-net weights: one sparse linear regression per item, fitted by
-//! coordinate descent (X. Ning and G. Karypis, "SLIM: Sparse Linear Methods for Top-N
+//! SLIM with elastic-net weights.
+//!
+//! Each item has a sparse linear regression fitted by coordinate descent
+//! (X. Ning and G. Karypis, "SLIM: Sparse Linear Methods for Top-N
 //! Recommender Systems", ICDM 2011; M. Levy and K. Jack, "Efficient Top-N
 //! Recommendation by Linear Regression", LSRS 2013).
 //!
@@ -25,7 +27,7 @@ use crate::ease::gram;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::sparse::{Csr, CsrOwned};
-use crate::vectors::axpy;
+use crate::vectors::{BASELINE_FMA, axpy, madd};
 
 /// The per-item elastic net, in scikit-learn's parameterization.
 pub struct ElasticNet {
@@ -62,6 +64,10 @@ pub fn similarity(r: &Csr, enet: &ElasticNet, k: usize) -> (CsrOwned, usize) {
 /// gap rather than at the exact optimum, so a warm start lands at a different point
 /// inside the same tolerance -- and the columns that are not re-solved keep an optimum
 /// that has moved. This is an approximation of a full fit and does not claim otherwise.
+///
+/// # Panics
+///
+/// Panics if `columns` is not sorted, since each requested target is looked up in it.
 pub fn similarity_from_gram(
     g: &[f64],
     n: usize,
@@ -85,13 +91,15 @@ pub fn similarity_from_gram(
         }
         top_k(&solver.w, j, k, out);
     };
-    let weights = match columns {
-        Some(columns) => CsrOwned::build_rows(columns, init, |solver, j, out| {
-            let at = columns.binary_search(&j).expect("a row that was asked for");
-            solve(solver, at, j, out);
-        }),
-        None => CsrOwned::build(n, init, |solver, j, out| solve(solver, j, j, out)),
-    };
+    let weights = columns.map_or_else(
+        || CsrOwned::build(n, init, |solver, j, out| solve(solver, j, j, out)),
+        |columns| {
+            CsrOwned::build_rows(columns, init, |solver, j, out| {
+                let at = columns.binary_search(&j).expect("a row that was asked for");
+                solve(solver, at, j, out);
+            })
+        },
+    );
     (weights, unconverged.into_inner())
 }
 
@@ -117,7 +125,6 @@ impl Solver {
     /// stopping rule of scikit-learn's `enet_coordinate_descent_gram`. The reference
     /// leaves `selection='random'` on, which visits the same coordinates in a random
     /// order; both converge to the same optimum of a strictly convex problem.
-    #[allow(clippy::too_many_arguments)]
     fn solve(
         &mut self,
         g: &[f64],
@@ -214,23 +221,34 @@ impl Solver {
             if i == target {
                 continue;
             }
-            q_dot_w += q_i * w_i;
-            h_dot_w += h_i * w_i;
+            q_dot_w = madd::<BASELINE_FMA>(q_i, w_i, q_dot_w);
+            h_dot_w = madd::<BASELINE_FMA>(h_i, w_i, h_dot_w);
             w_norm1 += w_i.abs();
-            w_norm2 += w_i * w_i;
-            let xta = q_i - h_i - l2 * w_i;
+            w_norm2 = madd::<BASELINE_FMA>(w_i, w_i, w_norm2);
+            let xta = madd::<BASELINE_FMA>(l2, -w_i, q_i - h_i);
             dual_norm = dual_norm.max(if positive { xta } else { xta.abs() });
         }
 
-        let r_norm2 = y_norm2 + h_dot_w - 2.0 * q_dot_w;
+        let r_norm2 = madd::<BASELINE_FMA>(2.0, -q_dot_w, y_norm2 + h_dot_w);
         let (scale, mut gap) = if dual_norm > l1 {
             let scale = l1 / dual_norm;
-            (scale, 0.5 * (r_norm2 + r_norm2 * scale * scale))
+            (
+                scale,
+                0.5 * madd::<BASELINE_FMA>(r_norm2 * scale, scale, r_norm2),
+            )
         } else {
             (1.0, r_norm2)
         };
-        gap += l1 * w_norm1 - scale * y_norm2 + scale * q_dot_w;
-        gap + 0.5 * l2 * (1.0 + scale * scale) * w_norm2
+        gap += madd::<BASELINE_FMA>(
+            scale,
+            q_dot_w,
+            madd::<BASELINE_FMA>(scale, -y_norm2, l1 * w_norm1),
+        );
+        madd::<BASELINE_FMA>(
+            0.5 * l2 * madd::<BASELINE_FMA>(scale, scale, 1.0),
+            w_norm2,
+            gap,
+        )
     }
 }
 
@@ -272,10 +290,8 @@ mod tests {
         let (cold, _) = similarity(&r.csr(), &enet, 14);
         let g = gram(&r.csr());
         let wanted = [2usize, 5, 9];
-        let warm = Owned::from_rows(
-            wanted.iter().map(|&j| row(&cold, j)).collect::<Vec<_>>(),
-            14,
-        );
+        let warm_rows: Vec<_> = wanted.iter().map(|&j| row(&cold, j)).collect();
+        let warm = Owned::from_rows(&warm_rows, 14);
         let (warmed, _) =
             similarity_from_gram(&g, 14, 60.0, Some(&wanted), Some(&warm.csr()), &enet, 14);
         for (at, &j) in wanted.iter().enumerate() {
@@ -348,10 +364,10 @@ mod tests {
         positive: bool,
     ) {
         for i in (0..n).filter(|&i| i != target && g[i * n + i] != 0.0) {
-            let grad = gradient(g, n, target, w, i) + l2 * w[i];
+            let grad = l2.mul_add(w[i], gradient(g, n, target, w, i));
             if w[i] != 0.0 {
                 assert!(w[i] > 0.0 || !positive, "coefficient {i} is negative");
-                let residual = grad + l1 * w[i].signum();
+                let residual = l1.mul_add(w[i].signum(), grad);
                 assert!(residual.abs() < 1e-6, "coefficient {i}: {residual}");
             } else if positive {
                 assert!(grad + l1 > -1e-6, "zero coefficient {i}: {grad}");

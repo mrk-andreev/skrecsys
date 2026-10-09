@@ -70,6 +70,10 @@ impl Excluded<'_> {
 ///
 /// `scores` is row-major with `n_cols` columns. Returns an error with the offending row
 /// when it has fewer than `k` entries left.
+///
+/// # Errors
+///
+/// Returns [`TooFewEligible`] with a row that has fewer than `k` eligible entries.
 pub fn top_k_per_row(
     scores: &[f64],
     excluded: &Excluded<'_>,
@@ -97,7 +101,7 @@ pub fn top_k_per_row(
             let mut heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(k + 1);
             for (index, &score) in row_scores.iter().enumerate() {
                 // The excluded indices ascend, so one cursor keeps up with the scan.
-                if next_skipped < skip.len() && skip[next_skipped] == index as i64 {
+                if next_skipped < skip.len() && usize::try_from(skip[next_skipped]) == Ok(index) {
                     next_skipped += 1;
                     continue;
                 }
@@ -118,7 +122,7 @@ pub fn top_k_per_row(
                 });
             }
             let mut best = heap.into_vec();
-            best.sort_unstable_by(|a, b| a.worst_first(b));
+            best.sort_unstable_by(Candidate::worst_first);
             for (slot, candidate) in out.iter_mut().zip(&best) {
                 *slot = candidate.index;
             }
@@ -143,7 +147,10 @@ mod tests {
         let mut indptr = vec![0usize];
         let mut indices: Vec<i64> = Vec::new();
         for row in rows {
-            indices.extend(row.iter().map(|&c| c as i64));
+            indices.extend(
+                row.iter()
+                    .map(|&column| i64::try_from(column).expect("column fits i64")),
+            );
             indptr.push(indices.len());
         }
         (indptr, indices)
@@ -236,7 +243,7 @@ mod tests {
                     index: i,
                 })
                 .collect();
-            all.sort_by(|a, b| a.worst_first(b));
+            all.sort_by(super::Candidate::worst_first);
             let expected: Vec<usize> = all.iter().take(k).map(|c| c.index).collect();
             assert_eq!(&got[row * k..(row + 1) * k], &expected[..], "row {row}");
         }
