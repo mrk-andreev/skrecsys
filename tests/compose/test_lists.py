@@ -372,17 +372,8 @@ def test_reserved_slots_parameters_nest_and_are_validated():
 # --- The serving model the blocks are for
 
 
-def test_a_serving_model_is_composed_from_blocks():
-    """Personal lists where there is history, always full, with room to explore.
-
-    A ranked cascade for users with history, a rate-based popular list for the others,
-    the whole catalog behind both, and three positions of the head for items nobody has
-    been shown.
-    """
-    lone_user = N_USERS + 1
-    likes = np.vstack([trending_interactions(), [[lone_user, 0]]])
-    catalog = np.arange(N_ITEMS + 10)
-    unexplored = catalog[N_ITEMS:]
+def _serving_model(likes, catalog, unexplored):
+    """The serving model the blocks are for, fitted on ``likes``."""
     genres = np.column_stack([catalog, catalog % 2, catalog % 3 == 0]).astype(float)
     dislikes = np.array([[0, 3], [1, 3], [1, 4]])
     impressions = np.column_stack([np.arange(N_ITEMS), np.full(N_ITEMS, 30.0)])
@@ -403,7 +394,7 @@ def test_a_serving_model_is_composed_from_blocks():
         split=LatestInteractionsSplit(0.5, max_users=40),
     )
     popular = MostPopularRecommender(exposure=impressions, smoothing=20.0)
-    model = ReservedSlots(
+    return ReservedSlots(
         Backfill(
             [
                 ("personal", Switch(MinInteractions(2), ranked, popular)),
@@ -416,6 +407,20 @@ def test_a_serving_model_is_composed_from_blocks():
         n_slots=3,
         head=10,
     ).fit(likes)
+
+
+def test_a_serving_model_is_composed_from_blocks():
+    """Personal lists where there is history, always full, with room to explore.
+
+    A ranked cascade for users with history, a rate-based popular list for the others,
+    the whole catalog behind both, and three positions of the head for items nobody has
+    been shown.
+    """
+    lone_user = N_USERS + 1
+    likes = np.vstack([trending_interactions(), [[lone_user, 0]]])
+    catalog = np.arange(N_ITEMS + 10)
+    unexplored = catalog[N_ITEMS:]
+    model = _serving_model(likes, catalog, unexplored)
 
     filled = model.base_
     assert isinstance(filled, Backfill)

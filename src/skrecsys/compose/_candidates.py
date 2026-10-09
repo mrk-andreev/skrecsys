@@ -111,12 +111,12 @@ def served_queries(
     """
     if serves_unknown_users(recommender):
         return np.arange(len(queries))
-    if not len(recommender.user_ids_):
+    if len(recommender.user_ids_) == 0:
         return np.empty(0, dtype=np.intp)
     return np.flatnonzero(lookup_ids(queries, recommender.user_ids_, name="user")[1])
 
 
-def retrieve_lists(
+def retrieve_lists(  # pylint: disable=too-many-arguments
     recommender: FittedRecommender,
     queries: NDArray[np.generic],
     n_items: int | NDArray[np.int64],
@@ -147,9 +147,9 @@ def retrieve_lists(
     served = asked[served_queries(recommender, queries[asked])]
     if candidates is not None:
         candidates = candidates[lookup_ids(candidates, recommender.item_ids_, name="item")[1]]
-        if not len(candidates):
+        if len(candidates) == 0:
             served = served[:0]
-    if not len(served):
+    if len(served) == 0:
         return np.empty(0, dtype=np.intp), np.empty(0, dtype=recommender.item_ids_.dtype)
     pairs, _, groups, kept = retrieve(
         recommender,
@@ -184,7 +184,7 @@ def not_among(
     matched as integer keys over the items both sides name, as :func:`retrieve_union`
     matches them.
     """
-    if not len(rows) or not len(taken_rows):
+    if len(rows) == 0 or len(taken_rows) == 0:
         return np.ones(len(rows), dtype=bool)
     item_ids, codes = factorize(concat_ids([items, taken_items]))
     keys = rows.astype(np.int64) * len(item_ids) + codes[: len(rows)]
@@ -211,7 +211,7 @@ def score_pairs(generator: FittedRecommender, pairs: NDArray[np.generic]) -> NDA
     score any pair without ``predict``.
     """
     out = np.full(len(pairs), np.nan)
-    if not isinstance(generator, PairScorer) or not len(pairs):
+    if not isinstance(generator, PairScorer) or len(pairs) == 0:
         return out
     known = lookup_ids(pairs[:, 0], generator.user_ids_, name="user")[1]
     known &= lookup_ids(pairs[:, 1], generator.item_ids_, name="item")[1]
@@ -250,7 +250,7 @@ def retrieve_union(
     rows, ranks, sources, items, scores = [], [], [], [], []
     for source, generator in enumerate(generators):
         served = served_queries(generator, queries)
-        if not len(served):
+        if len(served) == 0:
             continue
         pairs, found, groups, kept = retrieve(
             generator,

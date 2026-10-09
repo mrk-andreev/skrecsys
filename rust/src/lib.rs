@@ -1042,13 +1042,23 @@ fn recommend_call(
                 e.found
             ))
         })?;
-    let order = to_i64(order)?;
+    ranked_pair(py, (n_rows, k), to_i64(order)?, scores)
+}
+
+/// The `(n_rows, k)` item and score arrays a recommend call returns.
+fn ranked_pair(
+    py: Python<'_>,
+    shape: (usize, usize),
+    order: Vec<i64>,
+    scores: Vec<f64>,
+) -> PyResult<Ranked<'_>> {
+    let shape_error = |e: numpy::ndarray::ShapeError| PyValueError::new_err(e.to_string());
     Ok((
-        Array2::from_shape_vec((n_rows, k), order)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?
+        Array2::from_shape_vec(shape, order)
+            .map_err(shape_error)?
             .into_pyarray(py),
-        Array2::from_shape_vec((n_rows, k), scores)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?
+        Array2::from_shape_vec(shape, scores)
+            .map_err(shape_error)?
             .into_pyarray(py),
     ))
 }

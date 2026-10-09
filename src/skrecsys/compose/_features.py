@@ -502,7 +502,7 @@ def _own_interactions(interactions: ArrayLike) -> tuple[NDArray[np.generic], NDA
 
 def _factorize(values: NDArray[np.generic]) -> tuple[NDArray[np.generic], NDArray[np.intp]]:
     """:func:`~skrecsys.utils.validation.factorize`, of identifiers there may be none of."""
-    if not len(values):
+    if len(values) == 0:
         return values, np.empty(0, dtype=np.intp)
     return factorize(values)
 
@@ -511,7 +511,7 @@ def _lookup(
     ids: NDArray[np.generic], fitted_ids: NDArray[np.generic], name: str
 ) -> tuple[NDArray[np.intp], NDArray[np.bool_]]:
     """:func:`~skrecsys.utils.validation.lookup_ids`, among identifiers there may be none of."""
-    if not len(fitted_ids):
+    if len(fitted_ids) == 0:
         return np.zeros(len(ids), dtype=np.intp), np.zeros(len(ids), dtype=bool)
     return lookup_ids(ids, fitted_ids, name=name)
 
@@ -582,7 +582,7 @@ class InteractionCounts(FeaturesMixin, BaseEstimator):
         check_is_fitted(self)
         ids = pair_ids(pairs)[:, _check_kind(self.kind)]
         positions, known = _lookup(ids, self.ids_, self.kind)
-        if not len(self.ids_):
+        if len(self.ids_) == 0:
             return np.zeros((len(ids), 1))
         return np.where(known, self.counts_[positions], 0.0)[:, None]
 
@@ -905,7 +905,7 @@ class ProfileAffinity(FeaturesMixin, BaseEstimator):
         return self
 
     @override
-    def transform(
+    def transform(  # pylint: disable=too-many-locals
         self,
         pairs: ArrayLike,
         *,

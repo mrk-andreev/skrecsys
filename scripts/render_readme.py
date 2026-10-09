@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
-import readme
+import readme  # pylint: disable=wrong-import-position
 
 
 def main() -> int:

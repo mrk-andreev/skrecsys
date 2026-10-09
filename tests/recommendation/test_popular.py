@@ -54,7 +54,7 @@ def test_unknown_users_get_the_most_popular_items():
 def test_exposure_ranks_by_rate():
     """Popularity per exposure: an item the table lacks was never shown."""
     shown = np.array([["b", 38.0], ["c", 0.0], ["zzz", 5.0]], dtype=object)
-    rec = MostPopularRecommender(exposure=shown, smoothing=2.0).fit(X)
+    rec = MostPopularRecommender(exposure=shown, smoothing=2.0).fit(X)  # pylint: disable=assignment-from-no-return
     np.testing.assert_array_equal(rec.item_counts_, [1, 2, 1])
     np.testing.assert_allclose(rec.item_popularity_, [1 / 2, 2 / 40, 1 / 2])
     assert rec.recommend(["new"], n_recommendations=3)[0].tolist() == [["a", "c", "b"]]
@@ -71,7 +71,7 @@ def test_exposure_accepts_a_dataframe_and_plain_lists():
 
 
 def test_smoothing_is_ignored_without_exposure():
-    rec = MostPopularRecommender(smoothing=3.0).fit(X)
+    rec = MostPopularRecommender(smoothing=3.0).fit(X)  # pylint: disable=assignment-from-no-return
     np.testing.assert_array_equal(rec.item_popularity_, [1, 2, 1])
 
 

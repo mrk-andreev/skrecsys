@@ -1,0 +1,3 @@
+# Docstring style (pydocstyle, D-codes) is not enforced; ruff owns lint.
+pydocstyle:
+  run: false

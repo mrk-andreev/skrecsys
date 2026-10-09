@@ -1,0 +1,10 @@
+---
+exclude_paths:
+  # Agent instructions, not code; only Agentlinter's freshness/tool-docs checks flag it.
+  - AGENTS.md
+
+engines:
+  bandit:
+    exclude_paths:
+      # assert and the pickle round trip are idiomatic in tests (ruff ignores S101/S301 there too).
+      - tests/**

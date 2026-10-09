@@ -108,14 +108,54 @@ def _excluding(
     items: NDArray[np.generic],
 ) -> NDArray[np.generic] | None:
     """``exclude_interactions`` and the items the lists of ``queries`` already hold."""
-    if not len(rows):
+    if len(rows) == 0:
         return exclude_interactions
     taken = stack_pairs(queries[rows], items)
-    if exclude_interactions is None or not len(exclude_interactions):
+    if exclude_interactions is None or len(exclude_interactions) == 0:
         return taken
     if exclude_interactions.dtype == taken.dtype:
         return np.concatenate([exclude_interactions, taken])
     return np.concatenate([exclude_interactions.astype(object), taken.astype(object)])
+
+
+def _split_lists(
+    base: tuple[NDArray[np.intp], NDArray[np.generic]],
+    inserted: tuple[NDArray[np.intp], NDArray[np.generic]],
+    n_queries: int,
+    head: int,
+    n_kept: int,
+) -> tuple[NDArray[np.bool_], NDArray[np.intp], NDArray[np.generic], NDArray[np.bool_]]:
+    """What base keeps of the head, the slots after it, and the rest of base's list.
+
+    Returns the mask of base's kept head, the rows and items of ``inserted`` that fill
+    the slots, and the mask of base's remaining items.
+    """
+    base_rows, base_items = base
+    rows, items = inserted
+    n_base = np.bincount(base_rows, minlength=n_queries)
+    n_top = np.minimum(n_base, n_kept)
+    top = ranks_in_rows(base_rows, n_queries) < n_top[base_rows]
+    fresh = not_among(rows, items, base_rows[top], base_items[top])
+    rows, items = rows[fresh], items[fresh]
+    slotted = ranks_in_rows(rows, n_queries) < np.maximum(head - n_top, 0)[rows]
+    rows, items = rows[slotted], items[slotted]
+    rest = ~top & not_among(base_rows, base_items, rows, items)
+    return top, rows, items, rest
+
+
+def _in_query_order(
+    parts: list[tuple[NDArray[np.intp], NDArray[np.generic]]], fallback: NDArray[np.generic]
+) -> tuple[NDArray[np.intp], NDArray[np.generic]]:
+    """The ``(rows, items)`` parts as one pair, grouped by query.
+
+    A stable sort by query keeps the parts in order, and each one's ranking. ``fallback``
+    types the items when every part is empty.
+    """
+    rows = np.concatenate([part_rows for part_rows, _ in parts])
+    held = [part_items for _, part_items in parts if len(part_items)]
+    items = concat_ids(held) if held else fallback
+    order = np.argsort(rows, kind="stable")
+    return rows[order], items[order]
 
 
 def _served_lists(
@@ -481,7 +521,7 @@ class Backfill(RecommenderMixin, NamedComponentsEstimator[Recommender]):
 
     @override
     @traced_recommend
-    def recommend(
+    def recommend(  # pylint: disable=too-many-locals
         self,
         X: ArrayLike,
         *,
@@ -763,28 +803,19 @@ class ReservedSlots(RecommenderMixin, BaseEstimator):
             exclude_interactions=excluded,
             source="inserted",
         )
-        # What base keeps of the head, the slots after it, and the rest of base's list.
-        n_base = np.bincount(base_rows, minlength=n_queries)
-        n_top = np.minimum(n_base, n_kept)
-        top = ranks_in_rows(base_rows, n_queries) < n_top[base_rows]
-        fresh = not_among(rows, items, base_rows[top], base_items[top])
-        rows, items = rows[fresh], items[fresh]
-        slotted = ranks_in_rows(rows, n_queries) < np.maximum(head - n_top, 0)[rows]
-        rows, items = rows[slotted], items[slotted]
-        rest = ~top & not_among(base_rows, base_items, rows, items)
-
-        parts = [
-            (base_rows[top], base_items[top]),
-            (rows, items),
-            (base_rows[rest], base_items[rest]),
-        ]
-        all_rows = np.concatenate([part_rows for part_rows, _ in parts])
-        held = [part_items for _, part_items in parts if len(part_items)]
-        all_items = concat_ids(held) if held else base_items
-        # A stable sort by query keeps the three parts in order, and each one's ranking.
-        order = np.argsort(all_rows, kind="stable")
+        top, rows, items, rest = _split_lists(
+            (base_rows, base_items), (rows, items), n_queries, head, n_kept
+        )
+        all_rows, all_items = _in_query_order(
+            [
+                (base_rows[top], base_items[top]),
+                (rows, items),
+                (base_rows[rest], base_items[rest]),
+            ],
+            base_items,
+        )
         return _served_lists(
-            all_rows[order], all_items[order], n_queries, n_recommendations, self.item_ids_.dtype
+            all_rows, all_items, n_queries, n_recommendations, self.item_ids_.dtype
         )
 
     @override
@@ -843,11 +874,11 @@ def _most_eligible(
         own = candidates
         if own is not None:
             own = own[lookup_ids(own, recommender.item_ids_, name="item")[1]]
-            if not len(own):
+            if len(own) == 0:
                 continue
-        if not len(served):
+        if len(served) == 0:
             continue
-        eligible = recommender._count_eligible(
+        eligible = recommender._count_eligible(  # pylint: disable=protected-access
             queries[served],
             candidates=own,
             exclude_seen=exclude_seen,
