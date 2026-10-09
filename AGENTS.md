@@ -12,6 +12,10 @@ Install `uv` and Rust. `uv sync` builds the extension. `uv run pytest` runs Pyth
 
 Edit Jinja sources `README.md.j2` or `docs/*.md.j2`, never generated `README.md` directly. Run `uv run python scripts/render_readme.py` to regenerate; add `--check` to verify.
 
+## llms.txt
+
+Keep `llms.txt` in the repository root up to date: when you add, remove, or rename public modules, docs pages, or other key files, update its links and descriptions in the same change.
+
 ## Conventions
 
 Support Python 3.11, 3.12, 3.13, and 3.14. Use four spaces, Ruff's 100-character limit, `snake_case` functions/modules, and `PascalCase` classes. Avoid `typing.Any` in package code. Name tests `test_*.py`; test changed behavior in its matching feature area.

@@ -1,0 +1,47 @@
+# skrecsys
+
+> Recommender systems in the scikit-learn style, built on NumPy, SciPy and scikit-learn, with the inner loops (similarity kernels, solvers, BPR sampler, top-k selection, ANN indexes) written in Rust and exposed through PyO3 as `skrecsys._core`. Every model shares the `fit`, `partial_fit`, `recommend` and `predict` interface and works with scikit-learn model selection. Supports Python 3.11-3.14.
+
+Install with `pip install skrecsys`. Public API lives in `src/skrecsys/`; the Rust crates are in `rust/kernels/` (algorithms) and `rust/src/` (bindings).
+
+## Docs
+
+- [README](https://github.com/mrk-andreev/skrecsys/blob/main/README.md): Full documentation, generated from the Jinja sources in docs/
+- [Installation](https://github.com/mrk-andreev/skrecsys/blob/main/docs/installation.md.j2): Install options and optional extras
+- [Usage](https://github.com/mrk-andreev/skrecsys/blob/main/docs/usage.md.j2): Fitting models, recommending, evaluating
+- [Composing pipelines](https://github.com/mrk-andreev/skrecsys/blob/main/docs/compose.md.j2): Candidate generation, rankers, conditions, Switch and Cascade
+- [Query context](https://github.com/mrk-andreev/skrecsys/blob/main/docs/query_context.md.j2): Passing per-query features and conditions
+- [Tuning](https://github.com/mrk-andreev/skrecsys/blob/main/docs/tune.md.j2): AutoTune, Study and search spaces
+- [Production](https://github.com/mrk-andreev/skrecsys/blob/main/docs/production.md.j2): Serving and deployment
+- [Inspection](https://github.com/mrk-andreev/skrecsys/blob/main/docs/inspection.md.j2): trace and explain for recommendations
+- [Datasets](https://github.com/mrk-andreev/skrecsys/blob/main/docs/datasets.md.j2): MovieLens and Amazon Books loaders
+- [Sequential recommendation](https://github.com/mrk-andreev/skrecsys/blob/main/docs/sequential_recommendation.md.j2): Time-aware and sequential models
+- [Indexes](https://github.com/mrk-andreev/skrecsys/blob/main/docs/indexes.md.j2): HNSW and quantized flat approximate nearest-neighbour indexes
+- [Incremental fitting](https://github.com/mrk-andreev/skrecsys/blob/main/docs/incremental_fitting.md.j2): partial_fit support
+- [Modules](https://github.com/mrk-andreev/skrecsys/blob/main/docs/modules.md.j2): Public API listing per module
+- [Development](https://github.com/mrk-andreev/skrecsys/blob/main/docs/development.md.j2): Building, testing, contributing
+- [Changelog](https://github.com/mrk-andreev/skrecsys/blob/main/docs/changelog.md.j2): Release history
+
+## Benchmarks
+
+- [Leaderboard](https://github.com/mrk-andreev/skrecsys/blob/main/docs/leaderboard.md.j2): Model comparison across datasets
+- [Sequential benchmark](https://github.com/mrk-andreev/skrecsys/blob/main/docs/sequential_benchmark.md.j2)
+- [Reranking benchmark](https://github.com/mrk-andreev/skrecsys/blob/main/docs/reranking_benchmark.md.j2)
+- [Candidates benchmark](https://github.com/mrk-andreev/skrecsys/blob/main/docs/candidates_benchmark.md.j2)
+
+## Source
+
+- [skrecsys/recommendation](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/recommendation/__init__.py): MostPopular, ItemKNN, ALS, BM25, EASE, RP3Beta, SLIM, BPR
+- [skrecsys/nn](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/nn/__init__.py): SimpleX, XSimGCL, HSTU, Mamba4Rec (requires skrecsys[nn])
+- [skrecsys/compose](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/compose/__init__.py): Composite recommenders, rankers, fusion
+- [skrecsys/metrics](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/metrics/__init__.py): Ranking and beyond-accuracy metrics
+- [skrecsys/model_selection](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/model_selection/__init__.py): WarmStartKFold, ColdStartSplit, LatestInteractionsSplit
+- [skrecsys/indexing](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/indexing/__init__.py): Vector indexes
+- [skrecsys/integrations](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/integrations/__init__.py): CatBoost, XGBoost, LightGBM rankers
+- [Rust kernels](https://github.com/mrk-andreev/skrecsys/blob/main/rust/kernels/src/lib.rs): Algorithm implementations
+- [AGENTS.md](https://github.com/mrk-andreev/skrecsys/blob/main/AGENTS.md): Repository guidelines for contributors and coding agents
+
+## Optional
+
+- [Notebooks](https://github.com/mrk-andreev/skrecsys/blob/main/notebooks): Runnable examples
+- [Benchmarks code](https://github.com/mrk-andreev/skrecsys/blob/main/benchmarks): Benchmark scripts, configs and results
