@@ -1,6 +1,6 @@
 [project]
 name = "skrecsys"
-version = "0.8.0"
+version = "0.9.0"
 description = "Recommender systems in the scikit-learn style"
 readme = "README.md"
 license = "MIT"
@@ -31,7 +31,7 @@ dependencies = [
     "numpy>=2.4.6",
     "scikit-learn>=1.9.1",
     "scipy>=1.17.1",
-    # typing.override is 3.12+ and typing.TypeIs 3.13+; see skrecsys._typing.
+    # typing.override is 3.12+ and typing.TypeIs 3.13+; see skrecsys.typing.
     'typing-extensions>=4.12; python_version < "3.13"',
 ]
 
@@ -98,6 +98,14 @@ dev = [
 reference = [
     "implicit>=0.7.3",
 ]
+# The documentation website; see scripts/build_site.py and properdocs.yml.
+docs = [
+    "jinja2>=3.1",
+    "mkdocs-literate-nav>=0.6",
+    "properdocs>=1.6",
+    "properdocs-theme-readthedocs",
+    "pymdown-extensions>=10",
+]
 # Example notebooks in notebooks/; see notebooks/AI.md.
 notebooks = [
     "altair>=5.5",
@@ -151,7 +159,7 @@ select = [
 
 # `override` is re-exported from here, so ruff must know it is typing's own: an
 # override is exempt from rules that its base class's signature decided (FBT001).
-typing-modules = ["skrecsys._typing"]
+typing-modules = ["skrecsys.typing"]
 
 ignore = [
     "N803", # scikit-learn convention: X is an uppercase argument name
@@ -165,6 +173,9 @@ ignore = [
 # Command-line entry points: printing is their interface, and the build script's whole
 # job is running the toolchain.
 "benchmarks/run.py" = ["T201"]
+# It also starts the service and the load generator it measures, and asks the service it
+# started on the loopback address.
+"benchmarks/batching.py" = ["T201", "S310", "S603", "S607"]
 "scripts/**" = ["T201", "S603"]
 # The suite logs a failed row and keeps what the rest of the run measures.
 "benchmarks/suite.py" = ["BLE001"]
@@ -179,10 +190,10 @@ ignore = [
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # `Any` switches type checking off for everything it touches. State what an argument must
-# provide instead: a protocol from skrecsys._typing, a concrete type, or `object` for a
+# provide instead: a protocol from skrecsys.typing, a concrete type, or `object` for a
 # value that is validated at runtime. Tests may still use it for fixtures and fakes.
-"typing.Any".msg = "Use a Protocol from skrecsys._typing, a concrete type, or object."
-"typing_extensions.Any".msg = "Use a Protocol from skrecsys._typing, a concrete type, or object."
+"typing.Any".msg = "Use a Protocol from skrecsys.typing, a concrete type, or object."
+"typing_extensions.Any".msg = "Use a Protocol from skrecsys.typing, a concrete type, or object."
 
 [tool.ruff.lint.pep8-naming]
 # `from torch.nn import functional as F` is how PyTorch itself spells it.

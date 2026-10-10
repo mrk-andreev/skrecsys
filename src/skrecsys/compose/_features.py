@@ -24,7 +24,6 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_array, check_is_fitted
 
-from skrecsys._typing import FeatureNamer, Features, Recommender, clone_as, override
 from skrecsys.base import (
     FeaturesMixin,
     fit_clone,
@@ -40,6 +39,7 @@ from skrecsys.compose._named import (
     nested_params,
     set_nested_params,
 )
+from skrecsys.typing import FeatureNamer, Features, Recommender, clone_as, override
 from skrecsys.utils._param_validation import check_component, check_real
 from skrecsys.utils.validation import (
     check_interactions,

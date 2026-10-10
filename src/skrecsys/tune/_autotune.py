@@ -10,14 +10,6 @@ from sklearn.model_selection import check_cv, cross_val_score
 from sklearn.utils.validation import check_is_fitted
 
 from skrecsys._tracing import span, traced_recommend, untraced
-from skrecsys._typing import (
-    CrossValidator,
-    FittedRecommender,
-    RandomStateLike,
-    Recommender,
-    clone_as,
-    override,
-)
 from skrecsys.base import RecommenderMixin, fit_clone, is_recommender, predict_pairs, uses_time
 from skrecsys.base import serves_unknown_users as _serves_unknown_users
 from skrecsys.metrics import get_scorer
@@ -25,6 +17,14 @@ from skrecsys.metrics._named import Scorer
 from skrecsys.model_selection import WarmStartKFold
 from skrecsys.tune._space import Categorical, Distribution, Float, Int, search_space
 from skrecsys.tune._study import Study, Trial
+from skrecsys.typing import (
+    CrossValidator,
+    FittedRecommender,
+    RandomStateLike,
+    Recommender,
+    clone_as,
+    override,
+)
 from skrecsys.utils._param_validation import check_component, check_int
 
 __all__ = ["AutoTune"]

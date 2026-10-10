@@ -13,9 +13,9 @@ from typing import Annotated
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys._typing import RandomStateLike, override
 from skrecsys.integrations._base import BoostedRanker
 from skrecsys.tune import Float, Int
+from skrecsys.typing import RandomStateLike, override
 
 try:
     import catboost

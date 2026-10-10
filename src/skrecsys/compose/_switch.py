@@ -9,7 +9,6 @@ from sklearn.base import BaseEstimator
 from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys._tracing import active_tracer, span, traced_recommend
-from skrecsys._typing import Condition, FittedRecommender, Recommender, clone_as, override
 from skrecsys.base import (
     RecommenderMixin,
     check_n_recommendations,
@@ -21,6 +20,7 @@ from skrecsys.base import (
     uses_time,
 )
 from skrecsys.compose._candidates import stack_columns
+from skrecsys.typing import Condition, FittedRecommender, Recommender, clone_as, override
 from skrecsys.utils._param_validation import check_bool, check_component
 from skrecsys.utils.validation import (
     check_as_of,

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, TypeAlias, TypedDict, cast
 
 import spec
 
-from skrecsys._typing import override
+from skrecsys.typing import override
 
 if TYPE_CHECKING:
     from leaderboard import HostFacts

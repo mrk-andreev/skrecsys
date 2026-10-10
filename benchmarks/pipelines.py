@@ -21,7 +21,6 @@ import numpy as np
 import spec
 from numpy.typing import NDArray
 
-from skrecsys._typing import Features, Ranker
 from skrecsys.compose import (
     BlendRanker,
     Cascade,
@@ -38,6 +37,7 @@ from skrecsys.compose import (
 )
 from skrecsys.model_selection import ColdStartSplit
 from skrecsys.recommendation import EASE, BM25Recommender, MostPopularRecommender
+from skrecsys.typing import Features, Ranker
 
 #: The age bands MovieLens 1M publishes, applied to MovieLens 100K's exact ages.
 AGE_BANDS = (18, 25, 35, 45, 50, 56)

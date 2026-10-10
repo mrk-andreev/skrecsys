@@ -7,10 +7,10 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 
 import skrecsys
 from skrecsys import RecommenderMixin, _core, is_recommender
-from skrecsys._typing import override
 from skrecsys.base import first_time_of, seen_among, uses_time
 from skrecsys.compose import Cascade, GeneratorScores, PointwiseRanker
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+from skrecsys.typing import override
 from skrecsys.utils.validation import check_ids, check_interactions, encode_ids, factorize
 
 

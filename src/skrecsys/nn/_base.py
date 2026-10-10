@@ -20,10 +20,10 @@ import torch
 from numpy.typing import NDArray
 from sklearn.utils import check_random_state
 
-from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace
 from skrecsys.recommendation._base import BaseRecommender
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 __all__ = ["ModuleT", "TorchRecommender", "TorchRecommenderModule"]

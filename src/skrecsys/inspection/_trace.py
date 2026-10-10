@@ -25,18 +25,20 @@ from skrecsys._tracing import (
     Served,
     Tracer,
 )
-from skrecsys._typing import override
+from skrecsys.typing import override
 
 __all__ = [
     "CandidatesStep",
     "FeaturesStep",
     "FusionStep",
+    "Level",
     "PostprocessStep",
     "QueryTrace",
     "RaisedStep",
     "RankerStep",
     "RequestStep",
     "RouteStep",
+    "Sample",
     "ServedStep",
     "Step",
     "Trace",
@@ -368,7 +370,17 @@ class Trace(Tracer):
     stage of a composite, reports to the trace current in its context; the trace is not
     stored on any estimator, so the estimators clone and pickle as they would otherwise.
 
-    See :class:`skrecsys._tracing.Tracer` for ``level`` and ``sample``.
+    Parameters
+    ----------
+    level : {"full", "decisions"}, default="full"
+        ``"decisions"`` leaves out the feature matrices and the leaf attributions, which
+        dominate the size of a trace.
+    sample : float, callable or None, default=None
+        Which queries to record. ``None`` records all. A float in [0, 1] records that
+        fraction, chosen by a hash of the identifier that is stable across processes, so
+        a sampled user is sampled every time. A callable takes the queries of an outermost
+        ``recommend`` call and returns a boolean mask over them. Nested calls record the
+        same queries: a query is traced through every stage or not at all.
 
     Attributes
     ----------

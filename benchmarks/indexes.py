@@ -31,10 +31,10 @@ from leaderboard import WARMUP, Timing, sample
 from spec import IndexEntry, Settings, Split, Warmup
 from store import Cells, SeriesPayload, SweepPayload, SweepRow
 
-from skrecsys._typing import clone_as
 from skrecsys.indexing import VectorIndex
 from skrecsys.metrics import catalog_coverage_at_k, ndcg_at_k
 from skrecsys.recommendation._base import BaseRecommender
+from skrecsys.typing import clone_as
 
 #: The tables of the report, each stored as its own result so that one can be re-run
 #: without the others: the sweep table (answers and cost at every dial value), the

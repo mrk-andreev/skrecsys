@@ -5,7 +5,6 @@ import scipy.sparse as sp
 from numpy.typing import NDArray
 
 from skrecsys import _core
-from skrecsys._typing import override
 from skrecsys.indexing._base import (
     MAX_TAIL_FRACTION,
     DenseSpace,
@@ -14,6 +13,7 @@ from skrecsys.indexing._base import (
     register_index,
 )
 from skrecsys.indexing._hnsw import _as_int64, _pad_queries, kernel_ready
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int, check_real
 
 __all__ = ["QuantizedFlatIndex"]

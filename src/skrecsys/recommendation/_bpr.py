@@ -8,11 +8,11 @@ from numpy.typing import NDArray
 from sklearn.utils import check_random_state
 
 from skrecsys import _core
-from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import BaseRecommender, kernel_indices
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin, entry_offsets
 from skrecsys.tune._space import Categorical, Float, Int
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 

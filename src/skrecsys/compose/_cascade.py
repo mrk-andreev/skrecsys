@@ -16,15 +16,6 @@ from skrecsys._tracing import (
     traced_recommend,
     untraced,
 )
-from skrecsys._typing import (
-    CrossValidator,
-    Features,
-    FittedRecommender,
-    Ranker,
-    Recommender,
-    clone_as,
-    override,
-)
 from skrecsys.base import (
     RecommenderMixin,
     check_n_recommendations,
@@ -61,6 +52,15 @@ from skrecsys.compose._rankers import (
 )
 from skrecsys.exceptions import InsufficientDataError
 from skrecsys.model_selection._split import positions_in_user
+from skrecsys.typing import (
+    CrossValidator,
+    Features,
+    FittedRecommender,
+    Ranker,
+    Recommender,
+    clone_as,
+    override,
+)
 from skrecsys.utils._param_validation import check_bool, check_component, check_int, check_real
 from skrecsys.utils.validation import (
     check_as_of,

@@ -22,7 +22,6 @@ from sklearn.base import BaseEstimator
 from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys._tracing import traced_recommend
-from skrecsys._typing import FittedRecommender, Recommender, override
 from skrecsys.base import (
     RecommenderMixin,
     check_n_recommendations,
@@ -42,6 +41,7 @@ from skrecsys.compose._candidates import (
 )
 from skrecsys.compose._named import ComponentList, NamedComponentsEstimator
 from skrecsys.exceptions import InsufficientDataError
+from skrecsys.typing import FittedRecommender, Recommender, override
 from skrecsys.utils._param_validation import check_bool, check_component, check_int
 from skrecsys.utils.validation import (
     check_ids,

@@ -11,9 +11,9 @@ from sklearn.utils.validation import _check_feature_names, check_is_fitted
 
 from skrecsys import _core
 from skrecsys._attribution import Attributions, cosine_weight, history_attributions
-from skrecsys._typing import override
 from skrecsys.base import RecommenderMixin, seen_among
 from skrecsys.indexing import VectorIndexMixin
+from skrecsys.typing import override
 from skrecsys.utils.validation import (
     check_ids,
     check_interactions,

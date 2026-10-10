@@ -8,7 +8,6 @@ import pytest
 from sklearn.base import clone
 from sklearn.ensemble import HistGradientBoostingClassifier
 
-from skrecsys._typing import override
 from skrecsys.base import serves_unknown_users
 from skrecsys.compose import (
     Backfill,
@@ -26,6 +25,7 @@ from skrecsys.compose import (
 from skrecsys.exceptions import InsufficientDataError
 from skrecsys.model_selection import LatestInteractionsSplit
 from skrecsys.recommendation import BM25Recommender, ItemKNNRecommender, MostPopularRecommender
+from skrecsys.typing import override
 from tests.compose._composites import cascade
 from tests.compose._data import N_ITEMS, N_USERS, trending_interactions
 

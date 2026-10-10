@@ -33,6 +33,15 @@ jobs:
         run: uv sync --locked --group dev
       - name: Run the tests
         run: uv run --no-sync pytest
+      # The examples in the docstrings. The modules that import an optional library on import
+      # run in their own jobs below, which have it installed.
+      - name: Run the examples
+        run: >-
+          uv run --no-sync pytest --doctest-modules src/skrecsys --no-cov
+          --ignore=src/skrecsys/nn
+          --ignore=src/skrecsys/integrations/catboost.py
+          --ignore=src/skrecsys/integrations/lightgbm.py
+          --ignore=src/skrecsys/integrations/xgboost.py
 
   # The `nn` extra is heavy and pure Python, so it is exercised once rather than across
   # the whole matrix; the matrix above stays torch-free, which is what keeps the import
@@ -54,6 +63,8 @@ jobs:
         run: uv sync --locked --group dev --extra nn
       - name: Run the tests
         run: uv run --no-sync pytest tests/nn --no-cov
+      - name: Run the examples
+        run: uv run --no-sync pytest --doctest-modules src/skrecsys/nn --no-cov
       - name: Type-check the subpackage the root config excludes
         run: uv run --no-sync ty check --config-file ty.nn.toml
 
@@ -138,6 +149,10 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
       - run: cargo test
+      # The load generator of the micro-batching benchmark is outside the workspace above.
+      - run: cargo fmt --check --manifest-path benchmarks/loadgen/Cargo.toml
+      - run: cargo clippy --all-targets --manifest-path benchmarks/loadgen/Cargo.toml -- -D warnings
+      - run: cargo test --manifest-path benchmarks/loadgen/Cargo.toml
       # Runs every criterion benchmark once and throws the timings away: a shared runner
       # cannot measure anything, but it can still catch a benchmark that panics or whose
       # fixture no longer satisfies what the kernel it feeds assumes.

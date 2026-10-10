@@ -33,10 +33,10 @@ import sequential
 import spec
 import store
 
-from skrecsys._typing import Recommender
 from skrecsys.base import RecommenderMixin
 from skrecsys.indexing import HNSW
 from skrecsys.recommendation._base import BaseRecommender
+from skrecsys.typing import Recommender
 
 #: The settings each kind of unit is keyed on. A setting outside a unit's list cannot
 #: change its result, so it must not invalidate it either: widening the latency batches

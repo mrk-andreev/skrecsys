@@ -20,8 +20,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from skrecsys._tracing import active_tracer, span
-from skrecsys._typing import FittedRecommender, PairScorer
 from skrecsys.base import predict_pairs, serves_unknown_users
+from skrecsys.typing import FittedRecommender, PairScorer
 from skrecsys.utils.validation import factorize, lookup_ids, stack_columns, stack_pairs
 
 

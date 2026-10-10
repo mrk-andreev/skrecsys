@@ -12,4 +12,10 @@ import, so this package imports none of them itself; import the submodule you ne
 
 Each is a ranker for :class:`~skrecsys.compose.Cascade`, taking the group sizes of the
 candidates and missing features (NaN) as they are.
+
+One submodule needs no extra, as it adapts no library but asyncio:
+
+- :mod:`skrecsys.integrations.batching`: :class:`~skrecsys.integrations.batching.MicroBatcher`
+  and :class:`~skrecsys.integrations.batching.AsyncRecommender`, which rank the requests of an
+  async service that are in flight together in one ``recommend`` call.
 """

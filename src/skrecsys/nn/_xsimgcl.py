@@ -9,10 +9,10 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from skrecsys._typing import override
 from skrecsys.indexing import IndexSpec
 from skrecsys.nn._base import Batch, TorchRecommender, TorchRecommenderModule, seeded_normal_
 from skrecsys.tune._space import Float, Int
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int, check_real
 
 #: Redraw rounds for a negative that turned out to be one of the user's own items. The

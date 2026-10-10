@@ -18,8 +18,8 @@ import numpy as np
 from sklearn.utils import check_random_state
 
 from skrecsys import _core
-from skrecsys._typing import RandomStateLike
 from skrecsys.tune._space import Categorical, Distribution, Float, Int
+from skrecsys.typing import RandomStateLike
 from skrecsys.utils._param_validation import check_int
 
 __all__ = ["Study", "Trial"]

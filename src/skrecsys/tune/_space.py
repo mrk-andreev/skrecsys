@@ -17,7 +17,7 @@ from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, TypeAlias, get_args, get_origin
 
-from skrecsys._typing import Estimator
+from skrecsys.typing import Estimator
 
 __all__ = ["Categorical", "Distribution", "Float", "Int", "search_space"]
 

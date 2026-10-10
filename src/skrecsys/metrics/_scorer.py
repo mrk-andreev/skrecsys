@@ -8,8 +8,8 @@ from typing import overload
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys._typing import RankingMetric, Recommender, override
 from skrecsys.base import first_row_of, first_time_of, is_recommender, uses_time
+from skrecsys.typing import RankingMetric, Recommender, override
 from skrecsys.utils.validation import (
     check_interactions,
     check_rows,

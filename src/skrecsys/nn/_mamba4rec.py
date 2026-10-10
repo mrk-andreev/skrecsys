@@ -22,11 +22,11 @@ from numpy.typing import NDArray
 from torch import nn
 from torch.nn import functional as F
 
-from skrecsys._typing import override
 from skrecsys.indexing import IndexSpec
 from skrecsys.nn._base import Batch, TorchRecommenderModule, seeded_dropout, seeded_normal_
 from skrecsys.nn._sequential import PAD, SequentialRecommender
 from skrecsys.tune._space import Float, Int
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int, check_real
 
 __all__ = ["Mamba4Rec"]

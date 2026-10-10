@@ -1379,7 +1379,8 @@ flowchart LR
 - Each call passes the user's recent events as `exclude_interactions`, so it returns exactly
   the number of fresh items asked for, with no over-fetching and no filtering afterwards.
 - Replicas should batch concurrent requests into one `recommend` call; the pairs of every
-  user in the batch can go in together.
+  user in the batch can go in together. In an asyncio service,
+  `skrecsys.integrations.batching.AsyncRecommender` does it (see below).
 - On large catalogs an `index` makes each call cheaper, but see
   [vector indexes](#vector-indexes) for what it costs in exactness and speed first.
 
@@ -1403,6 +1404,34 @@ sequenceDiagram
 
 The popular list is computed once per version, as in Batch, and kept in memory next to the
 model.
+
+#### Batching concurrent requests
+
+`AsyncRecommender` answers one user per `await` and ranks the users in flight together in a
+single `recommend` call, in an executor, so the event loop stays free. It never waits on
+purpose: an idle service answers at once, and the busier the model, the larger the batches.
+It needs only a running event loop, so it fits any asyncio framework.
+
+```python
+from fastapi import FastAPI
+from skrecsys.integrations.batching import AsyncRecommender
+
+app = FastAPI()
+recommender = AsyncRecommender(model, n_recommendations=10, max_batch_size=100)
+
+
+@app.get("/users/{user_id}/recommendations")
+async def recommendations(user_id: int):
+    items, _ = await recommender.recommend(user_id, exclude_items=recent_items(user_id))
+    return items.tolist()
+
+
+# on a new model version: recommender.model = new_model
+```
+
+A batch reads `model` once, so a swap lands between batches. `exclude_items` carries the
+user's events since the model was fitted. A failed call, such as an unknown user, raises to
+every caller of that batch; the generic `MicroBatcher` takes a `fallback` instead.
 
 ### Recent events
 
@@ -3143,9 +3172,11 @@ interaction, roughly what `interactions_` already costs.
 | `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
 | `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ProfileAffinity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker`, `AugmentedRanker`, `ReciprocalRankFusion`, `ReciprocalRankRanker`, `Backfill`, `ReservedSlots`, `ItemListRecommender` |
 | `skrecsys.exceptions` | `InsufficientDataError` |
+| `skrecsys.typing` | Protocols for estimators and composite components (`Recommender`, `FittedRecommender`, `Ranker`, `Features`, `Condition`, ...), `RandomStateLike`, `RankingMetric`, `clone_as`, and the `override`/`TypeIs` backports |
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
+| `skrecsys.integrations.batching` | `MicroBatcher`, `AsyncRecommender`; asyncio micro-batching of concurrent `recommend` calls, no extra |
 | `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
 | `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
 | `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
@@ -3153,7 +3184,7 @@ interaction, roughly what `interactions_` already costs.
 | `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
 | `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
 | `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
-| `skrecsys.inspection` | `trace`, `Trace`, `QueryTrace` and its steps, `explain`, `Explanation`, `Retrieval`, `RankerDecision`, `LeafReasons` |
+| `skrecsys.inspection` | `trace`, `Trace`, `QueryTrace` and its steps, `explain`, `Explanation`, `Retrieval`, `RankerDecision`, `LeafReasons`, and the `Level`, `Sample` and `Status` types |
 | `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |
 
 ## Development
@@ -3184,6 +3215,16 @@ uv run ty check
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo bench -- --test  # run every benchmark once, without measuring
+```
+
+The [website](https://mrk-andreev.github.io/skrecsys/) is built from the same `README.md.j2` and
+`docs/*.md.j2` sources as this README, one page per included fragment, and published to GitHub
+Pages by `.github/workflows/docs.yml` on every push to `main`. To preview it:
+
+```sh
+uv sync --group docs
+uv run python scripts/build_site.py  # renders the pages into build/docs
+uv run properdocs serve              # re-run the first command after editing a fragment
 ```
 
 The release profile uses fat LTO and a single codegen unit. `[lib] crate-type` deliberately
@@ -3273,6 +3314,77 @@ interleaved A/B on an Apple M4 Pro put the kernels within a few percent either w
 smaller binary and roughly triple the build time, which is not a trade worth making by default.
 Tight numeric loops with predictable branches give PGO little to work with, but that result is
 specific to this workload and micro-architecture, so the script is there to re-measure with.
+
+#### Micro-batching under load
+
+`python benchmarks/batching.py run` answers when `AsyncRecommender` pays off. It serves one
+`ItemKNNRecommender` (20,000 users and items, 1,000,000 synthetic interactions) from a bare
+asyncio HTTP server, once with a `recommend` call per request and once through
+`AsyncRecommender`, both in the same one-thread executor, so batching is the only difference.
+The load comes from `benchmarks/loadgen`, a small Rust program, for two reasons. A Python
+generator would share the machine and the interpreter with the service it measures. And it
+is open-loop: it sends on a schedule whether or not the service keeps up, and charges each
+request from the moment it was due. A closed-loop generator slows down together with the
+service and so hides the queue that batching exists to drain.
+
+**These numbers are for this model on this machine, not for yours.** How long one
+`recommend` call takes depends on the model, the catalog size, `n_recommendations`, filters
+such as `exclude_interactions`, and the hardware, and so do the loads at which batching
+starts to matter. Here a call takes about 0.19 ms, which puts the knee at 5,000 to 6,000
+req/s; a model that takes 5 ms per user would hit its limit near 200 req/s, and a much
+cheaper one far above 6,000. As a rule of thumb, the direct service saturates near
+1 / (time of one call), so measure that for your model first, then run the sweep with
+`--rps` values around it. Do not expect your break-even load, or the size of the gain, to
+match the table.
+
+Measured on an Apple M4 Pro, 10 s per load after a 2 s warm-up, requests that took more than
+5 s counted as failed:
+
+| offered req/s | mode | served req/s | failed | p50 ms | p95 ms | p99 ms | requests per call |
+|---:|:---|---:|---:|---:|---:|---:|---:|
+| 500 | direct | 500 | 0 | 1.25 | 1.80 | 1.96 | 1.0 |
+| 500 | batched | 500 | 0 | 1.26 | 1.83 | 2.11 | 1.0 |
+| 2000 | direct | 2000 | 0 | 1.37 | 2.13 | 2.29 | 1.0 |
+| 2000 | batched | 2000 | 0 | 1.72 | 2.57 | 2.79 | 2.2 |
+| 4000 | direct | 4000 | 0 | 1.47 | 2.17 | 2.42 | 1.0 |
+| 4000 | batched | 4000 | 0 | 1.69 | 2.71 | 3.07 | 4.1 |
+| 6000 | direct | 6000 | 0 | 1.80 | 88.96 | 147.19 | 1.0 |
+| 6000 | batched | 6000 | 0 | 1.78 | 2.78 | 3.00 | 6.5 |
+| 8000 | direct | 5743 | 22570 | 1337.62 | 4168.70 | 4668.07 | 1.0 |
+| 8000 | batched | 8000 | 0 | 1.66 | 2.77 | 3.15 | 7.0 |
+| 12000 | direct | 215 | 117846 | 6894.31 | 8305.04 | 8510.88 | 1.0 |
+| 12000 | batched | 12000 | 0 | 1.72 | 2.80 | 57.89 | 10.3 |
+| 16000 | direct | 112 | 158877 | 5656.59 | 6590.11 | 7682.52 | 1.0 |
+| 16000 | batched | 16000 | 0 | 1.80 | 3.05 | 3.62 | 14.2 |
+
+What the table shows:
+
+- **Below the model's capacity, batching buys nothing and costs a little.** At 500 req/s a
+  request almost never finds another in flight, so each call carries one user and the only
+  difference is the batcher's own overhead: a future and one more hop through the event
+  loop. In the table it is about 0 to 0.5 ms at the median; a shorter rerun showed 0.6 ms
+  at 500 req/s, so treat the low-load rows as a range, not a number.
+- **At the capacity of one call per request, it is the difference between serving and not.**
+  One user costs about 0.19 ms in `recommend`, so the direct service can do at most about
+  5,000 to 6,000 req/s on its one thread. It starts queueing at 6,000 (p95 89 ms against
+  2.8 ms batched) and falls over at 8,000, where requests wait seconds and most of the
+  load times out.
+- **Batches grow with the load, and that is the point.** Requests that arrive while a call
+  runs share the next one, so the batch is 6.5 requests at 6,000 req/s and 14 at 16,000. A
+  batch of 128 users costs about 1.5 ms, 0.011 ms per user against 0.19 ms alone, which is
+  why the batched service holds a flat 1.7 to 1.8 ms median up to 16,000 req/s, the
+  highest load measured, with the generator and the Python server taking the rest of the
+  machine.
+
+So batching pays when the offered load approaches what one `recommend` per request can
+serve. That depends on your model's execution time, and so does where this table's knee
+falls for you: the dearer a single call, the lower the load at which batching starts to
+matter. It costs a fraction of a millisecond when the load is low. The numbers
+come from one machine and one synthetic model, so read them as the shape of the curve and
+re-measure with your own: `--users`, `--items`, `--interactions` and `--max-batch-size`
+change the model and the cap, and `--rps` the loads. The p99 of a batched row can show a
+single slow batch, such as the 57.89 ms at 12,000 req/s; repeat a load before reading
+anything into one tail value.
 
 ## Releasing
 
@@ -3467,6 +3579,18 @@ specific to this workload and micro-architecture, so the script is there to re-m
   without rows, in place of scikit-learn's message about 0 samples. A wrong argument never
   raises it.
 - `skrecsys.utils.validation.stable_unit_hash` takes a `salt`.
+
+### 0.9.0
+
+- `skrecsys.typing` is public: the protocols that describe estimators and composite
+  components (`Recommender`, `FittedRecommender`, `Ranker`, `Features`, `Condition`, ...),
+  `RandomStateLike`, `RankingMetric`, `clone_as` and the `override` and `TypeIs` backports.
+  It replaces the private `skrecsys._typing`.
+- `skrecsys.inspection` exports the `Level`, `Sample` and `Status` types.
+- `skrecsys.integrations.batching`: `MicroBatcher` and `AsyncRecommender` rank the requests of
+  an asyncio service that are in flight together in one `recommend` call. No extra needed.
+- `benchmarks/batching.py` and the Rust load generator `benchmarks/loadgen` measure when
+  micro-batching pays off: one model served with and without it under rising open-loop load.
 
 ## License
 
