@@ -11,6 +11,7 @@
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
+| `skrecsys.integrations.batching` | `MicroBatcher`, `AsyncRecommender`; asyncio micro-batching of concurrent `recommend` calls, no extra |
 | `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
 | `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
 | `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |

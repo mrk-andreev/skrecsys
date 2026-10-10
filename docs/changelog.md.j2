@@ -193,3 +193,5 @@
   `RandomStateLike`, `RankingMetric`, `clone_as` and the `override` and `TypeIs` backports.
   It replaces the private `skrecsys._typing`.
 - `skrecsys.inspection` exports the `Level`, `Sample` and `Status` types.
+- `skrecsys.integrations.batching`: `MicroBatcher` and `AsyncRecommender` rank the requests of
+  an asyncio service that are in flight together in one `recommend` call. No extra needed.

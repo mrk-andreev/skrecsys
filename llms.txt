@@ -39,7 +39,7 @@ Install with `pip install skrecsys`. Public API lives in `src/skrecsys/`; the Ru
 - [skrecsys/metrics](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/metrics/__init__.py): Ranking and beyond-accuracy metrics
 - [skrecsys/model_selection](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/model_selection/__init__.py): WarmStartKFold, ColdStartSplit, LatestInteractionsSplit
 - [skrecsys/indexing](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/indexing/__init__.py): Vector indexes
-- [skrecsys/integrations](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/integrations/__init__.py): CatBoost, XGBoost, LightGBM rankers
+- [skrecsys/integrations](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/integrations/__init__.py): CatBoost, XGBoost, LightGBM rankers; asyncio micro-batching (`batching`)
 - [skrecsys/typing](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/typing.py): Protocols and type aliases for estimators and composites
 - [Rust kernels](https://github.com/mrk-andreev/skrecsys/blob/main/rust/kernels/src/lib.rs): Algorithm implementations
 - [AGENTS.md](https://github.com/mrk-andreev/skrecsys/blob/main/AGENTS.md): Repository guidelines for contributors and coding agents

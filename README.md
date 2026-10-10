@@ -1379,7 +1379,8 @@ flowchart LR
 - Each call passes the user's recent events as `exclude_interactions`, so it returns exactly
   the number of fresh items asked for, with no over-fetching and no filtering afterwards.
 - Replicas should batch concurrent requests into one `recommend` call; the pairs of every
-  user in the batch can go in together.
+  user in the batch can go in together. In an asyncio service,
+  `skrecsys.integrations.batching.AsyncRecommender` does it (see below).
 - On large catalogs an `index` makes each call cheaper, but see
   [vector indexes](#vector-indexes) for what it costs in exactness and speed first.
 
@@ -1403,6 +1404,34 @@ sequenceDiagram
 
 The popular list is computed once per version, as in Batch, and kept in memory next to the
 model.
+
+#### Batching concurrent requests
+
+`AsyncRecommender` answers one user per `await` and ranks the users in flight together in a
+single `recommend` call, in an executor, so the event loop stays free. It never waits on
+purpose: an idle service answers at once, and the busier the model, the larger the batches.
+It needs only a running event loop, so it fits any asyncio framework.
+
+```python
+from fastapi import FastAPI
+from skrecsys.integrations.batching import AsyncRecommender
+
+app = FastAPI()
+recommender = AsyncRecommender(model, n_recommendations=10, max_batch_size=100)
+
+
+@app.get("/users/{user_id}/recommendations")
+async def recommendations(user_id: int):
+    items, _ = await recommender.recommend(user_id, exclude_items=recent_items(user_id))
+    return items.tolist()
+
+
+# on a new model version: recommender.model = new_model
+```
+
+A batch reads `model` once, so a swap lands between batches. `exclude_items` carries the
+user's events since the model was fitted. A failed call, such as an unknown user, raises to
+every caller of that batch; the generic `MicroBatcher` takes a `fallback` instead.
 
 ### Recent events
 
@@ -3147,6 +3176,7 @@ interaction, roughly what `interactions_` already costs.
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
+| `skrecsys.integrations.batching` | `MicroBatcher`, `AsyncRecommender`; asyncio micro-batching of concurrent `recommend` calls, no extra |
 | `skrecsys.metrics` | `precision_at_k`, `recall_at_k`, `ndcg_at_k`, `average_precision_at_k`, `reciprocal_rank_at_k`, `hit_rate_at_k`, `make_recommender_scorer`, `evaluate_recommender` |
 | `skrecsys.metrics` | `catalog_coverage_at_k`, `user_coverage_at_k`, `mean_popularity_at_k`, `novelty_at_k`, `item_popularity` |
 | `skrecsys.datasets` | `fetch_movielens_100k`, `fetch_movielens_1m`, `fetch_amazon_books`, `get_data_home`, `clear_data_home` |
@@ -3486,6 +3516,8 @@ specific to this workload and micro-architecture, so the script is there to re-m
   `RandomStateLike`, `RankingMetric`, `clone_as` and the `override` and `TypeIs` backports.
   It replaces the private `skrecsys._typing`.
 - `skrecsys.inspection` exports the `Level`, `Sample` and `Status` types.
+- `skrecsys.integrations.batching`: `MicroBatcher` and `AsyncRecommender` rank the requests of
+  an asyncio service that are in flight together in one `recommend` call. No extra needed.
 
 ## License
 
