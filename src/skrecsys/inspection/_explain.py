@@ -7,7 +7,6 @@ from typing import Literal, TypeAlias
 import numpy as np
 from numpy.typing import ArrayLike
 
-from skrecsys._typing import FittedRecommender, override
 from skrecsys.base import uses_time
 from skrecsys.inspection._trace import (
     CandidatesStep,
@@ -19,9 +18,17 @@ from skrecsys.inspection._trace import (
     jsonable,
     trace,
 )
+from skrecsys.typing import FittedRecommender, override
 from skrecsys.utils.validation import check_ids, check_queries, lookup_ids
 
-__all__ = ["Explanation", "LeafReasons", "RankerDecision", "Retrieval", "explain"]
+__all__ = [
+    "Explanation",
+    "LeafReasons",
+    "RankerDecision",
+    "Retrieval",
+    "Status",
+    "explain",
+]
 
 #: What became of an item, from the most final stage back to the first.
 Status: TypeAlias = Literal[

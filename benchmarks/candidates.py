@@ -33,10 +33,10 @@ import spec
 from indexes import format_latency
 from store import CandidatesPayload, Cells
 
-from skrecsys._typing import FittedRecommender, Recommender
 from skrecsys.base import fit_clone, is_recommender
 from skrecsys.compose import ReciprocalRankFusion
 from skrecsys.compose._candidates import concat_ids, retrieve, retrieve_union
+from skrecsys.typing import FittedRecommender, Recommender
 from skrecsys.utils.validation import factorize, lookup_ids
 
 #: Where the members of a generator set are looked up by class name.

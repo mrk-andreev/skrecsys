@@ -15,9 +15,9 @@ import scipy.sparse as sp
 import torch
 from numpy.typing import ArrayLike, NDArray
 
-from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace
 from skrecsys.nn._base import ModuleT, TorchRecommender
+from skrecsys.typing import override
 from skrecsys.utils.validation import check_interactions, encode_ids
 
 __all__ = ["PAD", "SequentialRecommender"]

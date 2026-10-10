@@ -27,7 +27,6 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import _check_feature_names, check_array, check_is_fitted
 
 from skrecsys._tracing import active_tracer, traced_recommend, untraced
-from skrecsys._typing import FittedRecommender, Ranker, Recommender, override
 from skrecsys.base import (
     RankerMixin,
     RecommenderMixin,
@@ -55,6 +54,7 @@ from skrecsys.compose._rankers import (
     prepare,
 )
 from skrecsys.tune._space import Float
+from skrecsys.typing import FittedRecommender, Ranker, Recommender, override
 from skrecsys.utils._param_validation import check_int, check_real
 from skrecsys.utils.validation import (
     check_interactions,

@@ -5,7 +5,6 @@ import pytest
 from sklearn.base import clone
 from sklearn.linear_model import LogisticRegression
 
-from skrecsys._typing import Recommender
 from skrecsys.base import is_ranker, is_recommender, serves_unknown_users
 from skrecsys.compose import (
     Cascade,
@@ -24,6 +23,7 @@ from skrecsys.recommendation import (
     ItemKNNRecommender,
     MostPopularRecommender,
 )
+from skrecsys.typing import Recommender
 from tests.compose._data import N_USERS, TRENDING, trending_interactions, trending_table
 
 INTERACTIONS = trending_interactions()

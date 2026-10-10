@@ -9,7 +9,6 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
-from skrecsys._typing import override
 from skrecsys.indexing import IndexSpec
 from skrecsys.nn._base import (
     Batch,
@@ -19,6 +18,7 @@ from skrecsys.nn._base import (
     seeded_normal_,
 )
 from skrecsys.tune._space import Categorical, Float, Int
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int, check_real
 
 #: Behaviour aggregators, in the order the paper introduces them.

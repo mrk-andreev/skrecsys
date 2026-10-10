@@ -8,7 +8,6 @@ import scipy.sparse as sp
 from numpy.typing import NDArray
 from sklearn.utils import check_random_state
 
-from skrecsys._typing import override
 from skrecsys.base import (
     RecommenderMixin,
     check_enough_eligible,
@@ -20,6 +19,7 @@ from skrecsys.indexing._base import (
     VectorSpace,
     make_index,
 )
+from skrecsys.typing import override
 from skrecsys.utils.validation import check_ids, encode_ids
 
 __all__ = ["VectorIndexMixin"]

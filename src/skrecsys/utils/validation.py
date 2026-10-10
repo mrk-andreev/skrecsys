@@ -23,8 +23,8 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import check_array, check_consistent_length
 
 from skrecsys import _core
-from skrecsys._typing import DataFrameLike, SortableId
 from skrecsys.exceptions import InsufficientDataError
+from skrecsys.typing import DataFrameLike, SortableId
 
 __all__ = [
     "check_as_of",

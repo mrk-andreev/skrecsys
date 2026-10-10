@@ -7,6 +7,7 @@
 | `skrecsys.base` | `ConditionMixin`, `FeaturesMixin`, `RankerMixin`, `Not`, `AllOf`, `AnyOf`, `is_condition`, `is_features`, `is_ranker`, `serves_unknown_users` |
 | `skrecsys.compose` | `Switch`, `Cascade`, `KnownUser`, `MinInteractions`, `QueryIn`, `Not`, `AllOf`, `AnyOf`, `JoinStaticFeatures`, `JoinDynamicFeatures`, `GeneratorScores`, `InteractionCounts`, `RecommenderScores`, `SegmentPopularity`, `ProfileAffinity`, `ConcatFeatures`, `PointwiseRanker`, `GroupRanker`, `BlendRanker`, `AugmentedRanker`, `ReciprocalRankFusion`, `ReciprocalRankRanker`, `Backfill`, `ReservedSlots`, `ItemListRecommender` |
 | `skrecsys.exceptions` | `InsufficientDataError` |
+| `skrecsys.typing` | Protocols for estimators and composite components (`Recommender`, `FittedRecommender`, `Ranker`, `Features`, `Condition`, ...), `RandomStateLike`, `RankingMetric`, `clone_as`, and the `override`/`TypeIs` backports |
 | `skrecsys.integrations.catboost` | `CatBoostRanker`; third-party integration, requires `skrecsys[catboost]` |
 | `skrecsys.integrations.xgboost` | `XGBRanker`; third-party integration, requires `skrecsys[xgboost]` |
 | `skrecsys.integrations.lightgbm` | `LGBMRanker`; third-party integration, requires `skrecsys[lightgbm]` |
@@ -17,5 +18,5 @@
 | `skrecsys.tune` | `AutoTune`, `Study`, `Trial`, `Float`, `Int`, `Categorical`, `search_space` |
 | `skrecsys.recommendation` | `MostPopularRecommender`, `ItemKNNRecommender`, `AlternatingLeastSquares`, `BM25Recommender`, `EASE`, `RP3Beta`, `SLIMElasticNet`, `BayesianPersonalizedRanking` |
 | `skrecsys.nn` | `SimpleX`, `XSimGCL`, `HSTU` (sequential), `Mamba4Rec` (sequential); requires `skrecsys[nn]` |
-| `skrecsys.inspection` | `trace`, `Trace`, `QueryTrace` and its steps, `explain`, `Explanation`, `Retrieval`, `RankerDecision`, `LeafReasons` |
+| `skrecsys.inspection` | `trace`, `Trace`, `QueryTrace` and its steps, `explain`, `Explanation`, `Retrieval`, `RankerDecision`, `LeafReasons`, and the `Level`, `Sample` and `Status` types |
 | `skrecsys.indexing` | `HNSW`, `QuantizedFlatIndex`, `VectorIndex`, `VectorIndexMixin`, `available_indexes` |

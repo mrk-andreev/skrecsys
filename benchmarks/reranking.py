@@ -34,9 +34,9 @@ import spec
 from indexes import format_latency
 from store import Cells, RerankingPayload
 
-from skrecsys._typing import FittedRecommender, Recommender
 from skrecsys.base import fit_clone, is_recommender
 from skrecsys.metrics import item_popularity
+from skrecsys.typing import FittedRecommender, Recommender
 
 #: The rows of the quality table, in order: every held-out user, then each kind.
 SEGMENTS = ("all", "warm", "cold")

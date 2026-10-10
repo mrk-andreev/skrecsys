@@ -44,6 +44,7 @@ __all__ = [
     "Recommender",
     "Regressor",
     "SortableId",
+    "TimedRecommender",
     "TypeIs",
     "clone_as",
     "override",

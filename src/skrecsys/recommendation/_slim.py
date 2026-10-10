@@ -9,7 +9,6 @@ from numpy.typing import NDArray
 from sklearn.exceptions import ConvergenceWarning
 
 from skrecsys import _core
-from skrecsys._typing import override
 from skrecsys.indexing import IndexSpec, SparseSpace
 from skrecsys.recommendation._base import SimilarityRecommender, kernel_csr, kernel_indices
 from skrecsys.recommendation._incremental import (
@@ -19,6 +18,7 @@ from skrecsys.recommendation._incremental import (
     replace_rows,
 )
 from skrecsys.tune._space import Float, Int
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_bool, check_int, check_real, resolve_n_jobs
 
 

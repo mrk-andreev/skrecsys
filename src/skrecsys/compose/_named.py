@@ -12,7 +12,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
 from sklearn.base import BaseEstimator
 
-from skrecsys._typing import Estimator, override
+from skrecsys.typing import Estimator, override
 
 if sys.version_info >= (3, 13):
     from typing import TypeIs

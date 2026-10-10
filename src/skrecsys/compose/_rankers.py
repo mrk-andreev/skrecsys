@@ -24,7 +24,9 @@ from sklearn.utils.validation import check_array, check_is_fitted
 
 from skrecsys._attribution import ranker_contributions
 from skrecsys._tracing import Tracer, active_tracer, feature_names, span
-from skrecsys._typing import (
+from skrecsys.base import RankerMixin, is_features, is_ranker
+from skrecsys.compose._named import ComponentList, NamedComponentsEstimator
+from skrecsys.typing import (
     DecisionClassifier,
     Features,
     GroupEstimator,
@@ -36,8 +38,6 @@ from skrecsys._typing import (
     clone_as,
     override,
 )
-from skrecsys.base import RankerMixin, is_features, is_ranker
-from skrecsys.compose._named import ComponentList, NamedComponentsEstimator
 from skrecsys.utils._param_validation import check_component, check_int
 
 if sys.version_info >= (3, 13):

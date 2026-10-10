@@ -6,9 +6,9 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import check_array
 
 from skrecsys._attribution import Attributions, popularity_attributions
-from skrecsys._typing import override
 from skrecsys.recommendation._base import BaseRecommender
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_real
 from skrecsys.utils.validation import encode_ids, factorize, lookup_ids
 

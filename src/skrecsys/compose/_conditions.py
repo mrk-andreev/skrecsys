@@ -7,8 +7,8 @@ from numpy.typing import ArrayLike, NDArray
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_is_fitted
 
-from skrecsys._typing import override
 from skrecsys.base import ConditionMixin
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int
 from skrecsys.utils.validation import (
     check_ids,

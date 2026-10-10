@@ -8,7 +8,6 @@ from numpy.typing import NDArray
 
 from skrecsys import _core
 from skrecsys._attribution import Attributions, history_attributions
-from skrecsys._typing import override
 from skrecsys.indexing import DenseSpace, IndexSpec
 from skrecsys.recommendation._base import (
     BaseRecommender,
@@ -21,6 +20,7 @@ from skrecsys.recommendation._base import (
 )
 from skrecsys.recommendation._incremental import IncrementalRecommenderMixin
 from skrecsys.tune._space import Float
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_real, resolve_n_jobs
 from skrecsys.utils.validation import check_ids, encode_ids
 

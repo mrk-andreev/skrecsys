@@ -5,7 +5,6 @@ import scipy.sparse as sp
 from numpy.typing import ArrayLike, NDArray
 
 from skrecsys import _core
-from skrecsys._typing import override
 from skrecsys.indexing._base import (
     DenseSpace,
     SparseSpace,
@@ -13,6 +12,7 @@ from skrecsys.indexing._base import (
     VectorSpace,
     register_index,
 )
+from skrecsys.typing import override
 from skrecsys.utils._param_validation import check_int
 
 __all__ = ["HNSW"]

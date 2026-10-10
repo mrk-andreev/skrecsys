@@ -12,7 +12,7 @@ from sklearn.utils.validation import check_is_fitted
 from skrecsys import _core
 from skrecsys._attribution import Attributions
 from skrecsys._tracing import traced_recommend
-from skrecsys._typing import (
+from skrecsys.typing import (
     Condition,
     Features,
     FittedRecommender,

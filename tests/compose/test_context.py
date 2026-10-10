@@ -8,7 +8,6 @@ import pytest
 from sklearn.base import BaseEstimator
 from sklearn.linear_model import LogisticRegression
 
-from skrecsys._typing import override
 from skrecsys.base import FeaturesMixin
 from skrecsys.compose import (
     Cascade,
@@ -24,6 +23,7 @@ from skrecsys.inspection import explain, trace
 from skrecsys.metrics import evaluate_recommender, hit_rate_at_k
 from skrecsys.model_selection import ColdStartSplit, WarmStartKFold
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+from skrecsys.typing import override
 
 N_SHELF_ITEMS = 12
 

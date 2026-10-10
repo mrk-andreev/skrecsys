@@ -8,7 +8,6 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import ShuffleSplit, cross_val_score
 
-from skrecsys._typing import override
 from skrecsys.base import RankerMixin
 from skrecsys.compose import (
     Cascade,
@@ -26,6 +25,7 @@ from skrecsys.exceptions import InsufficientDataError
 from skrecsys.metrics import evaluate_recommender, make_recommender_scorer, ndcg_at_k
 from skrecsys.model_selection import ColdStartSplit, LatestInteractionsSplit, WarmStartKFold
 from skrecsys.recommendation import ItemKNNRecommender, MostPopularRecommender
+from skrecsys.typing import override
 from skrecsys.utils.validation import check_interactions
 from tests.compose._data import N_USERS, TRENDING, trending_interactions, trending_table
 

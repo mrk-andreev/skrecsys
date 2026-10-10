@@ -26,7 +26,6 @@ from numpy.typing import NDArray
 
 import skrecsys
 from skrecsys import _core
-from skrecsys._typing import FittedRecommender, RankingMetric, Recommender
 from skrecsys.base import fit_clone
 from skrecsys.metrics import (
     average_precision_at_k,
@@ -41,6 +40,7 @@ from skrecsys.metrics import (
     reciprocal_rank_at_k,
     user_coverage_at_k,
 )
+from skrecsys.typing import FittedRecommender, RankingMetric, Recommender
 
 if TYPE_CHECKING:
     from spec import Split, Warmup

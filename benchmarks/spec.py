@@ -34,7 +34,7 @@ from numpy.typing import NDArray
 from sklearn.base import BaseEstimator
 from typing_extensions import TypeAliasType
 
-from skrecsys._typing import override
+from skrecsys.typing import override
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 

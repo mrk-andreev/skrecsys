@@ -8,7 +8,6 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 
-from skrecsys._typing import override
 from skrecsys.base import FeaturesMixin, RankerMixin, is_ranker
 from skrecsys.compose import (
     AugmentedRanker,
@@ -25,6 +24,7 @@ from skrecsys.compose import (
 )
 from skrecsys.compose._rankers import normalize_per_group
 from skrecsys.recommendation import MostPopularRecommender
+from skrecsys.typing import override
 from tests.compose._data import N_USERS, TRENDING, trending_interactions, trending_table
 
 X = np.array([[0.0], [1.0], [0.2], [0.9], [0.1], [0.7]])

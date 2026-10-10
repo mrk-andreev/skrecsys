@@ -5,12 +5,12 @@ import pytest
 from sklearn.base import BaseEstimator, clone
 from sklearn.model_selection import BaseCrossValidator
 
-from skrecsys._typing import override
 from skrecsys.base import RankerMixin, uses_time
 from skrecsys.compose import Cascade, GeneratorScores
 from skrecsys.metrics import Recall, make_recommender_scorer, ndcg_at_k, recall_at_k
 from skrecsys.recommendation import BM25Recommender, ItemKNNRecommender, MostPopularRecommender
 from skrecsys.tune import AutoTune, Float, Int
+from skrecsys.typing import override
 from tests.estimator_checks import check_numeric_ids, yield_recommender_checks
 
 

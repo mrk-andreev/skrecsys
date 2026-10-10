@@ -7,7 +7,6 @@ from typing import ClassVar
 
 from numpy.typing import ArrayLike
 
-from skrecsys._typing import RankingMetric, Recommender, override
 from skrecsys.metrics._ranking import (
     average_precision_at_k,
     hit_rate_at_k,
@@ -17,6 +16,7 @@ from skrecsys.metrics._ranking import (
     reciprocal_rank_at_k,
 )
 from skrecsys.metrics._scorer import make_recommender_scorer
+from skrecsys.typing import RankingMetric, Recommender, override
 from skrecsys.utils._param_validation import check_int
 
 __all__ = ["MAP", "MRR", "NDCG", "HitRate", "Precision", "Recall", "get_scorer"]

@@ -1,4 +1,4 @@
-"""The protocols of ``skrecsys._typing`` against the estimators the package ships.
+"""The protocols of ``skrecsys.typing`` against the estimators the package ships.
 
 Each case list is annotated with its protocol, so the lists are what ``ty`` checks: an
 estimator that drifts from its protocol stops type-checking here, before a composite
@@ -11,16 +11,6 @@ import pytest
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 
-from skrecsys._typing import (
-    Condition,
-    DecisionClassifier,
-    Features,
-    PointwiseEstimator,
-    ProbabilisticClassifier,
-    Ranker,
-    Recommender,
-    Regressor,
-)
 from skrecsys.base import is_condition, is_features, is_ranker, is_recommender
 from skrecsys.compose import (
     Cascade,
@@ -44,6 +34,16 @@ from skrecsys.recommendation import (
     MostPopularRecommender,
     RP3Beta,
     SLIMElasticNet,
+)
+from skrecsys.typing import (
+    Condition,
+    DecisionClassifier,
+    Features,
+    PointwiseEstimator,
+    ProbabilisticClassifier,
+    Ranker,
+    Recommender,
+    Regressor,
 )
 
 RECOMMENDERS: list[Recommender] = [
