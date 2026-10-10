@@ -149,6 +149,10 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
       - run: cargo test
+      # The load generator of the micro-batching benchmark is outside the workspace above.
+      - run: cargo fmt --check --manifest-path benchmarks/loadgen/Cargo.toml
+      - run: cargo clippy --all-targets --manifest-path benchmarks/loadgen/Cargo.toml -- -D warnings
+      - run: cargo test --manifest-path benchmarks/loadgen/Cargo.toml
       # Runs every criterion benchmark once and throws the timings away: a shared runner
       # cannot measure anything, but it can still catch a benchmark that panics or whose
       # fixture no longer satisfies what the kernel it feeds assumes.

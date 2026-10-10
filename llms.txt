@@ -48,3 +48,4 @@ Install with `pip install skrecsys`. Public API lives in `src/skrecsys/`; the Ru
 
 - [Notebooks](https://github.com/mrk-andreev/skrecsys/blob/main/notebooks): Runnable examples
 - [Benchmarks code](https://github.com/mrk-andreev/skrecsys/blob/main/benchmarks): Benchmark scripts, configs and results
+- [Micro-batching benchmark](https://github.com/mrk-andreev/skrecsys/blob/main/benchmarks/batching.py): Service with and without `AsyncRecommender` under open-loop load; the Rust load generator is in `benchmarks/loadgen`

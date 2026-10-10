@@ -173,6 +173,9 @@ ignore = [
 # Command-line entry points: printing is their interface, and the build script's whole
 # job is running the toolchain.
 "benchmarks/run.py" = ["T201"]
+# It also starts the service and the load generator it measures, and asks the service it
+# started on the loopback address.
+"benchmarks/batching.py" = ["T201", "S310", "S603", "S607"]
 "scripts/**" = ["T201", "S603"]
 # The suite logs a failed row and keeps what the rest of the run measures.
 "benchmarks/suite.py" = ["BLE001"]

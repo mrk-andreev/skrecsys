@@ -79,3 +79,74 @@ interleaved A/B on an Apple M4 Pro put the kernels within a few percent either w
 smaller binary and roughly triple the build time, which is not a trade worth making by default.
 Tight numeric loops with predictable branches give PGO little to work with, but that result is
 specific to this workload and micro-architecture, so the script is there to re-measure with.
+
+#### Micro-batching under load
+
+`python benchmarks/batching.py run` answers when `AsyncRecommender` pays off. It serves one
+`ItemKNNRecommender` (20,000 users and items, 1,000,000 synthetic interactions) from a bare
+asyncio HTTP server, once with a `recommend` call per request and once through
+`AsyncRecommender`, both in the same one-thread executor, so batching is the only difference.
+The load comes from `benchmarks/loadgen`, a small Rust program, for two reasons. A Python
+generator would share the machine and the interpreter with the service it measures. And it
+is open-loop: it sends on a schedule whether or not the service keeps up, and charges each
+request from the moment it was due. A closed-loop generator slows down together with the
+service and so hides the queue that batching exists to drain.
+
+**These numbers are for this model on this machine, not for yours.** How long one
+`recommend` call takes depends on the model, the catalog size, `n_recommendations`, filters
+such as `exclude_interactions`, and the hardware, and so do the loads at which batching
+starts to matter. Here a call takes about 0.19 ms, which puts the knee at 5,000 to 6,000
+req/s; a model that takes 5 ms per user would hit its limit near 200 req/s, and a much
+cheaper one far above 6,000. As a rule of thumb, the direct service saturates near
+1 / (time of one call), so measure that for your model first, then run the sweep with
+`--rps` values around it. Do not expect your break-even load, or the size of the gain, to
+match the table.
+
+Measured on an Apple M4 Pro, 10 s per load after a 2 s warm-up, requests that took more than
+5 s counted as failed:
+
+| offered req/s | mode | served req/s | failed | p50 ms | p95 ms | p99 ms | requests per call |
+|---:|:---|---:|---:|---:|---:|---:|---:|
+| 500 | direct | 500 | 0 | 1.25 | 1.80 | 1.96 | 1.0 |
+| 500 | batched | 500 | 0 | 1.26 | 1.83 | 2.11 | 1.0 |
+| 2000 | direct | 2000 | 0 | 1.37 | 2.13 | 2.29 | 1.0 |
+| 2000 | batched | 2000 | 0 | 1.72 | 2.57 | 2.79 | 2.2 |
+| 4000 | direct | 4000 | 0 | 1.47 | 2.17 | 2.42 | 1.0 |
+| 4000 | batched | 4000 | 0 | 1.69 | 2.71 | 3.07 | 4.1 |
+| 6000 | direct | 6000 | 0 | 1.80 | 88.96 | 147.19 | 1.0 |
+| 6000 | batched | 6000 | 0 | 1.78 | 2.78 | 3.00 | 6.5 |
+| 8000 | direct | 5743 | 22570 | 1337.62 | 4168.70 | 4668.07 | 1.0 |
+| 8000 | batched | 8000 | 0 | 1.66 | 2.77 | 3.15 | 7.0 |
+| 12000 | direct | 215 | 117846 | 6894.31 | 8305.04 | 8510.88 | 1.0 |
+| 12000 | batched | 12000 | 0 | 1.72 | 2.80 | 57.89 | 10.3 |
+| 16000 | direct | 112 | 158877 | 5656.59 | 6590.11 | 7682.52 | 1.0 |
+| 16000 | batched | 16000 | 0 | 1.80 | 3.05 | 3.62 | 14.2 |
+
+What the table shows:
+
+- **Below the model's capacity, batching buys nothing and costs a little.** At 500 req/s a
+  request almost never finds another in flight, so each call carries one user and the only
+  difference is the batcher's own overhead: a future and one more hop through the event
+  loop. In the table it is about 0 to 0.5 ms at the median; a shorter rerun showed 0.6 ms
+  at 500 req/s, so treat the low-load rows as a range, not a number.
+- **At the capacity of one call per request, it is the difference between serving and not.**
+  One user costs about 0.19 ms in `recommend`, so the direct service can do at most about
+  5,000 to 6,000 req/s on its one thread. It starts queueing at 6,000 (p95 89 ms against
+  2.8 ms batched) and falls over at 8,000, where requests wait seconds and most of the
+  load times out.
+- **Batches grow with the load, and that is the point.** Requests that arrive while a call
+  runs share the next one, so the batch is 6.5 requests at 6,000 req/s and 14 at 16,000. A
+  batch of 128 users costs about 1.5 ms, 0.011 ms per user against 0.19 ms alone, which is
+  why the batched service holds a flat 1.7 to 1.8 ms median up to 16,000 req/s, the
+  highest load measured, with the generator and the Python server taking the rest of the
+  machine.
+
+So batching pays when the offered load approaches what one `recommend` per request can
+serve. That depends on your model's execution time, and so does where this table's knee
+falls for you: the dearer a single call, the lower the load at which batching starts to
+matter. It costs a fraction of a millisecond when the load is low. The numbers
+come from one machine and one synthetic model, so read them as the shape of the curve and
+re-measure with your own: `--users`, `--items`, `--interactions` and `--max-batch-size`
+change the model and the cap, and `--rps` the loads. The p99 of a batched row can show a
+single slow batch, such as the 57.89 ms at 12,000 req/s; repeat a load before reading
+anything into one tail value.

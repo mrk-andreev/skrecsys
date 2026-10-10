@@ -195,3 +195,5 @@
 - `skrecsys.inspection` exports the `Level`, `Sample` and `Status` types.
 - `skrecsys.integrations.batching`: `MicroBatcher` and `AsyncRecommender` rank the requests of
   an asyncio service that are in flight together in one `recommend` call. No extra needed.
+- `benchmarks/batching.py` and the Rust load generator `benchmarks/loadgen` measure when
+  micro-batching pays off: one model served with and without it under rising open-loop load.
