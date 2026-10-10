@@ -3469,6 +3469,14 @@ specific to this workload and micro-architecture, so the script is there to re-m
   raises it.
 - `skrecsys.utils.validation.stable_unit_hash` takes a `salt`.
 
+### 0.9.0
+
+- `skrecsys.typing` is public: the protocols that describe estimators and composite
+  components (`Recommender`, `FittedRecommender`, `Ranker`, `Features`, `Condition`, ...),
+  `RandomStateLike`, `RankingMetric`, `clone_as` and the `override` and `TypeIs` backports.
+  It replaces the private `skrecsys._typing`.
+- `skrecsys.inspection` exports the `Level`, `Sample` and `Status` types.
+
 ## License
 
 [MIT](LICENSE)
