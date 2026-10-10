@@ -1,0 +1,55 @@
+name: Docs
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    paths:
+      - "docs/**"
+      - "README.md.j2"
+      - "properdocs.yml"
+      - "scripts/build_site.py"
+      - "benchmarks/results/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      # The renderer imports the benchmark suite, which imports skrecsys and so the extension.
+      - name: Sync the environment
+        run: uv sync --locked --group dev --group docs
+      - name: Render the pages from the Jinja sources
+        run: uv run --no-sync python scripts/build_site.py
+      - name: Build the site
+        run: uv run --no-sync properdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

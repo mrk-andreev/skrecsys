@@ -98,6 +98,14 @@ dev = [
 reference = [
     "implicit>=0.7.3",
 ]
+# The documentation website; see scripts/build_site.py and properdocs.yml.
+docs = [
+    "jinja2>=3.1",
+    "mkdocs-literate-nav>=0.6",
+    "properdocs>=1.6",
+    "properdocs-theme-readthedocs",
+    "pymdown-extensions>=10",
+]
 # Example notebooks in notebooks/; see notebooks/AI.md.
 notebooks = [
     "altair>=5.5",

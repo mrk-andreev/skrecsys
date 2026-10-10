@@ -29,6 +29,16 @@ cargo clippy --all-targets -- -D warnings
 cargo bench -- --test  # run every benchmark once, without measuring
 ```
 
+The [website](https://mrk-andreev.github.io/skrecsys/) is built from the same `README.md.j2` and
+`docs/*.md.j2` sources as this README, one page per included fragment, and published to GitHub
+Pages by `.github/workflows/docs.yml` on every push to `main`. To preview it:
+
+```sh
+uv sync --group docs
+uv run python scripts/build_site.py  # renders the pages into build/docs
+uv run properdocs serve              # re-run the first command after editing a fragment
+```
+
 The release profile uses fat LTO and a single codegen unit. `[lib] crate-type` deliberately
 lists only `cdylib`: adding `rlib` back would make Cargo drop LTO silently, because it cannot
 link-time-optimize a unit that also emits an rlib. The kernels live in their own crate so that

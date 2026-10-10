@@ -10,7 +10,7 @@ Install `uv` and Rust. `uv sync` builds the extension. `uv run pytest` runs Pyth
 
 ## Documentation
 
-Edit Jinja sources `README.md.j2` or `docs/*.md.j2`, never generated `README.md` directly. Run `uv run python scripts/render_readme.py` to regenerate; add `--check` to verify.
+Edit Jinja sources `README.md.j2` or `docs/*.md.j2`, never generated `README.md` directly. Run `uv run python scripts/render_readme.py` to regenerate; add `--check` to verify. The website (ProperDocs (ReadTheDocs theme), published by `.github/workflows/docs.yml`) is rendered from the same sources by `scripts/build_site.py`; preview with `uv run --group docs properdocs serve` after running it.
 
 ## llms.txt
 

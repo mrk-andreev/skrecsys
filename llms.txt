@@ -6,6 +6,8 @@ Install with `pip install skrecsys`. Public API lives in `src/skrecsys/`; the Ru
 
 ## Docs
 
+- [Website](https://mrk-andreev.github.io/skrecsys/): The same docs as a ProperDocs (ReadTheDocs theme) site, built from the Jinja sources by scripts/build_site.py and properdocs.yml
+
 - [README](https://github.com/mrk-andreev/skrecsys/blob/main/README.md): Full documentation, generated from the Jinja sources in docs/
 - [Installation](https://github.com/mrk-andreev/skrecsys/blob/main/docs/installation.md.j2): Install options and optional extras
 - [Usage](https://github.com/mrk-andreev/skrecsys/blob/main/docs/usage.md.j2): Fitting models, recommending, evaluating
