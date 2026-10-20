@@ -1,0 +1,8 @@
+# Read by OSV-Scanner, and so by the OpenSSF Scorecard Vulnerabilities check.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = """
+paste is unmaintained, not vulnerable. It is a compile-time proc macro that reaches us only
+through faer's gemm crates, so nothing of it ships in the extension; drop this entry once faer
+moves off it."""
