@@ -43,6 +43,7 @@ Install with `pip install skrecsys`. Public API lives in `src/skrecsys/`; the Ru
 - [skrecsys/typing](https://github.com/mrk-andreev/skrecsys/blob/main/src/skrecsys/typing.py): Protocols and type aliases for estimators and composites
 - [Rust kernels](https://github.com/mrk-andreev/skrecsys/blob/main/rust/kernels/src/lib.rs): Algorithm implementations
 - [AGENTS.md](https://github.com/mrk-andreev/skrecsys/blob/main/AGENTS.md): Repository guidelines for contributors and coding agents
+- [SECURITY.md](https://github.com/mrk-andreev/skrecsys/blob/main/SECURITY.md): Supported versions and how to report a vulnerability privately
 
 ## Optional
 

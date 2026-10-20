@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  # Workflow actions are pinned by commit hash; Dependabot moves the hash and the version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /benchmarks/loadgen
+    schedule:
+      interval: weekly
+    groups:
+      rust:
+        patterns: ["*"]
